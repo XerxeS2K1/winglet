@@ -46,11 +46,15 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
       if(supported){const status=await pushStatus(server);if(alive.current)setRemote(status);}
     }catch(e){if(alive.current)setError((e as Error).message);}
   },[server,supported,pushNative]);
+  // Keep the latest refresh in a ref: if the server object is replaced while a setup runs (the store updates it
+  // often), re-subscribing here would run the cleanup and cancel that setup.
+  const refreshRef=useRef(refresh);refreshRef.current=refresh;
+  useEffect(()=>{void refresh();},[refresh]);
   useFocusEffect(useCallback(()=>{
-    alive.current=true;void refresh();
-    const sub=AppState.addEventListener('change',state=>{if(state==='active')void refresh();});
+    alive.current=true;void refreshRef.current();
+    const sub=AppState.addEventListener('change',state=>{if(state==='active')void refreshRef.current();});
     return ()=>{alive.current=false;action.current?.abort();sub.remove();};
-  },[refresh]));
+  },[]));
   useEffect(()=>{if(!foreground || locked){action.current?.abort();setChoose(false);}},[foreground,locked]);
   const run=async(work:(signal:AbortSignal)=>Promise<void>)=>{
     if(action.current)return;
@@ -61,11 +65,23 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
   };
   const setup=(distributor:string,rotateKey:boolean=rotate)=>{
     setChoose(false);
-    void run(async signal=>{
-      if(!pushNative)return;const native=pushNative;
+    if(!pushNative || busy)return;const native=pushNative;
+    // Android's permission dialog takes Winglet out of the foreground, which (by design) cancels a running
+    // setup. So ask for the permission first, on its own, and start the setup proper once the app is back.
+    const permissionStep=async()=>{
+      if(cap?.notificationsAllowed)return true;
+      setBusy(true);setError('');setMessage('');
+      try{
+        currentPairing(server);
+        const permission=await native.requestPermission();
+        await waitForeground();await new Promise(resolve=>setTimeout(resolve,600));
+        if(!permission.granted)throw new Error('Allow Winglet notifications in Android settings, then retry setup.');
+        return true;
+      }catch(e){if(alive.current)setError((e as Error).message);return false;}
+      finally{if(alive.current)setBusy(false);}
+    };
+    void permissionStep().then(ok=>{if(!ok)return;void run(async signal=>{
       currentPairing(server,signal);
-      const permission=await native.requestPermission();await waitForeground(signal);currentPairing(server,signal);
-      if(!permission.granted)throw new Error('Allow Winglet notifications in Android settings, then retry setup.');
       const {public_key}=await api<{public_key:string}>(server,'/api/push/vapid');currentPairing(server,signal);
       await native.prepare(server.id,server.deviceId,distributor,public_key,rotateKey);currentPairing(server,signal);
       if(alive.current)setMessage('Waiting for your push distributor…');
@@ -81,7 +97,7 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
       if(!registered)throw new Error('Still waiting for the distributor. Open ntfy, keep it running and choose Repair delivery.');
       const status=await syncEncryptedPush(server,signal);currentPairing(server,signal);
       if(alive.current){setRemote(status);setMessage('Encrypted delivery registered. A test can check relay acceptance; receipt and display are shown in diagnostics.');}
-    });
+    });});
   };
   const builtIn=cap?.distributors.find(item=>item.id===cap.self);
   const active=!!local?.active && !!remote?.enrolled && local.kid===remote.kid;
