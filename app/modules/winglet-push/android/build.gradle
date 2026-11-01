@@ -8,6 +8,6 @@ android { namespace 'expo.modules.wingletpush'; defaultConfig { versionCode 1; v
 dependencies {
   implementation 'org.unifiedpush.android:connector:3.3.5'
   // Built-in FCM distributor (no Firebase project, no ntfy app). Needs Google Play services on the phone.
-  implementation 'org.unifiedpush.android:embedded-fcm-distributor:3.1.0'
+  implementation 'org.unifiedpush.android:embedded-fcm-distributor:3.0.0'
   testImplementation 'junit:junit:4.13.2'
 }
