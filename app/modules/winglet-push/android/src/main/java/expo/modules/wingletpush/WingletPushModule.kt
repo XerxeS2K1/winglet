@@ -62,7 +62,7 @@ class WingletPushModule : Module() {
     OnDestroy{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
     AsyncFunction("capabilities"){
       guard()
-      mapOf("supported" to (Build.VERSION.SDK_INT>=26),"distributors" to UnifiedPush.getDistributors(context).map{pkg ->
+      mapOf("supported" to (Build.VERSION.SDK_INT>=26),"self" to context.packageName,"distributors" to UnifiedPush.getDistributors(context).map{pkg ->
         mapOf("id" to pkg,"name" to runCatching{context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg,0)).toString()}.getOrDefault(pkg))
       },"notificationsAllowed" to (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled())
     }

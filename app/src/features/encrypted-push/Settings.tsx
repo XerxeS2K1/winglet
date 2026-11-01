@@ -9,7 +9,7 @@ import {describeTestPush,sendTestPush} from '../../lib/push';
 import {makeStyles,useTheme} from '../../lib/themeContext';
 import {Sheet} from '../../components/Sheet';
 import {Button,Footnote,ListGroup,ListRow,SectionHeader,Toggle} from '../../components/ui';
-import {currentPairing,pushStatus,syncEncryptedPush} from './api';
+import {currentPairing,pushStatus,syncEncryptedPush,waitForeground} from './api';
 import {pushNative as defaultPushNative,type LocalPushStatus,type PushCapabilities,type PushNative} from './native';
 import type {RemotePushStatus} from './registration';
 
@@ -59,15 +59,15 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     catch(e){if(alive.current)setError((e as Error).message);}
     finally{action.current=null;if(alive.current){setBusy(false);void refresh();}}
   };
-  const setup=(distributor:string)=>{
+  const setup=(distributor:string,rotateKey:boolean=rotate)=>{
     setChoose(false);
     void run(async signal=>{
       if(!pushNative)return;const native=pushNative;
       currentPairing(server,signal);
-      const permission=await native.requestPermission();currentPairing(server,signal);
+      const permission=await native.requestPermission();await waitForeground(signal);currentPairing(server,signal);
       if(!permission.granted)throw new Error('Allow Winglet notifications in Android settings, then retry setup.');
       const {public_key}=await api<{public_key:string}>(server,'/api/push/vapid');currentPairing(server,signal);
-      await native.prepare(server.id,server.deviceId,distributor,public_key,rotate);currentPairing(server,signal);
+      await native.prepare(server.id,server.deviceId,distributor,public_key,rotateKey);currentPairing(server,signal);
       if(alive.current)setMessage('Waiting for your push distributor…');
       let registered=false;
       for(let attempt=0;attempt<24;attempt++){
@@ -83,6 +83,7 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
       if(alive.current){setRemote(status);setMessage('Encrypted delivery registered. A test can check relay acceptance; receipt and display are shown in diagnostics.');}
     });
   };
+  const builtIn=cap?.distributors.find(item=>item.id===cap.self);
   const active=!!local?.active && !!remote?.enrolled && local.kid===remote.kid;
   const needsRepair=!!local?.keyLost || (!!remote?.enrolled && !active) || local?.needsSync;
   const status=needsRepair?'Delivery needs repair':active?'Encrypted notifications on':!supported?'Encrypted delivery unavailable':'Encrypted notifications off';
@@ -90,14 +91,14 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     <SectionHeader title={server.bot.title}/>
     <ListGroup><ListRow title={status} icon={<View style={[s.dot,{backgroundColor:needsRepair?t.colors.warning:active?t.colors.success:t.colors.textTertiary}]} />}/></ListGroup>
     {!supported?<Footnote>{online?'Update this server to enable encrypted delivery.':'Connect to check encrypted delivery support.'}</Footnote>:null}
-    {cap && !cap.distributors.length?<Footnote>Install and open ntfy, enable UnifiedPush, then refresh.</Footnote>:null}
+    {cap && !cap.distributors.length?<Footnote>No push service found. This build needs Google Play services, or install ntfy and enable UnifiedPush.</Footnote>:null}
     {cap && !cap.notificationsAllowed?<Footnote>Allow Winglet notifications in Android settings.</Footnote>:null}
     {needsRepair?<Footnote>Resync this phone and server. There is no plaintext fallback.</Footnote>:null}
     {local?.error && errors[local.error]?<Text style={s.error}>{errors[local.error]}</Text>:null}
     <SectionHeader title="Delivery"/>
     <View style={s.buttons}>
       <Button title={active?'Repair delivery':'Set up encrypted delivery'} loading={busy} disabled={!supported||!online||!cap?.distributors.length||busy}
-        onPress={()=>{setRotate(false);setChoose(true);}}/>
+        onPress={()=>{setRotate(false);if(builtIn)setup(builtIn.id,false);else setChoose(true);}}/>
       {active?<Button title="Send a test" variant="secondary" disabled={!online||busy} onPress={()=>void run(async signal=>{
         currentPairing(server,signal);const result=await sendTestPush(server);currentPairing(server,signal);
         if(alive.current)setMessage(describeTestPush(result)+' Acceptance does not prove receipt or display.');
@@ -114,7 +115,7 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     {local?.kid || remote?.enrolled || local?.keyLost?<>
       <SectionHeader title="Security"/>
       <ListGroup>
-        <ListRow title="Rotate key" disabled={!online||busy||!cap?.distributors.length} onPress={()=>{setRotate(true);setChoose(true);}}/>
+        <ListRow title="Rotate key" disabled={!online||busy||!cap?.distributors.length} onPress={()=>{setRotate(true);if(builtIn)setup(builtIn.id,true);else setChoose(true);}}/>
         <ListRow title="Turn off" destructive disabled={busy} chevron={false} onPress={()=>void run(async signal=>{
           await pushNative?.remove(server.id,server.deviceId);
           try{currentPairing(server,signal);await signedApi(server,'DELETE','/api/push/encrypted');if(alive.current)setMessage('Encrypted notifications are off. Plaintext fallback stays blocked.');}

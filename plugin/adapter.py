@@ -533,6 +533,21 @@ class WingletAdapter(BasePlatformAdapter):
             resolve, ttl=300)
         return SendResult(success=True, message_id=posted["id"] if posted else None)
 
+    async def reauthorize_native_roles(self, source) -> bool:
+        """Hermes (0.22.5+) re-checks a role-authorized source with adapter delegation off. A turn from
+        this app is allowed while its device is still paired; the app's own internal sender is allowed."""
+        user_id = str(getattr(source, "user_id", "") or "")
+        if self._hub is None or not user_id.startswith(USER_PREFIX):
+            return False
+        ident = user_id[len(USER_PREFIX):]
+        if ident == "app":
+            return True
+        try:
+            return self._hub.current_device(ident) is not None
+        except Exception:
+            logger.warning("[%s] couldn't re-check a device's pairing; refusing", self.name, exc_info=True)
+            return False
+
     def toolsets_for_source(self, source) -> Optional[List[str]]:
         """A member's tools, when an owner has limited them, as the list Hermes starts from. Hermes adds
         to it (default-on plugin toolsets, x_search), so toolset_limit caps the result too."""
