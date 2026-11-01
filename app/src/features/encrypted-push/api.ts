@@ -10,7 +10,7 @@ export function currentPairing(server:Server,signal?:AbortSignal){
   const state=useApp.getState();const current=state.servers.find(s=>s.id===server.id);
   if(signal?.aborted || !state.foreground || useLock.getState().locked || !current ||
     current.token!==server.token || current.deviceId!==server.deviceId || current.fingerprint!==server.fingerprint)
-    throw new Error('Push setup paused. Reconnect and unlock Winglet, then retry.');
+    throw new Error(`Push setup paused. Reconnect and unlock Winglet, then retry. (aborted=${!!signal?.aborted} foreground=${state.foreground} locked=${useLock.getState().locked} found=${!!current} token=${current?.token===server.token} device=${current?.deviceId===server.deviceId} fp=${current?.fingerprint===server.fingerprint})`);
 }
 // The Android notification-permission dialog briefly takes Winglet out of the foreground.
 export async function waitForeground(signal?:AbortSignal){

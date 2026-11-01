@@ -18,13 +18,16 @@ import org.unifiedpush.android.connector.UnifiedPush
 class WingletPushModule : Module() {
   @Volatile private var locked=true
   @Volatile private var visible=false
+  // The app's last report (JS state survives an Activity being recreated, e.g. folding/unfolding a Fold).
+  @Volatile private var lastLocked=true
+  @Volatile private var lastForeground=false
   private val context:Context get()=appContext.reactContext ?: throw CodedException("Push setup is unavailable")
   private fun guard(server:String?=null,device:String?=null){
     val activity=appContext.currentActivity
     val resumed=(activity as? LifecycleOwner)?.lifecycle?.currentState?.isAtLeast(Lifecycle.State.RESUMED)==true
-    if(Build.VERSION.SDK_INT<26 || locked || !visible || !resumed || activity==null || activity.isFinishing ||
-      (context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked)
-      throw CodedException("Unlock Winglet in the foreground to configure encrypted push.")
+    val keyguard=(context.getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked
+    if(Build.VERSION.SDK_INT<26 || locked || !visible || !resumed || activity==null || activity.isFinishing || keyguard)
+      throw CodedException("Unlock Winglet in the foreground to configure encrypted push. (locked=$locked visible=$visible resumed=$resumed activity=${activity!=null} finishing=${activity?.isFinishing} keyguard=$keyguard)")
     if(server!=null && device!=null && PushVisibility.allowed?.contains(PushStore.scope(server,device))!=true)
       throw CodedException("This Winglet pairing is no longer active.")
   }
@@ -45,6 +48,7 @@ class WingletPushModule : Module() {
   override fun definition()=ModuleDefinition {
     Name("WingletPush")
     Function("security"){isLocked:Boolean,privatePreviews:Boolean,foreground:Boolean,online:List<String>,pairs:List<Map<String,String>> ->
+      lastLocked=isLocked;lastForeground=foreground
       locked=isLocked;visible=foreground;PushVisibility.locked=isLocked
       PushVisibility.allowed=pairs.map{PushStore.scope(it["server"] ?: "",it["device"] ?: "")}.toSet()
       PushVisibility.online=if(foreground)online.toSet() else emptySet()
@@ -57,11 +61,12 @@ class WingletPushModule : Module() {
           .forEach{manager.cancel(it.tag,it.id)}
       }
     }
+    // Coming back (also after the Activity was recreated) restores what the app last said, instead of staying hidden.
+    OnActivityEntersForeground{locked=lastLocked;visible=lastForeground;PushVisibility.locked=lastLocked}
     OnActivityEntersBackground{visible=false;PushVisibility.online=emptySet()}
     OnActivityDestroys{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
     OnDestroy{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
     AsyncFunction("capabilities"){
-      guard()
       mapOf("supported" to (Build.VERSION.SDK_INT>=26),"self" to context.packageName,"distributors" to UnifiedPush.getDistributors(context).map{pkg ->
         mapOf("id" to pkg,"name" to runCatching{context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg,0)).toString()}.getOrDefault(pkg))
       },"notificationsAllowed" to (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled())
