@@ -84,7 +84,7 @@ class WingletPushService : PushService() {
     val generic="Open Winglet to review the latest update."
     val deviceLocked=(getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked
     val details=entry.optBoolean("previews",false) && !deviceLocked && !PushVisibility.locked && !getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("private",true)
-    val path=safePath(note.optString("url"),entry.getString("server"))
+    val path=PushLinks.safePath(note.optString("url"),entry.getString("server"))
     val scheme=if(packageName.endsWith(".dev"))"winglet-dev" else "winglet"
     val intent=Intent(Intent.ACTION_VIEW,Uri.parse(scheme+":"+"/"+path)).setPackage(packageName)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
@@ -97,13 +97,6 @@ class WingletPushService : PushService() {
     val tag=PushStore.hex(java.security.MessageDigest.getInstance("SHA-256").digest(note.optString("tag").toByteArray()))
     manager.notify(instance+":"+tag,1,notification)
     return true
-  }
-  private fun safePath(value: String,server: String): String {
-    val path=Uri.parse(value)
-    if(path.scheme!=null || path.host!=null || path.query!=null || path.fragment!=null)return "/"
-    val parts=path.pathSegments
-    return if(parts.size==3 && parts[0]=="chat" && (parts[1]==server || parts[1].startsWith(server+"~")) &&
-      parts.all{!it.contains('/') && !it.contains('\\') && it!=".." && it!="."}) value else "/"
   }
   override fun onRegistrationFailed(reason: FailedReason,instance: String)=markError(instance,"registration_failed")
   override fun onTempUnavailable(instance: String)=markError(instance,"distributor_unavailable")
