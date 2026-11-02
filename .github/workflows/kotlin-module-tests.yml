@@ -2,6 +2,8 @@ name: Push module unit tests
 # Fork-only helper (not for upstream): runs the winglet-push Kotlin unit tests, which no upstream workflow runs.
 on:
   workflow_dispatch:
+  push:
+    branches: [ci/kotlin-module-tests]
 jobs:
   push-module:
     name: winglet-push unit tests
