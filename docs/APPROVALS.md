@@ -76,7 +76,9 @@ Hermes internals to close the gap.
 
 Current Hermes calls `WingletAdapter.send_exec_approval` synchronously from
 `gateway.run_turn_runner.TurnRunner._approval_notify_sync`, then schedules the returned coroutine
-on its gateway loop. Its `approval_data` contains the request ID, but the adapter arguments omit it.
+on its gateway loop. Hermes 0.22.5 moved the adapter call into `_render_approval_sync`, which
+`_approval_notify_sync` delegates to; Winglet accepts either function name as the immediate notifier
+frame (`_NOTIFIER_FRAMES` in `plugin/bridge.py`). Its `approval_data` contains the request ID, but the adapter arguments omit it.
 
 Winglet's synchronous wrapper reads the immediate notifier frame at that call. It accepts the ID
 only when the module/function, notifier context, adapter instance, chat, and session agree. It
