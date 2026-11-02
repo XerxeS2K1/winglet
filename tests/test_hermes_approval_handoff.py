@@ -64,12 +64,16 @@ async def test_actual_hermes_notifier_and_base_prompt_handoff(adapter, monkeypat
     notifier = ModuleType("gateway.run_turn_runner")
     notifier.__dict__.update(logger=logging.getLogger(__name__), ea_default_reason_text=lambda: "Approval needed",
                              _renders_exec_approval_buttons=lambda cls: True, _ExecApprovalDeclined=RuntimeError)
-    execute(source_nodes(root, "gateway/run_turn_runner.py", "TurnRunner", {"_approval_notify_sync"}), notifier)
+    execute(source_nodes(root, "gateway/run_turn_runner.py", "TurnRunner", {"_approval_notify_sync", "_render_approval_sync"}), notifier)
     loop = asyncio.get_running_loop()
     runner = SimpleNamespace(_ctx=SimpleNamespace(_status_adapter=adapter, _status_chat_id="general",
                                                   session_key="s1", _status_thread_metadata={"thread_id": "t1"}),
                              _close_native_stream_boundary=lambda *args: None,
-                             _schedule=lambda coroutine, *args: asyncio.run_coroutine_threadsafe(coroutine, loop))
+                             _schedule=lambda coroutine, *args: asyncio.run_coroutine_threadsafe(coroutine, loop),
+                             _approval_owner=None)
+    # Newer Hermes (0.22.5) delegates to a separate render method; bind it when the source has one.
+    if hasattr(notifier, "_render_approval_sync"):
+        runner._render_approval_sync = lambda data: notifier._render_approval_sync(runner, data)
     monkeypatch.setattr(bridge, "queued_approvals", lambda session:
                         [{"request_id": "a", "command": "echo secret"}, {"request_id": "b", "command": "echo secret"}])
 
