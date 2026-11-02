@@ -12,6 +12,10 @@ export function currentPairing(server:Server,signal?:AbortSignal){
     current.token!==server.token || current.deviceId!==server.deviceId || current.fingerprint!==server.fingerprint)
     throw new Error('Push setup paused. Reconnect and unlock Winglet, then retry.');
 }
+// The Android notification-permission dialog briefly takes Winglet out of the foreground.
+export async function waitForeground(signal?:AbortSignal){
+  for(let i=0;i<40 && !signal?.aborted && !useApp.getState().foreground;i++)await new Promise(r=>setTimeout(r,250));
+}
 export async function syncEncryptedPush(server:Server,signal?:AbortSignal){
   if(!pushNative || !server.fingerprint || server.parent)throw new Error('Verify this pairing in the current Android app before setting up encrypted push.');
   const native=pushNative;
