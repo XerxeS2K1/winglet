@@ -98,10 +98,9 @@ class WingletPushService : PushService() {
     manager.notify(instance+":"+tag,1,notification)
     return true
   }
-  /** Winglet mark: white glyph for the status bar, accent colour, and the full logo beside the text. Same for every notification, so it reveals nothing. */
+  /** Winglet mark: white glyph for the status bar plus the accent colour. Same for every notification, so it reveals nothing. */
   private fun brand(builder: Notification.Builder): Notification.Builder {
     builder.setSmallIcon(R.drawable.ic_stat_winglet).setColor(0xFF5B4BD6.toInt())
-    runCatching{android.graphics.BitmapFactory.decodeResource(resources,R.drawable.ic_notification_logo)}.getOrNull()?.let{builder.setLargeIcon(it)}
     return builder
   }
   override fun onRegistrationFailed(reason: FailedReason,instance: String)=markError(instance,"registration_failed")
