@@ -40,3 +40,6 @@ phone's push address, the sender's IP address, timing, message size and urgency,
 sees them when it is the distributor. It relies on an internal Google Play services interface that is not
 a documented public API, so it may need updating when Google changes it, and it is unavailable on phones
 without Google Play services. The ntfy/UnifiedPush path is unchanged and remains the default.
+In Quick Tunnel mode, Android address recovery still publishes encrypted announcements through ntfy, so the
+built-in option removes the need for the ntfy app, not for ntfy.sh. It was only tested with a permanent
+connection (direct mode), not Quick Tunnel.
