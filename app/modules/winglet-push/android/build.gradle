@@ -7,5 +7,10 @@ version = '1.0.0'
 android { namespace 'expo.modules.wingletpush'; defaultConfig { versionCode 1; versionName '1.0.0' } }
 dependencies {
   implementation 'org.unifiedpush.android:connector:3.3.5'
+  // Built-in FCM distributor (no Firebase project, no ntfy app). Needs Google Play services on the phone.
+  // Its source (UnifiedPush embedded_fcm_distributor 3.1.0, LGPL-2.1) is vendored under src/main/java/org/unifiedpush:
+  // the 3.0.0 release's old token request is ignored by current Google Play services, and the 3.1.0 binary needs Kotlin 2.3.
+  implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0'
+  implementation 'androidx.annotation:annotation:1.9.1'
   testImplementation 'junit:junit:4.13.2'
 }

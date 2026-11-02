@@ -32,3 +32,11 @@ token, then verifies the paired device. Revocation removes the device's discover
 ntfy learns topic/timing/IP metadata and can interfere with availability, but receives neither
 discovery keys nor plaintext addresses/tokens. All downloaded tunnel binaries are version-pinned
 and checked against official release SHA-256 digests before execution.
+
+Optional built-in Android delivery (off unless the owner picks it) registers with Google Play services and
+receives the same sealed Web Push messages through Google's Web Push host. The message itself stays
+encrypted end to end, so Google cannot read titles, bodies, links or approval details. Google can see this
+phone's push address, the sender's IP address, timing, message size and urgency, in the same way ntfy
+sees them when it is the distributor. It relies on an internal Google Play services interface that is not
+a documented public API, so it may need updating when Google changes it, and it is unavailable on phones
+without Google Play services. The ntfy/UnifiedPush path is unchanged and remains the default.

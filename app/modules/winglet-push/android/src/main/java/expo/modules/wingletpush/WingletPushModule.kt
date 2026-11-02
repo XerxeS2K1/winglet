@@ -68,8 +68,12 @@ class WingletPushModule : Module() {
     OnDestroy{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
     AsyncFunction("capabilities"){
       guard()
-      mapOf("supported" to (Build.VERSION.SDK_INT>=26),"distributors" to UnifiedPush.getDistributors(context).map{pkg ->
-        mapOf("id" to pkg,"name" to runCatching{context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg,0)).toString()}.getOrDefault(pkg))
+      // The built-in distributor is this app itself. It is only offered when Google Play services is installed,
+      // is always listed after other distributors, and is never chosen automatically.
+      val self=context.packageName
+      val hasPlayServices=runCatching{context.packageManager.getPackageInfo("com.google.android.gms",0)}.isSuccess
+      mapOf("supported" to (Build.VERSION.SDK_INT>=26),"self" to self,"distributors" to UnifiedPush.getDistributors(context).filter{it!=self || hasPlayServices}.map{pkg ->
+        mapOf("id" to pkg,"name" to if(pkg==self) "Built-in (Google Play services)" else runCatching{context.packageManager.getApplicationLabel(context.packageManager.getApplicationInfo(pkg,0)).toString()}.getOrDefault(pkg))
       },"notificationsAllowed" to (context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).areNotificationsEnabled())
     }
     AsyncFunction("requestPermission"){promise:Promise ->
@@ -80,7 +84,7 @@ class WingletPushModule : Module() {
     AsyncFunction("status"){server:String,device:String -> guard(server,device);synchronized(PushStore.mutex){status(PushStore.scope(server,device))}}
     AsyncFunction("prepare"){server:String,device:String,distributor:String,vapid:String,rotate:Boolean ->
       guard(server,device)
-      if(distributor !in UnifiedPush.getDistributors(context))throw CodedException("Install or choose an available UnifiedPush distributor, such as ntfy.")
+      if(distributor !in UnifiedPush.getDistributors(context))throw CodedException("Install or choose an available UnifiedPush distributor, such as ntfy or the built-in option.")
       synchronized(PushStore.mutex){
         val (scope,entry)=PushStore.prepare(context,server,device,rotate)
         entry.put("registrationPending",true).put("error","")

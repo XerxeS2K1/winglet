@@ -87,6 +87,8 @@ works too. See the [remote access guide](REMOTE_ACCESS.md) for setup and trouble
   end-to-end encrypted with keys that live on your server.
 - **Android:** Settings → Notifications → *Set up notifications*, then subscribe in the free
   [ntfy](https://ntfy.sh) app. ntfy only ever sees "Hermes needs you", never the details.
+  On phones with Google Play services you can instead pick *Built-in (Google Play services)* in the same
+  list, which needs no second app. It is never chosen for you. See SECURITY.md for what Google can see.
 
 Upgrading from an installation that shared one Android notification topic between phones?
 Winglet retires that topic automatically to stop revoked phones from receiving notifications.

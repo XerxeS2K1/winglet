@@ -15,8 +15,8 @@ replacing that key with a code alone.
 
 Browser Web Push subscriptions are limited to Google FCM, Mozilla, Apple and Windows push service
 hosts over HTTPS on the default port. Previously stored browser subscriptions to other hosts are
-dropped when delivery is attempted. Encrypted Android push continues to use the server's configured
-ntfy relay.
+dropped when delivery is attempted. Encrypted Android push uses the server's configured
+ntfy relay, or Google's Web Push host if the owner chose the optional built-in delivery on the phone.
 
 ## Smart guardian decisions
 
