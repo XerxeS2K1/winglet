@@ -89,14 +89,20 @@ class WingletPushService : PushService() {
     val intent=Intent(Intent.ACTION_VIEW,Uri.parse(scheme+":"+"/"+path)).setPackage(packageName)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     val pending=PendingIntent.getActivity(this,0,intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-    val public=Notification.Builder(this,channel).setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Winglet").setContentText(generic).build()
-    val notification=Notification.Builder(this,channel).setSmallIcon(android.R.drawable.ic_dialog_info)
+    val public=brand(Notification.Builder(this,channel)).setContentTitle("Winglet").setContentText(generic).build()
+    val notification=brand(Notification.Builder(this,channel))
       .setContentTitle(if(details)note.optString("title").take(120) else "Winglet")
       .setContentText(if(details)note.optString("body").take(400) else generic)
       .setContentIntent(pending).setAutoCancel(true).setVisibility(if(details)Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE).setPublicVersion(public).build()
     val tag=PushStore.hex(java.security.MessageDigest.getInstance("SHA-256").digest(note.optString("tag").toByteArray()))
     manager.notify(instance+":"+tag,1,notification)
     return true
+  }
+  /** Winglet mark: white glyph for the status bar, accent colour, and the full logo beside the text. Same for every notification, so it reveals nothing. */
+  private fun brand(builder: Notification.Builder): Notification.Builder {
+    builder.setSmallIcon(R.drawable.ic_stat_winglet).setColor(0xFF5B4BD6.toInt())
+    runCatching{android.graphics.BitmapFactory.decodeResource(resources,R.drawable.ic_notification_logo)}.getOrNull()?.let{builder.setLargeIcon(it)}
+    return builder
   }
   override fun onRegistrationFailed(reason: FailedReason,instance: String)=markError(instance,"registration_failed")
   override fun onTempUnavailable(instance: String)=markError(instance,"distributor_unavailable")
