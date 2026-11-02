@@ -89,10 +89,13 @@ def validate_enrollment(data: dict, relay_origin: str) -> dict:
         same_origin = (parts.hostname, 443 if parts.port is None else parts.port) == (configured.hostname, 443 if configured.port is None else configured.port)
     except ValueError:
         same_origin = False
-    if (parts.scheme != 'https' or configured.scheme != 'https' or not same_origin or not parts.hostname
+    # The phone's built-in FCM distributor registers endpoints on Google's Web Push host (https only, no
+    # credentials); the operator's configured relay (ntfy) stays accepted too.
+    fcm = parts.scheme == 'https' and parts.hostname == 'fcm.googleapis.com' and (parts.port in (None, 443))
+    if (parts.scheme != 'https' or not (fcm or (configured.scheme == 'https' and same_origin)) or not parts.hostname
             or parts.username or parts.password or parts.fragment or not parts.path or parts.path == '/'
             or any(c.isspace() or ord(c)<32 for c in endpoint)):
-        raise ValueError('Use an ntfy distributor on this server\'s configured HTTPS relay')
+        raise ValueError('Use the built-in Google push or an ntfy distributor on this server\'s configured HTTPS relay')
     keys = sub.get('keys')
     if not isinstance(keys, dict):
         raise ValueError('The distributor must support encrypted Web Push')

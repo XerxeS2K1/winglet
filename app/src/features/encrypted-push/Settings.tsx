@@ -15,11 +15,11 @@ import type {RemotePushStatus} from './registration';
 
 const errors:Record<string,string>={
   key_lost:'The device key is unavailable. Rotate the key to repair delivery.',
-  registration_failed:'The distributor could not register Winglet. Open ntfy and retry.',
-  distributor_unavailable:'The push distributor is temporarily unavailable. Open ntfy, check its network and retry.',
+  registration_failed:'The distributor could not register Winglet. Open your push app (for example ntfy) if you use one, then retry.',
+  distributor_unavailable:'The push service is temporarily unavailable. Check your network (and your push app, if you use one) and retry.',
   unregistered:'The distributor removed this registration. Repair delivery to register again.',
   notifications_blocked:'Android blocked display. Allow Winglet notifications in Android settings.',
-  unsupported_endpoint:'Use an ntfy distributor that supports encrypted Web Push.',
+  unsupported_endpoint:'Use a push service that supports encrypted Web Push, such as ntfy or the built-in option.',
   invalid_or_unavailable_key:'A payload could not be verified. If delivery keeps failing, rotate the key.',
   transport_decryption_failed:'The distributor could not decrypt the transport payload. Repair delivery to resync its endpoint.',
   oversized_payload:'An oversized payload was refused. Update the server before testing again.',
@@ -90,11 +90,11 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
         currentPairing(server,signal);
         const state=await native.status(server.id,server.deviceId);currentPairing(server,signal);
         if(state.error && ['registration_failed','distributor_unavailable','unregistered','unsupported_endpoint','key_lost'].includes(state.error))
-          throw new Error(errors[state.error] ?? 'The distributor could not register. Open ntfy and retry.');
+          throw new Error(errors[state.error] ?? 'The distributor could not register. Open your push app (for example ntfy) if you use one, then retry.');
         if(state.registered){registered=true;break;}
         await new Promise(resolve=>setTimeout(resolve,750));
       }
-      if(!registered)throw new Error('Still waiting for the distributor. Open ntfy, keep it running and choose Repair delivery.');
+      if(!registered)throw new Error('Still waiting for the push service. Keep your push app (for example ntfy) running if you use one, then choose Repair delivery.');
       const status=await syncEncryptedPush(server,signal);currentPairing(server,signal);
       if(alive.current){setRemote(status);setMessage('Encrypted delivery registered. A test can check relay acceptance; receipt and display are shown in diagnostics.');}
     });});
@@ -106,7 +106,7 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     <SectionHeader title={server.bot.title}/>
     <ListGroup><ListRow title={status} icon={<View style={[s.dot,{backgroundColor:needsRepair?t.colors.warning:active?t.colors.success:t.colors.textTertiary}]} />}/></ListGroup>
     {!supported?<Footnote>{online?'Update this server to enable encrypted delivery.':'Connect to check encrypted delivery support.'}</Footnote>:null}
-    {cap && !cap.distributors.length?<Footnote>Install and open ntfy, enable UnifiedPush, then refresh.</Footnote>:null}
+    {cap && !cap.distributors.length?<Footnote>No push service found. Install and open ntfy and enable UnifiedPush, or use a phone with Google Play services for the built-in option.</Footnote>:null}
     {cap && !cap.notificationsAllowed?<Footnote>Allow Winglet notifications in Android settings.</Footnote>:null}
     {needsRepair?<Footnote>Resync this phone and server. There is no plaintext fallback.</Footnote>:null}
     {local?.error && errors[local.error]?<Text style={s.error}>{errors[local.error]}</Text>:null}
@@ -141,7 +141,8 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     {message?<Text style={s.note} accessibilityLiveRegion="polite">{message}</Text>:null}
     {error?<Text style={s.error} accessibilityLiveRegion="polite">{error}</Text>:null}
     <Sheet visible={choose} onClose={()=>setChoose(false)} title={rotate?'Rotate key':'Push distributor'}>
-      <ListGroup>{cap?.distributors.map(item=><ListRow key={item.id} title={item.name} value={item.id} onPress={()=>setup(item.id)}/>)}</ListGroup>
+      <ListGroup>{[...(cap?.distributors ?? [])].sort((x,y)=>Number(x.id===cap?.self)-Number(y.id===cap?.self)).map(item=><ListRow key={item.id} title={item.name} value={item.id===cap?.self?undefined:item.id} onPress={()=>setup(item.id)}/>)}</ListGroup>
+      {cap?.self && cap.distributors.some(item=>item.id===cap.self)?<Footnote>Built-in delivery uses Google Play services and needs no other app. Message content stays encrypted; Google can see timing, size and this phone's push address. Choose ntfy or another UnifiedPush app if you prefer not to involve Google.</Footnote>:null}
       <Footnote>{rotate?'The old local key retires immediately; delivery resumes after server confirmation.':'Only encrypted payloads pass through this distributor, never your credentials or delivery key.'}</Footnote>
     </Sheet>
     <Sheet visible={diagnostics} onClose={()=>setDiagnostics(false)} title="Delivery details" scrollable>
@@ -155,9 +156,9 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
         <ListRow title="Suppressed while connected in Winglet" value={when(local?.suppressed)}/>
       </ListGroup>
       <Footnote>Android may still hide a requested notification due to Focus, lock-screen or battery settings.</Footnote>
-      <Footnote>Open ntfy to check connectivity and allow Winglet's notification channel before testing.</Footnote>
+      <Footnote>If you use a push app such as ntfy, open it to check connectivity, and allow Winglet's notification channel before testing.</Footnote>
       <Footnote>Content stays encrypted; relay addresses, timing and payload sizes remain visible to the relay.</Footnote>
-      <Footnote>Use the HTTPS ntfy relay configured on this server.</Footnote>
+      <Footnote>Use the built-in option, or the HTTPS ntfy relay configured on this server.</Footnote>
     </Sheet>
   </>;
 }

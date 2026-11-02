@@ -97,6 +97,18 @@ def test_enrollment_cannot_post_to_unconfigured_targets(endpoint):
     with pytest.raises(ValueError):push.validate_enrollment(enrollment(endpoint=endpoint),'https://ntfy.sh')
 
 
+@pytest.mark.parametrize('endpoint',['https://fcm.googleapis.com/wp/abc123','https://fcm.googleapis.com:443/fcm/send/abc123'])
+def test_enrollment_accepts_the_built_in_fcm_distributor(endpoint):
+    assert push.validate_enrollment(enrollment(endpoint=endpoint),'https://ntfy.sh')['subscription']['endpoint']==endpoint
+
+
+@pytest.mark.parametrize('endpoint',['http://fcm.googleapis.com/wp/abc','https://fcm.googleapis.com.evil.example/wp/abc',
+    'https://evilfcm.googleapis.com/wp/abc','https://fcm.googleapis.com:8443/wp/abc','https://user:pass@fcm.googleapis.com/wp/abc',
+    'https://fcm.googleapis.com/','https://fcm.googleapis.com/wp/abc#frag'])
+def test_enrollment_rejects_lookalike_fcm_targets(endpoint):
+    with pytest.raises(ValueError):push.validate_enrollment(enrollment(endpoint=endpoint),'https://ntfy.sh')
+
+
 async def test_http_requires_current_signature_sealing_scope_and_blocks_old_plaintext(tmp_path,aiohttp_client):
     store=Store(tmp_path/'api.db');hub=Hub(store,web_root=tmp_path/'web')
     client=await aiohttp_client(hub.build_app());phone=await pair_phone(client,hub)

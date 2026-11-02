@@ -3897,7 +3897,7 @@ class Hub:
             data = self.keys.unseal_json(str(body.get("sealed") or ""), "push-key", device["id"])
             encrypted_push.enroll(self.store, device["id"], data, self.ntfy_server)
         except (keys.SealError, ValueError, TypeError, KeyError):
-            return _error(400, "Could not register encrypted push. Use a fresh key and this server's configured HTTPS ntfy distributor.")
+            return _error(400, "Could not register encrypted push. Use a fresh key and the built-in Google push or this server's configured HTTPS ntfy distributor.")
         self.audit("push.enroll", device, "Encrypted notification key and delivery endpoint registered")
         return _json(encrypted_push.status(self.store, device["id"], self._delivered))
 
