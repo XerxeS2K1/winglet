@@ -80,6 +80,43 @@ class TurnRunner:
     return module.TurnRunner
 
 
+@pytest.fixture
+def split_notifier():
+    # Hermes 0.22.5 shape: the notifier delegates to _render_approval_sync, which calls the adapter.
+    module = ModuleType("gateway.run_turn_runner")
+    module.namespace = SimpleNamespace
+    exec("""
+class TurnRunner:
+    def __init__(self, adapter, session_key="s1", chat_id="general"):
+        self._ctx = namespace(_status_adapter=adapter, session_key=session_key, _status_chat_id=chat_id)
+
+    def _approval_notify_sync(self, approval_data):
+        return self._render_approval_sync(approval_data)
+
+    def _render_approval_sync(self, approval_data):
+        ctx = self._ctx
+        adapter = ctx._status_adapter
+        return adapter.send_exec_approval(
+            chat_id=ctx._status_chat_id, command=approval_data["command"], session_key=ctx.session_key,
+            metadata=None)
+""", module.__dict__)
+    return module.TurnRunner
+
+
+async def test_identity_is_captured_from_the_split_render_call_site(adapter, split_notifier, monkeypatch):
+    monkeypatch.setattr(bridge, "queued_approvals", lambda session: [{"request_id": "a", "command": "ls"}])
+    result = await split_notifier(adapter)._approval_notify_sync({"request_id": "a", "command": "ls"})
+    assert result.success
+    assert adapter._hub.store.pending_items("approval")[0]["payload"]["request_id"] == "a"
+
+
+async def test_split_render_call_site_from_another_module_cannot_supply_identity(adapter, split_notifier, monkeypatch):
+    monkeypatch.setattr(bridge, "queued_approvals", lambda session: [{"request_id": "a", "command": "ls"}])
+    monkeypatch.setitem(split_notifier._render_approval_sync.__globals__, "__name__", "other.gateway")
+    assert not (await split_notifier(adapter)._approval_notify_sync({"request_id": "a", "command": "ls"})).success
+    assert adapter._hub.store.pending_count() == 0
+
+
 def prompt(**overrides):
     values = {"chat_id": "general", "session_key": "s1", "command": "ls", "description": "Inspect",
               "metadata": {}, "actions": [("Allow once", "once", "primary"), ("Deny", "deny", "danger")],

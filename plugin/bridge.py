@@ -15,11 +15,16 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 logger = logging.getLogger(__name__)
 
 
+# Hermes' synchronous call sites for the approval prompt. Older builds call the adapter straight
+# from the notifier; newer builds (0.22.5) split rendering into ``_render_approval_sync``.
+_NOTIFIER_FRAMES = frozenset({"_approval_notify_sync", "_render_approval_sync"})
+
+
 def notified_request_id(adapter: Any, chat_id: str, session_key: str) -> Optional[str]:
     """Capture identity at Hermes' synchronous adapter call, before crossing to the loop.
 
     Current Hermes has the ID in ``approval_data`` but omits it from the adapter arguments.
-    Only its immediate, known notifier frame for this adapter/chat/session is accepted. A changed
+    Only its immediate, known notifier frame (see ``_NOTIFIER_FRAMES``) for this adapter/chat/session is accepted. A changed
     call path returns None and uses typed approval; we never search the stack or infer from a queue.
     This helper must be called directly by the synchronous ``send_exec_approval`` wrapper.
     """
@@ -27,7 +32,7 @@ def notified_request_id(adapter: Any, chat_id: str, session_key: str) -> Optiona
     try:
         caller = sys._getframe(2)
         if (caller.f_globals.get("__name__") != "gateway.run_turn_runner"
-                or caller.f_code.co_name != "_approval_notify_sync"):
+                or caller.f_code.co_name not in _NOTIFIER_FRAMES):
             return None
         ctx = caller.f_locals.get("ctx")
         if (ctx is None or getattr(caller.f_locals.get("self"), "_ctx", None) is not ctx
