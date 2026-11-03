@@ -8,6 +8,13 @@ the release's versionCode, and the app's update check downloads the one that fit
 The tag sets the app version: `v0.1.1` becomes version `0.1.1`, Android versionCode
 `101` (major × 10000 + minor × 100 + patch), so every release installs as an update over the last.
 
+The release workflow checks both APKs' package name, versionName and versionCode,
+and requires the production signing certificate used by v0.9.0. Its public SHA-256
+fingerprint is `bd45603350eb7873f0b3034c57762375689822b8cfa3b9aa5ea2965ad36bb86e`.
+Changing a signing secret alone must not silently publish APKs that existing users
+cannot install as updates. Any planned key rotation needs a separate upgrade plan
+and an intentional update to that check.
+
 ## One-time setup: your signing key
 
 Android only installs an update if it's signed with the same key as the version already installed,
@@ -38,6 +45,11 @@ and the key proves the APK came from you. CI refuses to publish a release withou
    | `ANDROID_KEY_PASSWORD` | the key password |
 
 ## Cutting a release
+
+Promotion PRs to `main` run the Release workflow as validation checks, building
+the APKs and plugin without publishing. Internal PRs require the production
+signing key; fork PRs can build with a debug key. Merge only after these checks
+and CI pass. The tag below performs the final build and publication.
 
 ```bash
 git tag v0.1.1

@@ -1520,6 +1520,8 @@ async def mcp_servers() -> List[dict]:
 async def save_custom_mcp(name: str, config: dict, secrets: dict, edit: bool) -> None:
     """Persist only Winglet-created entries, without executing their command."""
     import asyncio as _asyncio
+    if config.get("auth") == "oauth":
+        raise HermesRefused("Configure custom OAuth servers through Hermes instead.")
     catalog = await mcp_catalog()
     if not edit and any(e.get("name", "").casefold() == name.casefold() for e in catalog["entries"]):
         raise HermesRefused("That name belongs to a catalog server.")
@@ -1533,6 +1535,10 @@ async def save_custom_mcp(name: str, config: dict, secrets: dict, edit: bool) ->
         except Exception as exc:
             raise HermesUnavailable("Custom MCP configuration unavailable") from exc
         with config_write_scope(_BOT.get() or None):
+            # Do not reuse a name while an earlier Winglet sign-in can still write
+            # its configuration or credentials back. Conservatively span profiles.
+            if any(flow.server_name == name and not flow.worker_done for flow in _sign_ins.values()):
+                raise HermesRefused("A sign-in for this name is still running. Wait for it to finish or use a different name.")
             configured = _get_mcp_servers()
             servers, plugins = server_configs_with_sources(configured)
             matches = [n for n in servers if n.casefold() == name.casefold()]
@@ -1540,6 +1546,8 @@ async def save_custom_mcp(name: str, config: dict, secrets: dict, edit: bool) ->
             if edit:
                 if plugins.get(name) or not isinstance(current, dict) or current.get("winglet_custom") is not True:
                     raise HermesRefused("Only custom servers can be edited.")
+                if current.get("auth") == "oauth":
+                    raise HermesRefused("Manage this custom OAuth server through Hermes instead.")
                 # Until the OAuth token store can be invalidated safely, don't let an
                 # existing server name be repointed or change its transport.
                 if bool(current.get("url")) != (config["transport"] == "http") or (
@@ -1547,7 +1555,7 @@ async def save_custom_mcp(name: str, config: dict, secrets: dict, edit: bool) ->
                     raise HermesRefused("The server address cannot be changed; use a new server name.")
             elif matches:
                 raise HermesRefused("A server with that name already exists.")
-            elif config["transport"] == "http" and config["auth"] == "oauth":
+            elif config["transport"] == "http":
                 # Hermes keeps OAuth tokens by server name and removing a server leaves them behind, so a new
                 # server reusing the name would be sent the old server's sign-in.
                 try:
@@ -1560,9 +1568,7 @@ async def save_custom_mcp(name: str, config: dict, secrets: dict, edit: bool) ->
             result = {"winglet_custom": True, "enabled": current.get("enabled", True) if edit else True}
             if config["transport"] == "http":
                 result.update(url=config["url"], strict_redirect_headers=True)
-                if config["auth"] == "oauth":
-                    result["auth"] = "oauth"
-                elif config["auth"] == "header":
+                if config["auth"] == "header":
                     headers = secrets.get("headers")
                     if headers is None and edit and current.get("url"):
                         headers = current.get("headers")
@@ -1669,6 +1675,8 @@ async def start_mcp_sign_in(name: str, callback_url: str) -> dict:
     if plugins.get(name):
         raise HermesRefused(f"{name} comes with the {plugins[name]} plugin and signs in there.")
     cfg = dict(servers[name])
+    if cfg.get("winglet_custom") is True:
+        raise HermesRefused("Configure custom OAuth sign-in through Hermes instead.")
     if not cfg.get("url"):
         raise HermesRefused("This server runs on the server itself and uses keys, not a sign-in.")
     if cfg.get("headers") and cfg.get("auth") != "oauth":

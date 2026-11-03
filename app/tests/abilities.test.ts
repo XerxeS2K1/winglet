@@ -48,6 +48,7 @@ test('required keys and sign-in', () => {
   assert.deepEqual([...exports.missingEnv(entry, { A: '  ' })], ['A']);
   assert.deepEqual([...exports.missingEnv(entry, { A: 'x' })], []);
   assert.ok(exports.signsIn({ transport: 'http', auth: 'oauth', source: 'config' }));
+  assert.ok(!exports.signsIn({ transport: 'http', auth: 'oauth', source: 'config', custom: true }));
   assert.ok(!exports.signsIn({ transport: 'http', auth: 'oauth', source: 'plugin' }));
   assert.ok(!exports.signsIn({ transport: 'stdio', auth: null, source: 'config' }));
 });

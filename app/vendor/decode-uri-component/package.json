@@ -1,0 +1,8 @@
+{
+  "name": "decode-uri-component",
+  "version": "0.5.1-winglet.1",
+  "description": "CommonJS compatibility build of decode-uri-component 0.5.1 for Expo SDK 57",
+  "main": "index.js",
+  "license": "MIT",
+  "private": true
+}

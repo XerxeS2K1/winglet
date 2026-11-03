@@ -63,8 +63,8 @@ export function missingEnv(entry: Pick<McpCatalogEntry, 'required_env'>, values:
 }
 
 /** A server that signs in on a web page (OAuth) rather than with a key. */
-export function signsIn(s: Pick<McpServer, 'transport' | 'auth' | 'source'>): boolean {
-  return s.source !== 'plugin' && s.transport === 'http' && s.auth === 'oauth';
+export function signsIn(s: Pick<McpServer, 'transport' | 'auth' | 'source'> & { custom?: boolean }): boolean {
+  return !s.custom && s.source !== 'plugin' && s.transport === 'http' && s.auth === 'oauth';
 }
 
 /** The first sentence of a description, short enough for a list row. */

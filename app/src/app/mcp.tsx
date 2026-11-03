@@ -258,7 +258,8 @@ function ServerSheet({ server, item, onClose, onEdit, onChanged }: { server: Ser
           </View>
         ) : null}
 
-        {x.custom ? <Button title="Edit server" variant="secondary" onPress={() => onEdit(x)} /> : null}
+        {x.custom && x.auth === 'oauth' ? <Text style={s.note}>Manage this custom OAuth server through Hermes.</Text> : null}
+        {x.custom && x.auth !== 'oauth' ? <Button title="Edit server" variant="secondary" onPress={() => onEdit(x)} /> : null}
         <Button title="Test connection" variant="secondary" loading={busy === 'test'} disabled={!!busy} onPress={runTest} />
         {signsIn(x) ? <Button title={signIn?.status === 'approved' ? 'Sign in again' : 'Sign in'} loading={busy === 'sign-in'}
           disabled={!!busy} onPress={startSignIn} /> : null}
@@ -281,7 +282,7 @@ function CustomSheet({ server, item, onClose, onSaved }: { server: Server; item:
   const [url, setUrl] = useState('');
   const [command, setCommand] = useState('');
   const [args, setArgs] = useState('');
-  const [auth, setAuth] = useState<'none' | 'header' | 'oauth'>('none');
+  const [auth, setAuth] = useState<'none' | 'header'>('none');
   const [header, setHeader] = useState('');
   const [headerValue, setHeaderValue] = useState('');
   const [env, setEnv] = useState('');
@@ -292,7 +293,7 @@ function CustomSheet({ server, item, onClose, onSaved }: { server: Server; item:
     setLast(item); setName(item === 'new' ? '' : item.name);
     setTransport(item !== 'new' && item.transport === 'stdio' ? 'stdio' : 'http');
     setUrl(item === 'new' ? '' : item.url ?? ''); setCommand(item === 'new' ? '' : item.command ?? '');
-    setArgs(''); setAuth(item !== 'new' && item.auth === 'oauth' ? 'oauth' : item !== 'new' && item.auth === 'header' ? 'header' : 'none');
+    setArgs(''); setAuth(item !== 'new' && item.auth === 'header' ? 'header' : 'none');
     setHeader(''); setHeaderValue(''); setEnv(''); setReview(false); setError('');
   }
   if (!last) return null;
@@ -326,7 +327,7 @@ function CustomSheet({ server, item, onClose, onSaved }: { server: Server; item:
     } catch (e) { setError((e as Error).message); haptic.error(); } finally { setBusy(false); }
   };
   return (
-    <Sheet visible={!!item} onClose={onClose} title={review ? 'Confirm server command' : editing ? 'Edit custom server' : 'Add your own server'}>
+    <Sheet visible={!!item} onClose={onClose} scrollable title={review ? 'Confirm server command' : editing ? 'Edit custom server' : 'Add your own server'}>
       <View style={{ gap: 14, paddingHorizontal: 4 }}>
         {review ? <>
           <Text style={s.description}>This program runs on your server. Check the exact executable and arguments before confirming.</Text>
@@ -344,11 +345,11 @@ function CustomSheet({ server, item, onClose, onSaved }: { server: Server; item:
             <Text style={s.note}>HTTPS is required except for loopback or private LAN addresses. HTTP traffic, including keys, is not encrypted.</Text>
             <Text style={s.note}>Sign-in method</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              {(['none', 'header', 'oauth'] as const).map((a) => <Button key={a} title={a === 'none' ? 'None' : a === 'header' ? 'Header key' : 'OAuth'} variant={auth === a ? 'primary' : 'secondary'} onPress={() => setAuth(a)} />)}
+              {(['none', 'header'] as const).map((a) => <Button key={a} title={a === 'none' ? 'None' : 'Header key'} variant={auth === a ? 'primary' : 'secondary'} onPress={() => setAuth(a)} />)}
             </View>
             {auth === 'header' ? <><Field label="Header name" value={header} onChangeText={setHeader} autoCapitalize="none" />
               <Field label="Header value" value={headerValue} onChangeText={setHeaderValue} secureTextEntry autoCapitalize="none" hint={editing ? 'Leave both fields blank to keep the existing header.' : undefined} /></> : null}
-            {auth === 'oauth' ? <Text style={s.note}>After saving, open the server and choose Sign in.</Text> : null}
+            <Text style={s.note}>For a custom server that needs OAuth, configure it through Hermes.</Text>
           </> : <>
             <Field label="Command" value={command} onChangeText={setCommand} autoCapitalize="none" autoCorrect={false} />
             <Field label="Arguments" value={args} onChangeText={setArgs} multiline autoCapitalize="none" hint={editing ? 'One argument per line. Re-enter all arguments; they are not returned by the server.' : 'One argument per line. Do not put secrets here.'} />

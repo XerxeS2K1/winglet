@@ -1,10 +1,12 @@
 name: Release
 
 # Push a tag like v0.1.0 to build the Android APK and the plugin bundle and attach them to a
-# GitHub Release. Can also be run by hand from the Actions tab (artifacts only, no release).
+# GitHub Release. PRs to main and manual runs build validation artifacts without publishing.
 on:
   push:
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -44,6 +46,7 @@ jobs:
     timeout-minutes: 60
     env:
       HAS_SIGNING_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      IS_INTERNAL_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v4
       - name: Work out the version
@@ -55,6 +58,9 @@ jobs:
             LABEL="$VERSION"
           else
             VERSION="$(node -p "require('./app/app.json').expo.version")"
+            if [ "$IS_INTERNAL_PR" = "true" ] && [ "$HAS_SIGNING_KEY" != "true" ]; then
+              echo "::error::Promotion PRs require the production signing key"; exit 1
+            fi
             LABEL="dev-${GITHUB_SHA::7}"
             [ "$HAS_SIGNING_KEY" = "true" ] || LABEL="${LABEL}-debugkey"
           fi
@@ -92,6 +98,10 @@ jobs:
       - name: Check the signatures
         run: |
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
+          AAPT="${APKSIGNER%apksigner}aapt"
+          # Public certificate from v0.9.0. A different key would break installed-app upgrades.
+          EXPECTED_CERT="bd45603350eb7873f0b3034c57762375689822b8cfa3b9aa5ea2965ad36bb86e"
+          EXPECTED_CODE="$(node -e 'const [a,b,c]=process.env.WINGLET_VERSION.split("-")[0].split(".").map(Number); console.log(a*10000+b*100+c)')"
           for ABI in arm64-v8a armeabi-v7a; do
             APK="app/android/app/build/outputs/apk/release/app-${ABI}-release.apk"
             [ -f "$APK" ] || { echo "::error::Missing $APK"; ls app/android/app/build/outputs/apk/release; exit 1; }
@@ -99,6 +109,15 @@ jobs:
             if [ "$HAS_SIGNING_KEY" = "true" ] && grep -q "CN=Android Debug" certs.txt; then
               echo "::error::Release APK is signed with the debug key"; exit 1
             fi
+            if [ "$HAS_SIGNING_KEY" = "true" ]; then
+              CERT="$(sed -n 's/.*certificate SHA-256 digest: //p' certs.txt | sort -u)"
+              [ "$CERT" = "$EXPECTED_CERT" ] || { echo "::error::Signing certificate differs from the installed production app"; exit 1; }
+            fi
+            "$AAPT" dump badging "$APK" > badging.txt
+            head -1 badging.txt > package.txt
+            grep -Fq "package: name='io.github.vikasrp24.winglet'" package.txt
+            grep -Fq "versionName='$WINGLET_VERSION'" package.txt
+            grep -Fq "versionCode='$EXPECTED_CODE'" package.txt
           done
       - name: Rename APKs
         run: |

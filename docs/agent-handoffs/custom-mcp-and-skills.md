@@ -1,5 +1,23 @@
 # Custom MCP servers and skill sources
 
+## Release disposition (2026-11-03)
+
+The original handoff below records the implementation's unresolved OAuth blocker.
+The v0.10.0 release review disables custom OAuth creation, editing of legacy custom
+OAuth configurations, and Winglet sign-in for custom entries. The app offers only
+none/header authentication for custom HTTP servers. Existing catalog sign-in stays
+available. Creating a new HTTP entry also refuses a name with cached OAuth tokens,
+regardless of the requested authentication type; an unfinished Winglet sign-in
+blocks custom saves under that name. This does not implement OAuth invalidation.
+Full custom OAuth remains deferred until credential/provider/flow lifecycle is
+serialized and validated. HTTP/header and stdio custom connections can ship.
+
+Regression tests exercise POST/PUT refusal, direct persistence refusal, legacy
+custom sign-in refusal, active-flow/name reuse, retained tokens with none/header,
+and continued sign-in for non-custom entries. See `release-review-v0.10.0.md` for
+final validation and remaining limitations. Historical statements below about
+uncommitted work and absent CI describe the original implementation only.
+
 Status: **BLOCKED — OAuth credential invalidation remains unresolved**. Branch `feat/custom-mcp-and-skills`, worktree `C:\Users\vikas\Documents\winglet-agents\A3-abilities`, base `f30d2f16bf9c5158ca40af567b51a97be6abb0a2`; changes are uncommitted. CI and pinned-Hermes testing have not run.
 
 ## Contract

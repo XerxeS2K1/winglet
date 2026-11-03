@@ -27,8 +27,8 @@ and tap you on the shoulder when they need you.
 </div>
 
 > [!TIP]
-> **New in [v0.9.0](docs/releases/v0.9.0.md):** a cleaner, flat redesign of every screen; switch bots in one tap
-> from the landing; charcoal, graphite or true-black dark mode; and a new Mono accent.
+> **New in [v0.10.0](docs/releases/v0.10.0.md):** Rooms in Projects, clearer Smart approval cards,
+> approval bypass for one chat, custom MCP servers, and links to skill sources.
 
 ## Why Winglet?
 

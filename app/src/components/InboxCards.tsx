@@ -157,7 +157,7 @@ function ApprovalCard({ serverId, item, compact, embedded, bare }: { serverId: s
           <Button title="Cancel" variant="secondary" onPress={() => setConfirmAlways(false)} />
         </View>
       </Sheet>
-      <Sheet visible={confirmBypass} onClose={() => !busy && setConfirmBypass(false)} title="Allow everything in this chat?">
+      <Sheet visible={confirmBypass} onClose={() => !busy && setConfirmBypass(false)} scrollable title="Allow everything in this chat?">
         <View style={{ gap: 14, paddingHorizontal: 4 }}>
           <Text style={s.sheetText}>{`This approves the current request. Future commands in “${chatTitle}” can run without asking until you turn approvals back on or the session ends. To undo this, choose Turn back on in the chat. Commands could change or delete files.`}</Text>
           <View style={s.command}><Text selectable style={s.commandText} numberOfLines={6}>{item.payload.command || item.body}</Text></View>
