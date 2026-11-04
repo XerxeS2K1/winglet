@@ -47,7 +47,8 @@ class WingletPushModule : Module() {
     Function("security"){isLocked:Boolean,privatePreviews:Boolean,foreground:Boolean,online:List<String>,pairs:List<Map<String,String>> ->
       locked=isLocked;visible=foreground;PushVisibility.locked=isLocked
       PushVisibility.allowed=pairs.map{PushStore.scope(it["server"] ?: "",it["device"] ?: "")}.toSet()
-      PushVisibility.online=if(foreground)online.toSet() else emptySet()
+      // Behind the app lock (or before the app is ready) nothing on screen is readable, so nothing counts as open.
+      PushVisibility.online=if(foreground && !isLocked)online.toSet() else emptySet()
       // No user content or credentials, and persisted for cold-start privacy.
       context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).edit().putBoolean("private",privatePreviews).apply()
       if(isLocked || privatePreviews){
