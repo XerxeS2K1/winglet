@@ -94,8 +94,7 @@ class WingletPushService : PushService() {
       .setContentTitle(if(details)note.optString("title").take(120) else "Winglet")
       .setContentText(if(details)note.optString("body").take(400) else generic)
       .setContentIntent(pending).setAutoCancel(true).setVisibility(if(details)Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE).setPublicVersion(public).build()
-    val tag=PushStore.hex(java.security.MessageDigest.getInstance("SHA-256").digest(note.optString("tag").toByteArray()))
-    manager.notify(instance+":"+tag,1,notification)
+    manager.notify(PushStore.noteTag(instance,note.optString("tag")),1,notification)
     return true
   }
   private fun safePath(value: String,server: String): String {

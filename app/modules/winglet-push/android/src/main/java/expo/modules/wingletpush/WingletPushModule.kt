@@ -60,6 +60,14 @@ class WingletPushModule : Module() {
     OnActivityEntersBackground{visible=false;PushVisibility.online=emptySet()}
     OnActivityDestroys{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
     OnDestroy{visible=false;locked=true;PushVisibility.online=emptySet();PushVisibility.locked=true}
+    // Takes down notifications whose cards were handled elsewhere. It only cancels, so it needs no unlock.
+    Function("clear"){server:String,device:String,tags:List<String> ->
+      val scope=PushStore.scope(server,device)
+      if(PushVisibility.allowed?.contains(scope)==true){
+        val manager=context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        tags.filter{it.length<=200}.take(200).forEach{manager.cancel(PushStore.noteTag(scope,it),1)}
+      }
+    }
     AsyncFunction("capabilities"){
       guard()
       mapOf("supported" to (Build.VERSION.SDK_INT>=26),"distributors" to UnifiedPush.getDistributors(context).map{pkg ->
