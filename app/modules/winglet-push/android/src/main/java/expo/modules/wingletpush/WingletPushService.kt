@@ -68,7 +68,7 @@ class WingletPushService : PushService() {
         entry.put("seen",JSONObject(guard.snapshot()));PushStore.mark(entry,"decrypted");entry.put("error","")
         // The durable replay mark is committed before any display side effect.
         PushStore.write(this,instance,entry)
-        if(note.optString("kind")=="message" && entry.getString("server") in PushVisibility.online){PushStore.mark(entry,"suppressed")}
+        if(PushPolicy.skipWhileOpen(note.optString("kind"),entry.getString("server") in PushVisibility.online)){PushStore.mark(entry,"suppressed")}
         else if(show(instance,entry,note)){PushStore.mark(entry,"displayed")}
         else{entry.put("error","notifications_blocked")}
         PushStore.write(this,instance,entry)
