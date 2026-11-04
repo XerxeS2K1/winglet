@@ -9,9 +9,9 @@ import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
 import { Inter_700Bold } from '@expo-google-fonts/inter/700Bold';
 import { Inter_800ExtraBold } from '@expo-google-fonts/inter/800ExtraBold';
 import { useFonts } from 'expo-font';
-import { router, Stack } from 'expo-router';
+import { Stack } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { AppState, Linking, Platform, View } from 'react-native';
+import { AppState, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { UpdatePrompt } from '../components/AppUpdate';
@@ -26,13 +26,11 @@ import { resolveMainBot } from '../lib/bots';
 import { useAppUpdate } from '../lib/appUpdateCheck';
 import { watchNetwork } from '../lib/network';
 import { attachPersistence } from '../lib/persist';
-import { launchPath } from '../lib/launchLink';
 import { usePrefs } from '../lib/prefs';
 import { registerServiceWorker } from '../lib/push';
 import { useApp } from '../lib/store';
 import { ThemeProvider, useTheme } from '../lib/themeContext';
 
-let launchLinkHandled = false;
 
 export default function RootLayout() {
   const [fontsLoaded, fontError] = useFonts({ Inter_400Regular, Inter_500Medium, Inter_600SemiBold, Inter_700Bold, Inter_800ExtraBold });
@@ -56,13 +54,6 @@ export default function RootLayout() {
     setOpened(true);
   }, [ready, prefsLoaded, opened]);
 
-  // The navigator is only mounted once the stored state is read, and a link that started the app (a tapped
-  // notification) is lost by then: the app opened on Home. Open it now the navigator is there, once per start.
-  useEffect(() => {
-    if (!opened || launchLinkHandled) return;
-    launchLinkHandled = true;
-    Linking.getInitialURL().then((url) => { const path = launchPath(url); if (path) router.navigate(path); }).catch(() => {});
-  }, [opened]);
 
   useEffect(() => {
     const detach = attachPersistence();

@@ -6,3 +6,11 @@ export function launchPath(url: string | null | undefined): string | null {
   const m = typeof url === 'string' ? url.match(/^winglet(?:-dev)?:\/\/((?:chat\/|inbox\?).+)$/) : null;
   return m ? `/${m[1]}` : null;
 }
+
+let claimed = false;
+/** True once per app start: the start link is only for the first screen, never for later ones. */
+export function claimLaunch(): boolean {
+  if (claimed) return false;
+  claimed = true;
+  return true;
+}

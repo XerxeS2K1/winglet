@@ -1,6 +1,6 @@
-import { Redirect } from 'expo-router';
+import { Redirect, router, useRootNavigationState } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Platform, View } from 'react-native';
+import { Linking, Platform, View } from 'react-native';
 import { useBotSheet } from '../../components/BotSwitcher';
 import { SquarePen, X } from '../../components/icons';
 import { IconButton } from '../../components/ui';
@@ -8,6 +8,7 @@ import { useAppNavigation } from '../../components/AppNavigation';
 import { ChatView } from '../../components/ChatView';
 import { focusComposer } from '../../components/Composer';
 import { Landing, type LandingMode } from '../../components/Landing';
+import { claimLaunch, launchPath } from '../../lib/launchLink';
 import { NEW_CHAT_DRAFT, newChatTarget } from '../../lib/landingChat';
 import { useMainBot } from '../../lib/mainBot';
 import { mergeDraft } from '../../lib/share';
@@ -30,6 +31,13 @@ export default function Home() {
   const main = useMainBot();
   const { homeRevision } = useAppNavigation();
   const hashLink = pairFromHash();
+  // A tapped notification starts the app with a link, and the navigator ignores it on a cold start. Home is the
+  // first screen inside the navigator, so it opens the link once the navigator reports it is ready.
+  const navigatorReady = !!useRootNavigationState()?.key;
+  useEffect(() => {
+    if (!navigatorReady || !claimLaunch()) return;
+    Linking.getInitialURL().then((url) => { const path = launchPath(url); if (path) router.navigate(path); }).catch(() => {});
+  }, [navigatorReady]);
   useEffect(() => {
     if (!selection.serverId && main) useApp.getState().select(main.id, homeChat(useApp.getState().runtime[main.id]));
   }, [selection.serverId, main]);
