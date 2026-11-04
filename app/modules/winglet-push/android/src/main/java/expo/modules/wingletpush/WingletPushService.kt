@@ -2,7 +2,6 @@ package expo.modules.wingletpush
 
 import android.app.Notification
 import android.app.KeyguardManager
-import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
@@ -78,9 +77,9 @@ class WingletPushService : PushService() {
   private fun show(instance: String,entry: JSONObject,note: JSONObject): Boolean {
     val manager=getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if(!manager.areNotificationsEnabled())return false
-    val channel="winglet-messages-v1"
-    manager.createNotificationChannel(NotificationChannel(channel,"Winglet messages",NotificationManager.IMPORTANCE_DEFAULT))
-    if(manager.getNotificationChannel(channel).importance==NotificationManager.IMPORTANCE_NONE)return false
+    PushChannels.ensure(manager)
+    val channel=PushChannels.forKind(note.optString("kind"))
+    if(manager.getNotificationChannel(channel).importance==NotificationManager.IMPORTANCE_NONE || PushChannels.legacyBlocked(manager))return false
     val generic="Open Winglet to review the latest update."
     val deviceLocked=(getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked
     val details=entry.optBoolean("previews",false) && !deviceLocked && !PushVisibility.locked && !getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("private",true)
