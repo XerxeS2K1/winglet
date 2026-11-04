@@ -482,6 +482,11 @@ export const useApp = create<AppState>((set, get) => {
           toast({ serverId, title: `${server.bot.title} · ${item.title}`, body: item.body.slice(0, 140),
             href: `/inbox?server=${encodeURIComponent(serverId)}&item=${encodeURIComponent(item.id)}` });
         }
+        // A finished routine result has no badge or sound; a quiet banner is its only sign in the open app.
+        if (!replayed && ev.type === 'inbox.new' && item.kind === 'result' && get().foreground && server) {
+          toast({ serverId, title: `${server.bot.title} · ${item.title}`, body: item.body.slice(0, 140),
+            href: `/inbox?server=${encodeURIComponent(serverId)}&item=${encodeURIComponent(item.id)}` });
+        }
         break;
       }
     }
