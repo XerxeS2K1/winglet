@@ -6,7 +6,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useShallow } from 'zustand/react/shallow';
 import { ago } from '../lib/agent';
 import { useReducedMotion } from '../lib/motion';
-import { useApp, useServerState } from '../lib/store';
+import { clearNotifications, useApp, useServerState } from '../lib/store';
+import { inboxNoteTag } from '../lib/handledNotifications';
 import { WIDE_BREAKPOINT } from '../lib/theme';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { InboxItem, Server } from '../lib/types';
@@ -100,6 +101,7 @@ export function InboxView() {
       return;
     }
     scrolledTo.current = params.item;
+    if (params.server) clearNotifications(params.server, [inboxNoteTag(params.item)]);
     setTimeout(() => list.current?.scrollToIndex({ index: target, animated: true, viewPosition: 0.1 }), 300);
   }, [params.item, entries, view]);
 

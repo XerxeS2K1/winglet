@@ -13,5 +13,7 @@ export type PushNative={
   previews:(server:string,device:string,enabled:boolean)=>Promise<void>;
   remove:(server:string,device:string)=>Promise<void>;
   retain:()=>Promise<void>;
+  /** Takes down the notifications with these server tags; cancels only, so it works while locked. */
+  clear?:(server:string,device:string,tags:string[])=>void;
 };
 export const pushNative=Platform.OS==='android' && Number(Platform.Version)>=26?requireOptionalNativeModule<PushNative>('WingletPush'):null;

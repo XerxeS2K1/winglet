@@ -25,6 +25,8 @@ internal object PushStore {
   }
   fun hex(bytes: ByteArray)=bytes.joinToString(""){(it.toInt() and 255).toString(16).padStart(2,'0')}
   fun scope(server: String,device: String)=hex(MessageDigest.getInstance("SHA-256").digest((server+"\u0000"+device).toByteArray(Charsets.UTF_8)))
+  /** The notification tag Android sees for one server note: where it is shown and where it is later cleared. */
+  fun noteTag(scope: String,tag: String)=scope+":"+hex(MessageDigest.getInstance("SHA-256").digest(tag.toByteArray()))
   private fun directory(context: Context)=File(context.noBackupFilesDir,"winglet-push-v1").also{it.mkdirs()}
   private fun file(context: Context,scope: String): AtomicFile {
     require(Regex("^[a-f0-9]{64}$").matches(scope))

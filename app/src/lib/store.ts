@@ -12,6 +12,8 @@ import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isNotifiable, markFailed, mergeMessages } from './messages';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
+import { pushNative } from '../features/encrypted-push/native';
+import { chatNoteTag, handledNoteTags, inboxNoteTag } from './handledNotifications';
 import type { Attachment, BotRow, Chat, ConnStatus, DraftFile, InboxItem, Job, Me, Message, PauseState, PetSheet, Project, ProjectSnapshot, ReplyRef, Server, ServerInfo, TaskCapabilities, TaskEnvelope, TaskSnapshot, SyncState } from './types';
 import { applyEvent, applySnapshot } from '../features/execution/model';
 import { applyOrder, EMPTY_PROJECTS, readSnapshot } from '../features/projects/logic';
@@ -170,6 +172,13 @@ const sendPaused = new Set<string>();
 const isNetworkError = (e: unknown) => !(e instanceof ApiError) || e.status === 0;
 
 const isLocal = (m: Message) => m.status === 'pending' || m.status === 'queued' || m.status === 'failed';
+
+/** Takes down this phone's notifications that carry these server tags. Notifications are only ever removed, never made. */
+export function clearNotifications(serverId: string, tags: string[]) {
+  const server = useApp.getState().servers.find((s) => s.id === serverId);
+  if (!pushNative?.clear || !server?.deviceId || !tags.length) return;
+  try { pushNative.clear(server.id, server.deviceId, tags); } catch { /* nothing to take down */ }
+}
 
 export const useApp = create<AppState>((set, get) => {
   const patch = (serverId: string, fn: (s: ServerState) => Partial<ServerState>) =>
@@ -475,6 +484,8 @@ export const useApp = create<AppState>((set, get) => {
       case 'inbox.update': {
         const item = ev.item as InboxItem;
         patch(serverId, (s) => ({ inbox: { ...s.inbox, [item.id]: item }, pending: ev.pending ?? s.pending }));
+        // Answered or expired somewhere else, or while this phone was away (a replay): its alert has nothing left to say.
+        if (item.kind !== 'result' && item.status !== 'pending') clearNotifications(serverId, [inboxNoteTag(item.id)]);
         // A member can't answer approvals; the card in their chat already says it's waiting for an owner.
         const actionable = item.kind !== 'result' && (item.kind !== 'approval' || isOwner(get().runtime[serverId]));
         if (!replayed && ev.type === 'inbox.new' && actionable && item.status === 'pending' && get().foreground && server) {
@@ -736,10 +747,16 @@ export const useApp = create<AppState>((set, get) => {
       setJSON(SELECTION_KEY, { serverId, chatId });
     },
 
-    setVisibleChat: (v) => set({ visibleChat: v }),
+    setVisibleChat: (v) => {
+      set({ visibleChat: v });
+      if (v && get().foreground) clearNotifications(v.serverId, [chatNoteTag(v.chatId)]);
+    },
 
     setForeground: (fg) => {
       set({ foreground: fg, ...(!fg ? { toasts: [] } : {}) });
+      // The chat on screen has been read: coming back to the app takes down its reply alert.
+      const open = get().visibleChat;
+      if (fg && open) clearNotifications(open.serverId, [chatNoteTag(open.chatId)]);
       coordinator.setForeground(fg);
       phoneVisibility(fg);
       connections.forEach((c) => c.presence(fg));
@@ -866,6 +883,8 @@ export const useApp = create<AppState>((set, get) => {
           for (const [id, item] of Object.entries(s.inbox)) if (before?.[id] !== item) inbox[id] = item;
           return { inbox, pending: Object.values(inbox).filter((item) => item.status === 'pending' && item.kind !== 'result').length };
         });
+        // Catches cards handled while the app was closed, once it reconnects.
+        clearNotifications(serverId, handledNoteTags(data.items));
       } catch {
         // offline: keep what we have
       }
