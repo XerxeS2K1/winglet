@@ -66,6 +66,8 @@ function harness(os = 'web') {
     return exports;
   }
   const helpers = compile('../src/lib/messages.ts', {});
+  const handled = compile('../src/lib/handledNotifications.ts', {});
+  const cleared: any[] = [];
   const taskModel = compile('../src/features/execution/model.ts', {});
   const replayProtocol = compile('../src/features/event-replay/protocol.ts', {});
   const replaySession = compile('../src/features/event-replay/session.ts', { './protocol': replayProtocol });
@@ -91,6 +93,8 @@ function harness(os = 'web') {
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
+    './handledNotifications': handled,
+    '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
     './sounds': { sound: { reply: () => played.push('reply'), needsYou: () => played.push('needsYou'), tap: () => {}, sent: () => {} } },
     './storage': { getJSON: async (key: string, fallback: any) => (key === 'winglet.servers' && persisted) || fallback,
@@ -98,14 +102,14 @@ function harness(os = 'web') {
   });
   const tick = () => new Promise(resolve => setImmediate(resolve));
   return {
-    store, cache, played, phoneCalls, taskModel, setRequest: (fn: typeof request) => { request = fn; },
+    store, cache, played, phoneCalls, cleared, taskModel, setRequest: (fn: typeof request) => { request = fn; },
     setRecovery: (fn: typeof recoveryRequest) => { recoveryRequest = fn; },
     disconnect: () => { socket.readyState = 3; socket.onclose?.({ code: 1006 }); },
     retry: () => timers.shift()?.(), timers, sockets, persisted: () => persisted, socket: () => socket, tick,
     event: (data: any) => socket.event(data),
     hello: async () => { socket.event({ type: 'hello', chats: [{ id: 'general', kind: 'chat', title: 'General' }], pending: 0 }); await tick(); },
     async connect() {
-      await store.getState().addServer({ id: 's', url: 'http://test', token: 'test', bot: { title: 'Test' },
+      await store.getState().addServer({ id: 's', url: 'http://test', token: 'test', deviceId: 'dev', bot: { title: 'Test' },
         ...(os === 'android' ? { recovery: { server: 'https://ntfy.sh', topic: 'private', key: 'secret', revision: 1 } } : {}) });
       store.getState().setVisibleChat({ serverId: 's', chatId: 'general' });
     },
@@ -953,4 +957,42 @@ test('an offline quote retains its exact anchor through outbox persistence and r
   h.event({type:'hello',chats:[{id:'general',kind:'chat',title:'General'}],pending:0,features:{quoted_comments:true}});
   await h.tick();await h.tick();
   assert.equal(sent.length,1);assert.deepEqual(sent[0].quote,quote);
+});
+
+test('a card answered somewhere else takes its notification down, live and when replayed', async () => {
+  const h = harness();
+  await h.connect(); await h.hello(); h.cleared.length = 0;
+  const q = { id: 'q1', kind: 'question', status: 'pending', title: 'Which?', body: '', chat_id: 'general', created_at: 1, updated_at: 1 };
+  h.event({ type: 'inbox.new', item: q, pending: 1 });
+  assert.deepEqual(h.cleared, []);
+  h.event({ type: 'inbox.update', item: { ...q, status: 'resolved' }, pending: 0 });
+  assert.deepEqual(h.cleared, [['s', 'dev', 'inbox-q1']]);
+});
+
+test('results are not taken down when they are created or updated', async () => {
+  const h = harness();
+  await h.connect(); await h.hello(); h.cleared.length = 0;
+  h.event({ type: 'inbox.new', item: { id: 'r1', kind: 'result', status: 'resolved', title: 'Done', body: '', created_at: 1, updated_at: 1 }, pending: 0 });
+  assert.deepEqual(h.cleared, []);
+});
+
+test('opening a chat takes down its reply notification, but only in the foreground', async () => {
+  const h = harness();
+  await h.connect(); await h.hello();
+  h.cleared.length = 0;
+  h.store.getState().setForeground(false);
+  h.store.getState().setVisibleChat({ serverId: 's', chatId: 'general' });
+  assert.deepEqual(h.cleared, []);
+  h.store.getState().setForeground(true);
+  assert.deepEqual(h.cleared, [['s', 'dev', 'chat-general']]);
+});
+
+test('reconnecting takes down the notifications of cards handled while away', async () => {
+  const h = harness();
+  h.setRequest(async (_: any, route: string) => route === '/api/inbox'
+    ? { items: [{ id: 'a', kind: 'approval', status: 'expired' }, { id: 'b', kind: 'question', status: 'pending' }], pending: 1 }
+    : { messages: [], deleted_ids: [] });
+  await h.connect(); await h.hello(); await h.tick();
+  assert.ok(h.cleared.some((c: any[]) => c.includes('inbox-a')));
+  assert.ok(!h.cleared.some((c: any[]) => c.includes('inbox-b')));
 });
