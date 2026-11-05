@@ -107,8 +107,9 @@ Messages are end-to-end encrypted with keys that live on your server, whichever 
 for you. Pick it in the same list as ntfy, and switch back whenever you like.
 
 **Before you pick the Google route:**
-- It has only been tested on one phone (a Galaxy Z Fold 7), with registration, a test push, and delivery with the app killed and the
-  phone locked. It has not been tried on other phones, or on a phone that also has ntfy installed.
+- It has only been tested on one phone (a Galaxy Z Fold 7), including the signed v0.10.1 release build: registration, a test push
+  with the app open, and a test push that arrived while the app was in the background and the screen was off. It has not been tried
+  on other phones, or on a phone that also has ntfy installed.
 - It uses an internal Google Play services interface, not a public API, so a Google update could break it. The ntfy route doesn't
   depend on that.
 - With the default Quick Tunnel address, Android still uses ntfy.sh to recover your server's address when it changes. The Google route
