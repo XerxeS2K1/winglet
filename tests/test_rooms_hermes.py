@@ -270,6 +270,12 @@ def test_real_prompt_submit_dispatches_isolated_room_session_without_a_provider(
         with session['history_lock']:
             session['running']=False
         on_terminal({'status':'settled','text':'Reply from the non-network test agent'})
+    import inspect
+    # Hermes calls this by position. A stand-in that takes fewer arguments than Hermes now passes fails far from
+    # the cause (it did on 0.22.7), so check it here.
+    real=[p for p in inspect.signature(server._run_after_agent_ready).parameters.values() if p.kind in (p.POSITIONAL_ONLY,p.POSITIONAL_OR_KEYWORD)]
+    try: inspect.signature(non_network_agent).bind(*range(len(real)))
+    except TypeError as exc: raise AssertionError(f'the test stand-in for Hermes takes fewer arguments than the {len(real)} Hermes passes: {exc}') from exc
     monkeypatch.setattr(server,'_run_after_agent_ready',non_network_agent)
     directory=tmp_path/'real-submit';directory.mkdir()
     adapter=SimpleNamespace(_bots_state=lambda:{'bots':[{'name':'ops','served':True}]})
