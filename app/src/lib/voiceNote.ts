@@ -1,6 +1,7 @@
-import { RecordingPresets, requestRecordingPermissionsAsync, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
+import { RecordingPresets, useAudioRecorder, useAudioRecorderState } from 'expo-audio';
 import { useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
+import { microphonePermission } from '../features/live-voice/microphonePermission';
 import { attachFiles } from './attach';
 import { recordingMode } from './audioMode';
 import { haptic } from './haptics';
@@ -22,7 +23,9 @@ export function useVoiceNote(serverId: string, chatId: () => string, onSent?: ()
   const toast = (title: string, body: string) => useApp.getState().toast({ serverId: latest.current.serverId, title, body });
 
   const session = useRef(voiceSession({
-    permission: async () => (await requestRecordingPermissionsAsync()).granted,
+    // Ask only when the permission is missing: on Android even an already-granted request pauses the app, which
+    // cancels the hold (see features/live-voice/microphonePermission.ts).
+    permission: () => microphonePermission(),
     begin: async () => {
       await recordingMode(true);
       await recorder.prepareToRecordAsync();

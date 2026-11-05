@@ -96,3 +96,23 @@ for(const provider of ['device','server'] as const) {
     }
   });
 }
+
+// Hold-to-talk (lib/voiceNote.ts) must use the same get-before-request check as hands-free. It once called
+// requestRecordingPermissionsAsync on every hold, which pauses Android and cancels the hold, every time.
+test('hold-to-talk checks the microphone permission first and never requests a granted one', async () => {
+  const note = readFileSync(new URL('../src/lib/voiceNote.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(note, /requestRecordingPermissionsAsync/);
+  assert.match(note, /microphonePermission\(\)/);
+  let requests = 0; let granted = true;
+  const exports: any = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/features/live-voice/microphonePermission.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
+    exports, require: () => ({
+      getRecordingPermissionsAsync: async () => ({ granted, canAskAgain: true }),
+      requestRecordingPermissionsAsync: async () => { requests++; granted = true; return { granted: true, canAskAgain: true }; },
+    }),
+  });
+  assert.equal(await exports.microphonePermission(), true); assert.equal(requests, 0); // granted: no prompt, no signal needed
+  granted = false;
+  assert.equal(await exports.microphonePermission(), true); assert.equal(requests, 1); // missing: asks once
+});
