@@ -54,6 +54,8 @@ jobs:
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
             VERSION="${GITHUB_REF_NAME#v}"
             [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(beta|rc)\.[0-9]+)?$ ]] || { echo "::error::Tags must look like v1.2.3 or v1.2.3-beta.1"; exit 1; }
+            PLUGIN_VERSION="$(sed -n 's/^version: *//p' plugin/plugin.yaml | head -1)"
+            [ "$PLUGIN_VERSION" = "${VERSION%%-*}" ] || { echo "::error::plugin/plugin.yaml says $PLUGIN_VERSION but the tag is $VERSION; bump the version first (docs/RELEASING.md)"; exit 1; }
             [ "$HAS_SIGNING_KEY" = "true" ] || { echo "::error::Releases need the signing key secrets (see docs/RELEASING.md)"; exit 1; }
             LABEL="$VERSION"
           else

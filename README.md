@@ -68,10 +68,15 @@ Winglet brings that to Hermes Agent, the open-source agent by Nous Research, wit
 **1. On your Hermes machine**, with the Hermes messaging gateway installed:
 
 ```bash
-hermes plugins install XerxeS2K1/winglet/plugin
+hermes plugins install XerxeS2K1/winglet/plugin --force   # --force: see the note below
 hermes plugins enable winglet
 hermes winglet setup          # sets up HTTPS, starts the gateway, shows a QR code
 ```
+
+> **Why `--force`?** Hermes's install scanner rates community plugins that contain minified JavaScript (the bundled web app),
+> a subprocess call, or a downloaded binary as "caution" and blocks them. Winglet has all three: the compiled web app, and a
+> Cloudflare tunnel helper that downloads `cloudflared` and checks its SHA-256. The original Winglet plugin is blocked the same
+> way. Read the source first (`plugin/`), then use `--force` if you are happy with it.
 
 Setup gives you a free HTTPS address through Cloudflare. You don't need an account, a domain or any open ports.
 

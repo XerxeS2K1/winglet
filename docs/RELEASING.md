@@ -46,6 +46,10 @@ and the key proves the APK came from you. CI refuses to publish a release withou
 
 ## Cutting a release
 
+Before tagging, set the same version in `plugin/plugin.yaml`, `plugin/hub.py` (`VERSION`), `app/app.json` and
+`app/package.json`, and write `docs/releases/v<version>.md`. The release build refuses a tag whose version differs from
+`plugin/plugin.yaml`.
+
 Promotion PRs to `main` run the Release workflow as validation checks, building
 the APKs and plugin without publishing. Internal PRs require the production
 signing key; fork PRs can build with a debug key. Merge only after these checks

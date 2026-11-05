@@ -15,10 +15,15 @@ messaging gateway (`hermes gateway`), the same one you'd use for Telegram or Sla
 ## 1. On your Hermes machine
 
 ```bash
-hermes plugins install XerxeS2K1/winglet/plugin
+hermes plugins install XerxeS2K1/winglet/plugin --force   # --force: see the note below
 hermes plugins enable winglet
 hermes winglet setup          # prepares HTTPS, starts the gateway, then shows the QR
 ```
+
+> **Why `--force`?** Hermes's install scanner rates community plugins that contain minified JavaScript (the bundled web app),
+> a subprocess call, or a downloaded binary as "caution" and blocks them. Winglet has all three: the compiled web app, and a
+> Cloudflare tunnel helper that downloads `cloudflared` and checks its SHA-256. The original Winglet plugin is blocked the same
+> way. Read the source first (`plugin/`), then use `--force` if you are happy with it.
 
 For a new or previously unpaired install, `setup` installs the dependencies and a checksum-verified
 Cloudflare tunnel client in your Hermes profile, starts/restarts the gateway, and checks the public HTTPS address against your
