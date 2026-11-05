@@ -654,6 +654,8 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
     </Pressable>
   </Animated.View>;
 
+  if (message.meta?.asked) return <AskedLine asked={message.meta.asked} label={message.text} />;
+
   if (message.role === 'system') {
     if (message.meta?.inbox_id && inboxItem) {
       return <Animated.View entering={entering} style={[s.lane, s.systemCard]}>
@@ -661,7 +663,6 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
           : <View style={s.botRow}><View style={s.botBody}><InboxCard serverId={server.id} item={inboxItem} embedded /></View></View>}
       </Animated.View>;
     }
-    if (message.meta?.asked) return <AskedLine asked={message.meta.asked} label={message.text} />;
     return <View style={s.systemLine}><Text style={s.systemText}>{message.text}</Text></View>;
   }
 

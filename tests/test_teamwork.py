@@ -22,7 +22,7 @@ def team(monkeypatch):
     monkeypatch.setattr(teamwork, "_roster", lambda: [dict(b) for b in ROSTER])
     monkeypatch.setattr(teamwork, "_me", lambda: state.me)
 
-    def deliver(profile, content, sender):
+    def deliver(profile, content, sender, **options):
         sent.append((profile, content))
         state.senders.append(sender)
         if isinstance(state.result, Exception):

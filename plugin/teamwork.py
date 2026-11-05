@@ -22,7 +22,8 @@ from . import hermes_api
 logger = logging.getLogger(__name__)
 
 TOOLSET = "bots"
-ASK_TIMEOUT_SECONDS = 600
+ASK_TIMEOUT_SECONDS = 60
+MAX_ASK_WAIT_SECONDS = 400
 MESSAGE_MAX_CHARS = 8000
 MAIN_ALIASES = ("default", "hermes", "main")
 
@@ -75,7 +76,8 @@ def can_deliver() -> bool:
     return True
 
 
-def _deliver(profile: str, content: str, sender: str) -> dict:
+def _deliver(profile: str, content: str, sender: str, *, delivery_id: Optional[str] = None,
+             wait_seconds: float = ASK_TIMEOUT_SECONDS) -> dict:
     """Deliver a message to a teammate bot and wait for its reply.
 
     Uses Hermes's bot_live_delivery (the same door Bot Mode uses): the target profile's own
@@ -92,14 +94,14 @@ def _deliver(profile: str, content: str, sender: str) -> dict:
     if owner is None:
         raise RuntimeError("the target profile has no store yet")
     author = _author(sender)
-    delivery_id = uuid.uuid4().hex
+    delivery_id = delivery_id or uuid.uuid4().hex
     admitted = deliver_to_live_owner(
         _profile_home(profile), owner, content, delivery_id=delivery_id, author=author)
     # admitted may be a refusal (admitted: false) — settle it.
     if not admitted.get("admitted", True):
         from tools.bot_live_delivery import settle_held_delivery
         admitted = settle_held_delivery(_profile_home(profile), owner, content, delivery_id=delivery_id, author=author)
-    record = await_delivery(_profile_home(profile), delivery_id, ASK_TIMEOUT_SECONDS)
+    record = await_delivery(_profile_home(profile), delivery_id, wait_seconds)
     if record is None:
         raise RuntimeError("no receipt was ever readable")
     return record
@@ -151,6 +153,20 @@ def _origin_clause() -> str:
     return ""
 
 
+def _handoff_origin():
+    from gateway.session_context import get_session_env
+    if get_session_env("HERMES_SESSION_PLATFORM") != "winglet":
+        return None
+    from . import adapter
+    active = adapter._ACTIVE
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+    if active is None or active._hub is None or getattr(active, "_loop", None) is None or not chat_id:
+        return None
+    if active._hub.store.get_chat(chat_id) is None:
+        return None
+    return active._hub, chat_id
+
+
 def ask_bot(args: dict, **_: Any) -> str:
     """Ask another bot on this server, and get its answer."""
     try:
@@ -172,6 +188,24 @@ def ask_bot(args: dict, **_: Any) -> str:
         return _error("Say what you want from that bot in `message`.")
     if len(message) > MESSAGE_MAX_CHARS:
         return _error(f"That message is too long ({len(message)} characters, at most {MESSAGE_MAX_CHARS}).")
+    import math
+    import uuid
+    wait = args.get("wait", ASK_TIMEOUT_SECONDS)
+    if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not math.isfinite(wait) or not 0 <= wait <= MAX_ASK_WAIT_SECONDS:
+        return _error(f"wait must be a number from 0 to {MAX_ASK_WAIT_SECONDS} seconds.")
+    delivery_id = uuid.uuid4().hex
+    origin = None
+    try:
+        # Hermes can also call the tool outside Winglet: inline replies still work there,
+        # but there is no chat in which to promise a later completion notice.
+        try:
+            origin = _handoff_origin()
+        except ImportError:
+            pass
+        if origin:
+            origin[0].store.register_handoff(delivery_id, origin[1], bot["name"], bot["title"], message, wait)
+    except Exception as exc:
+        return _error(f"Couldn't record the hand-off; nothing was sent: {exc}")
     sender = next((b for b in roster if b["name"] == me), {"title": me})
     # The receipt's reply is the teammate's final text, so tell it to answer here rather than reach for a
     # messaging tool (a bare "reply with X" was taken literally and sent to the asker instead).
@@ -179,16 +213,20 @@ def ask_bot(args: dict, **_: Any) -> str:
                "(Answer in your reply to this message. Your reply is returned to the sender automatically, "
                "so do not message anyone.)")
     try:
-        record = _deliver(bot["name"], content, me)
+        record = _deliver(bot["name"], content, me, delivery_id=delivery_id, wait_seconds=wait)
     except Exception as exc:
+        if origin:
+            origin[0].store.handoff_state(delivery_id, "waiting")
         # find_canonical_live_owner raises ValueError when the authority isn't ready;
         # await_delivery may time out (returns a pending record, not an exception).
         if "authority is not ready" in str(exc).lower() or "not ready" in str(exc).lower():
             return _error(f"{bot['title']} isn't running right now (its gateway authority isn't ready).")
         logger.warning("[winglet] asking %s failed", bot["name"], exc_info=True)
-        return _error(f"Couldn't reach {bot['title']}: {exc}")
+        return _error(f"Couldn't confirm delivery to {bot['title']}; do not resend automatically: {exc}", delivery_id=delivery_id)
     # Interpret the receipt record.
     status = record.get("status") if isinstance(record, dict) else None
+    if origin:
+        origin[0].store.handoff_state(delivery_id, "done" if status in ("settled", "failed", "cancelled", "ambiguous") else "waiting")
     if status == "settled":
         reply = (record.get("reply") or "").strip()
         if not reply:
@@ -202,9 +240,10 @@ def ask_bot(args: dict, **_: Any) -> str:
                           f"Detail: {detail}")
         return _error(f"{bot['title']} couldn't answer.", detail=detail)
     # Pending / timeout / unknown.
-    if status == "queued" or status == "claimed":
-        return _error(f"{bot['title']} is still working; try again in a moment.")
-    return _error(f"{bot['title']} didn't answer in time.", detail=str(record)[:600])
+    notice = "A completion notice will appear in the asking Winglet chat." if origin else "No completion notice is available outside a Winglet chat."
+    return json.dumps({"status": "queued" if status in ("queued", "claimed") else "unknown",
+                       "bot": bot["title"], "delivery_id": delivery_id,
+                       "note": f"Handed over; do not resend or poll. {notice} The asking agent will not be woken."})
 
 
 def make_bot(args: dict, **_: Any) -> str:
@@ -243,10 +282,14 @@ ASK_SCHEMA = {
         "persona, memory and skills), to do something or answer a question, and get its reply. Use it when the "
         "user says 'ask <bot>' or 'tell <bot>', or when a teammate is better placed. Compose the message "
         "yourself and say what you need; don't forward private chat content. Call with an empty `bot` to list "
-        "the bots and what each is for. Relay the answer to the user, saying which bot replied."),
+        "the bots and what each is for. Short tasks return inline. Pending tasks return a delivery ID: carry on, "
+        "do not resend, poll or wait for a wake-up. A finished notice appears in the asking Winglet chat only. "
+        "Relay inline answers to the user, saying which bot replied."),
     "parameters": {"type": "object", "properties": {
         "bot": {"type": "string", "description": "The bot's name ('hermes' for the main bot), or empty to list them."},
         "message": {"type": "string", "description": "What you want from that bot."},
+        "wait": {"type": "number", "minimum": 0, "maximum": MAX_ASK_WAIT_SECONDS,
+                 "description": "Seconds to wait for an inline reply (default 60). 0 hands off immediately."},
     }, "required": ["bot"]},
 }
 

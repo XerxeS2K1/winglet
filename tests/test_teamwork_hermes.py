@@ -79,6 +79,18 @@ def test_ask_bot_gets_the_teammates_answer_through_hermes_delivery(two_bots):
     assert delivery["author"] == {"id": "bot:default", "name": "hermes", "is_bot": True}
 
 
+def test_zero_wait_hands_off_through_real_receipt_code_without_resending(two_bots):
+    from tools import bot_live_delivery as door
+    from hermes_cli.profiles import get_profile_dir
+    result = json.loads(teamwork.ask_bot({"bot": "chef", "message": "Long task", "wait": 0}))
+    assert result['status'] == 'queued'
+    assert len(two_bots.admitted) == 1
+    assert two_bots.admitted[0]['id'] == result['delivery_id']
+    receipt = door.await_delivery(get_profile_dir('chef'), result['delivery_id'], 2)
+    assert receipt['reply'] == 'Pasta on Tuesday.'
+    assert len(two_bots.admitted) == 1
+
+
 def test_a_teammate_that_fails_is_reported_not_hung(two_bots):
     two_bots.status, two_bots.error = "failed", "model error"
     answer = json.loads(teamwork.ask_bot({"bot": "chef", "message": "Hello?"}))

@@ -274,6 +274,8 @@ class Hub:
         self._recovery_lock = asyncio.Lock()
         self._janitor: Optional[asyncio.Task] = None
         self._bots_watch: Optional[asyncio.Task] = None
+        from .handoffs import HandoffService
+        self.handoffs = HandoffService(self)
         self.activity_provider: Optional[Callable[[], Dict[str, Any]]] = None
         self._bot_activity: Dict[str, Any] = {}
         self._activity_refresh: Optional[asyncio.Task] = None
@@ -514,6 +516,7 @@ class Hub:
         if self._janitor is None:
             self._janitor = asyncio.create_task(self._janitor_loop())
             self._spawn(self.reconcile_jobs())
+            self._spawn(self.handoffs.watch())
         if self._bots_watch is None and self.bots_provider is not None:
             self._bots_watch = asyncio.create_task(self._watch_bots())
         if self.activity_provider is not None:
