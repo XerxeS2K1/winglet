@@ -421,8 +421,9 @@ class WingletAdapter(BasePlatformAdapter):
         if bot:
             if not self._serves(bot):
                 # Hermes would quietly answer as the main bot instead; say what's wrong rather than pretend.
-                await self._hub.post_message(chat["id"], "This bot isn't running yet. Restart the server so Hermes "
-                                              "starts serving it, then send your message again.", role="system", push=False)
+                await self._hub.post_message(chat["id"], "This bot isn't running yet. Hermes starts a new bot by itself "
+                                              "within a minute; send your message again then. If it still isn't "
+                                              "running, restart the server.", role="system", push=False)
                 return
             # Route through the secondary adapter (if any) so Hermes binds the right profile.
             secondary = self._bot_adapter(bot)
@@ -630,8 +631,8 @@ class WingletAdapter(BasePlatformAdapter):
         the note that tools changed. Hermes reloads the servers of the profile the message is routed to."""
         bot = hermes_api.current_bot()
         if bot and not self._serves(bot):
-            raise hermes_api.HermesRefused("This bot isn't running yet. Restart the server and it connects its MCP "
-                                           "servers as it starts.")
+            raise hermes_api.HermesRefused("This bot isn't running yet. Once Hermes has started it, it connects its MCP "
+                                           "servers by itself; if it stays offline, restart the server.")
         chat_id = self._hub.home_chat({"role": "owner"}) if bot else GENERAL_CHAT_ID
         owner = self._bot_adapter(bot or "") or self
         source = owner.build_source(chat_id=chat_id, chat_name=chat_id if bot else "General", chat_type="dm",

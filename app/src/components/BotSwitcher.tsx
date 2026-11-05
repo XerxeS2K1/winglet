@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { mainFirst } from '../lib/bots';
+import { mainFirst, notRunning } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { usePrefs } from '../lib/prefs';
 import { homeChat, useApp } from '../lib/store';
@@ -49,7 +49,7 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
       const on = x.id === server.id;
       return <ListRow key={x.id} title={x.bot.title} value={i === 0 ? 'Main' : undefined}
         icon={<View><AgentFace server={x} size={28} still /></View>}
-        subtitle={view.kind === 'online' ? 'Online' : view.title} chevron={false}
+        subtitle={view.kind === 'online' ? notRunning(x.bot) ?? 'Online' : view.title} chevron={false}
         right={<View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           {rt?.pending ? <Badge count={rt.pending} /> : null}
           {on ? <Check size={20} color={t.colors.accent} accessibilityLabel="Current bot" /> : null}

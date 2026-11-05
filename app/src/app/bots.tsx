@@ -7,7 +7,7 @@ import { AgentFace } from '../components/AgentFace';
 import { Plus, Trash2 } from '../components/icons';
 import { Screen } from '../components/Screen';
 import { Button, Footnote, SectionHeader, Tap } from '../components/ui';
-import { mainFirst } from '../lib/bots';
+import { mainFirst, notRunning } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
@@ -34,8 +34,8 @@ export default function BotsScreen() {
         {mainFirst(servers, chosenMain).map((srv, i) => {
           const view = connectionView(network, runtime[srv.id], srv.bot.title);
           const parent = srv.parent ? servers.find((x) => x.id === srv.parent) : undefined;
-          const status = view.kind === 'online' ? 'Online' : view.title;
-          const dot = view.tone === 'ok' ? t.colors.success : view.tone === 'error' ? t.colors.danger : t.colors.warning;
+          const status = view.kind === 'online' ? notRunning(srv.bot) ?? 'Online' : view.title;
+          const dot = view.tone === 'ok' && !notRunning(srv.bot) ? t.colors.success : view.tone === 'error' ? t.colors.danger : t.colors.warning;
           return (
             <Animated.View key={srv.id} entering={reduced ? undefined : FadeIn.duration(180)}>
               <Tap feedback="selection" scaleTo={0.98} accessibilityLabel={`${srv.bot.title}${i === 0 ? ', main' : ''}, ${status}`}

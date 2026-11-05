@@ -262,7 +262,7 @@ def test_real_prompt_submit_dispatches_isolated_room_session_without_a_provider(
     monkeypatch.setattr(server,'_schedule_session_cap_enforcement',lambda:None)
     monkeypatch.setattr(server,'_start_agent_build',lambda *args:None)
     calls=[]
-    def non_network_agent(rid,sid,session,text,kind,metadata,on_terminal,author):
+    def non_network_agent(rid,sid,session,text,kind,metadata,on_terminal,author,images=None):  # images: added in Hermes 0.22.7
         calls.append((session['session_key'],session['source'],text))
         # Run the real completion hook that commits the session's pending room
         # title. Skipping it would make the next turn create another session.

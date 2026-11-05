@@ -89,3 +89,13 @@ def test_the_tools_and_the_approval_gate_are_registered():
     teamwork.register(SimpleNamespace())  # a Hermes without plugin tools: never fatal
 
 
+
+
+def test_a_hermes_without_live_delivery_says_why_ask_bot_is_missing(monkeypatch, caplog):
+    registered = []
+    ctx = SimpleNamespace(register_tool=lambda **kw: registered.append(kw["name"]), register_hook=lambda *a, **k: None)
+    monkeypatch.setattr(teamwork, "can_deliver", lambda: False)
+    with caplog.at_level("WARNING"):
+        teamwork.register(ctx)
+    assert registered == ["ask_bot", "make_bot"]
+    assert any("ask_bot is off" in r.getMessage() for r in caplog.records)

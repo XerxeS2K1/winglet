@@ -232,5 +232,10 @@ def register(ctx) -> None:
         ctx.register_tool(name="make_bot", toolset=TOOLSET, schema=MAKE_SCHEMA, handler=make_bot, check_fn=available,
                           description="Make a new bot on this server", emoji="🐣")
         ctx.register_hook("pre_tool_call", approve_making_bots)
+        # Hermes drops a tool whose check_fn is false without a word, so say why ask_bot would be missing.
+        if not can_deliver():
+            logger.warning("[winglet] ask_bot is off: this Hermes has no tools.bot_live_delivery (needs v0.22.5 or later)")
+        elif not available():
+            logger.info("[winglet] ask_bot and make_bot are off: Hermes isn't serving more than one bot profile")
     except Exception:
         logger.warning("[winglet] couldn't add the bot teamwork tools", exc_info=True)

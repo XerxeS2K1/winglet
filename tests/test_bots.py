@@ -147,6 +147,25 @@ async def test_hermes_calls_run_as_the_bot_and_members_stay_with_the_main_one(cl
     assert ws.close_code == 4404
 
 
+async def test_an_unreadable_bot_list_is_unknown_not_empty(client, hub):
+    owner = await pair_phone(client, hub)
+    good = hub.bots_state(fresh=True)
+    assert good["bots"] and good.get("known", True)
+
+    def broken():
+        raise RuntimeError("profiles unreadable")
+    hub.bots_provider = broken
+    # With a good list on hand, the last one is kept.
+    assert hub.bots_state(fresh=True)["bots"] == good["bots"]
+    # With none on hand, it says it doesn't know; phones are then sent no list at all and keep their bots.
+    hub._bots_cache = None
+    assert hub.bots_state(fresh=True) == {"bots": [], "multiplex": False, "reason": "", "known": False}
+    ws = await client.ws_connect(f"/api/ws?token={owner.token}")
+    hello = await ws.receive_json(timeout=2)
+    assert hello["type"] == "hello" and "bots" not in hello
+    await ws.close()
+
+
 async def test_inbox_counts_and_notifications_follow_the_bot(client, hub):
     owner = await pair_phone(client, hub)
     hub.store.ensure_chat("b-researcher", "Researcher", bot="researcher")
@@ -203,7 +222,7 @@ async def test_making_a_bot_from_the_phone(client, hub):
         if job["state"] != "running":
             break
         await asyncio.sleep(0.01)
-    assert job["detail"]["needs_restart"] and "Restart" in job["detail"]["message"]
+    assert job["detail"]["needs_restart"] and "restart the server" in job["detail"]["message"]
     refused = await post_signed(client, owner, "/api/bots", {"name": "bad", "title": "Bad", "persona": ""})
     job_id = (await refused.json())["job"]["id"]
     for _ in range(100):

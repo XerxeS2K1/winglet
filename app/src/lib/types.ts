@@ -1,4 +1,5 @@
-export type Bot = { name: string; title: string; description: string };
+/** `served`: Hermes is running this bot now. Unknown (undefined) on a server that doesn't say. */
+export type Bot = { name: string; title: string; description: string; served?: boolean };
 
 /** Structured task activity lives in its own feature module; re-exported here for the store and screens. */
 export type { TaskCapabilities, TaskEnvelope, TaskSnapshot, TaskState } from '../features/execution/model';

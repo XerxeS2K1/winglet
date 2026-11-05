@@ -94,10 +94,10 @@ export default function NewBotScreen() {
         made ? (
           <Animated.View entering={rise(reduced, 0)} style={s.made}>
             <BotAvatar name={made.name} size={112} mood="happy" animated glow />
-            <Text style={s.lead}>{title.trim()} is ready</Text>
+            <Text style={s.lead}>{made.restart ? `${title.trim()} is made` : `${title.trim()} is ready`}</Text>
             {made.restart ? (
               <>
-                <Text style={s.note}>Restart the server once to bring every bot online.</Text>
+                <Text style={s.note}>Hermes hasn't started it yet; that usually takes under a minute. If it stays offline, restart the server.</Text>
                 <Button title="Restart the server" icon={<RotateCw size={16} color={t.colors.onAccent} />} onPress={restart} style={s.wide} />
               </>
             ) : null}

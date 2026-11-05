@@ -17,3 +17,8 @@ export function mainFirst<T extends { id: string; parent?: string }>(servers: re
   const main = resolveMainBot(servers, chosen);
   return main ? [main, ...servers.filter((x) => x !== main)] : [];
 }
+
+/** What a bot's row says while its server is up but Hermes isn't running that bot, else null (also when unknown). */
+export function notRunning(bot: { served?: boolean }): string | null {
+  return bot.served === false ? 'Not running' : null;
+}

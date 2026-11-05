@@ -14,7 +14,7 @@ import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { pushNative } from '../features/encrypted-push/native';
 import { chatNoteTag, handledNoteTags, inboxNoteTag } from './handledNotifications';
-import type { Attachment, BotRow, Chat, ConnStatus, DraftFile, InboxItem, Job, Me, Message, PauseState, PetSheet, Project, ProjectSnapshot, ReplyRef, Server, ServerInfo, TaskCapabilities, TaskEnvelope, TaskSnapshot, SyncState } from './types';
+import type { Attachment, Bot, BotRow, Chat, ConnStatus, DraftFile, InboxItem, Job, Me, Message, PauseState, PetSheet, Project, ProjectSnapshot, ReplyRef, Server, ServerInfo, TaskCapabilities, TaskEnvelope, TaskSnapshot, SyncState } from './types';
 import { applyEvent, applySnapshot } from '../features/execution/model';
 import { applyOrder, EMPTY_PROJECTS, readSnapshot } from '../features/projects/logic';
 
@@ -689,7 +689,8 @@ export const useApp = create<AppState>((set, get) => {
         const runtime = { ...state.runtime };
         for (const b of wanted) {
           const id = `${serverId}~${b.name}`;
-          const bot = { name: b.name, title: b.title || b.name, description: b.description || '' };
+          const bot: Bot = { name: b.name, title: b.title || b.name, description: b.description || '' };
+          if (typeof b.served === 'boolean') bot.served = b.served;
           const have = servers.find((s) => s.id === id);
           if (have) {
             if (JSON.stringify(have.bot) !== JSON.stringify(bot)) servers = servers.map((s) => (s.id === id ? { ...s, bot } : s));

@@ -514,9 +514,10 @@ class Hub:
             await asyncio.sleep(BOTS_WATCH_SECONDS)
             try:
                 state = await asyncio.to_thread(self.bots_state, True)
-                if last is not None and state["bots"] != last:
-                    await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
-                last = state["bots"]
+                if state.get("known", True):  # an unreadable listing says nothing about which bots exist
+                    if last is not None and state["bots"] != last:
+                        await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
+                    last = state["bots"]
             except Exception:
                 logger.debug("[winglet] bot watch failed", exc_info=True)
 
@@ -751,7 +752,10 @@ class Hub:
                 state = self.bots_provider() or {}
             except Exception:
                 logger.debug("[winglet] couldn't list bots", exc_info=True)
-                state = self._bots_cache[1] if self._bots_cache else {}
+                if self._bots_cache:
+                    return self._bots_cache[1]  # the last good list; try again on the next call
+                # Nothing known yet: say so, so phones keep the bots they have instead of dropping them all.
+                return {"bots": [], "multiplex": False, "reason": "", "known": False}
             self._bots_cache = (now, {"bots": list(state.get("bots") or []), "multiplex": bool(state.get("multiplex")),
                                       "reason": str(state.get("reason") or "")})
         return self._bots_cache[1]
@@ -1981,7 +1985,9 @@ class Hub:
                              "pending": self.pending_for(device), "paused": self.paused_for(device),
                              "projects": self.projects.snapshot(device, bot), "event_stream": stream}
                     if device.get("role") == "owner" and bot is None:
-                        hello["bots"] = self.bots()
+                        listing = self.bots_state()
+                        if listing.get("known", True):
+                            hello["bots"] = listing["bots"]
                     await asyncio.wait_for(ws.send_json(hello), timeout=2.0)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -2780,7 +2786,7 @@ class Hub:
             await self._finish_job(job_id, "failed", "The bot couldn't be made. The server log has the details.")
             return
         # Hermes notices the new profile and starts its adapter within a few seconds; give it that long before
-        # saying the server needs a restart.
+        # saying it hasn't started (a restart is only the fallback).
         deadline = time.monotonic() + self.bot_start_wait
         while True:
             state = await asyncio.to_thread(self.bots_state, True)
@@ -2791,7 +2797,7 @@ class Hub:
         # Phones learn about the bot before they hear it's ready, so they can open it straight away.
         await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
         await self._finish_job(job_id, "succeeded", f"{title} is ready." if served else
-                               f"{title} is made. Restart the server to start it.", bot=name, needs_restart=not served)
+                               f"{title} is made, but Hermes hasn't started it yet. Give it a minute; if it stays offline, restart the server.", bot=name, needs_restart=not served)
 
     # -- the agent's pet: its animated face, from Hermes's pet store and petdex.dev ---------------
 

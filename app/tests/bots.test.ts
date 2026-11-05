@@ -36,3 +36,11 @@ test('the main bot leads, the others keep their order', () => {
   assert.deepEqual(ids(mainFirst(bots)), ['a', 'a~chef', 'b']);
   assert.equal(mainFirst([]).length, 0);
 });
+
+const { notRunning } = exports;
+
+test("a bot Hermes isn't running says so, and one whose state is unknown says nothing", () => {
+  assert.equal(notRunning({ served: false }), 'Not running');
+  assert.equal(notRunning({ served: true }), null);
+  assert.equal(notRunning({}), null); // an older server doesn't say
+});

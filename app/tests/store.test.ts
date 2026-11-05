@@ -441,6 +441,15 @@ test("a server's other bots appear as bots of their own, follow its address, and
   // The server moved: its bots move with it.
   await h.store.getState().updateServer('s', { url: 'http://moved', token: 'new' });
   assert.ok(h.store.getState().servers.every((s: any) => s.url === 'http://moved' && s.token === 'new'));
+  // Whether Hermes is running a bot is kept on it, and follows the server's word.
+  mainSocket.event({ type: 'system.bots', bots: [{ name: 'chef', title: 'Head Chef', description: '', served: false }, { name: 'scout', title: 'Scout', description: '', served: true }] });
+  await h.tick();
+  assert.equal(h.store.getState().servers[1].bot.served, false);
+  assert.equal(h.store.getState().servers[2].bot.served, true);
+  mainSocket.event({ type: 'system.bots', bots: [{ name: 'chef', title: 'Head Chef', description: '', served: true }, { name: 'scout', title: 'Scout', description: '' }] });
+  await h.tick();
+  assert.equal(h.store.getState().servers[1].bot.served, true);
+  assert.equal('served' in h.store.getState().servers[2].bot, false, 'an older server that does not say leaves it unknown');
   // A bot deleted on the server leaves the app without unpairing anything.
   mainSocket.event({ type: 'system.bots', bots: [{ name: 'scout', title: 'Scout', description: '' }] });
   await h.tick();
