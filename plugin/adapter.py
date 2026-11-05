@@ -58,6 +58,22 @@ _TRACKER_HOOKS: Dict[str, bool] = {}
 _ACTIVE: Optional["WingletAdapter"] = None
 
 
+def _winglet_adapters(runner: Any) -> List["WingletAdapter"]:
+    """Every Winglet adapter Hermes has built: the default profile's and one per served bot profile.
+
+    Hermes loads this plugin once per profile, as separate module copies, so module globals are not shared
+    between those adapters; the runner is the one thing they all reach."""
+    found = []
+    maps = [getattr(runner, "adapters", None) or {}]
+    maps += list((getattr(runner, "_profile_adapters", None) or {}).values())
+    for adapters in maps:
+        for platform, adapter in adapters.items():
+            if getattr(platform, "value", platform) == PLATFORM:
+                found.append(adapter)
+    return found
+
+
+
 def _resolve_session_chat(session_id: str) -> Optional[Dict[str, Any]]:
     adapter = _ACTIVE
     return adapter._session_chat(session_id) if adapter is not None else None
@@ -210,6 +226,7 @@ class WingletAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform(PLATFORM))
         extra = config.extra or {}
+        self._is_secondary = False  # decided in connect(): Hermes names the profile only after construction
         self._connection = str(extra_or_secret(extra, "connection", "WINGLET_CONNECTION", "direct") or "direct")
         default_host = "127.0.0.1" if self._connection == "quick" else "0.0.0.0"
         self._host = str(extra_or_secret(extra, "host", "WINGLET_HOST", default_host) or default_host)
@@ -233,7 +250,27 @@ class WingletAdapter(BasePlatformAdapter):
 
     # -- lifecycle -------------------------------------------------------------------------
 
+    def _bot_name_for_secondary(self) -> Optional[str]:
+        """The profile Hermes built this adapter for (None for the default profile's adapter)."""
+        name = (getattr(self, "_hermes_profile_name", None) or "").strip()
+        return None if name in ("", "default") else name
+
     async def connect(self, *, is_reconnect: bool = False) -> bool:
+        self._is_secondary = self._bot_name_for_secondary() is not None
+        if self._is_secondary:
+            # A bot's adapter: Hermes built it for that profile. It shares the default adapter's hub, so there is
+            # one port, one store and one set of paired devices; it only exists so Hermes stamps its profile.
+            primary = next((a for a in _winglet_adapters(getattr(self, "gateway_runner", None))
+                            if a is not self and not a._bot_name_for_secondary()), None)
+            if primary is None or primary._hub is None:
+                logger.warning("[winglet] bot adapter for %s has no running Winglet to attach to", self._hermes_profile_name)
+                return False
+            self._hub = primary._hub
+            self._runner = primary._runner
+            self._loop = primary._loop
+            self._mark_connected()
+            logger.info("[winglet] adapter for bot %s attached to the main Winglet hub", self._bot_name_for_secondary())
+            return True
         if not check_requirements():
             logger.warning("[%s] Winglet dependencies unavailable; run hermes winglet setup", self.name)
             return False
@@ -338,6 +375,11 @@ class WingletAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._running = False
+        if self._is_secondary:
+            self._mark_disconnected()
+            self._loop = None
+            self._execution_tasks.clear()
+            return
         self._unwatch_routines()
         self._mark_disconnected()
         global _ACTIVE
@@ -380,9 +422,13 @@ class WingletAdapter(BasePlatformAdapter):
             if not self._serves(bot):
                 # Hermes would quietly answer as the main bot instead; say what's wrong rather than pretend.
                 await self._hub.post_message(chat["id"], "This bot isn't running yet. Restart the server so Hermes "
-                                             "starts serving it, then send your message again.", role="system", push=False)
+                                              "starts serving it, then send your message again.", role="system", push=False)
                 return
-            source.profile = bot
+            # Route through the secondary adapter (if any) so Hermes binds the right profile.
+            secondary = self._bot_adapter(bot)
+            if secondary is not None and secondary is not self:
+                await secondary._on_user_message(chat, text, device, message, files=files, reply=reply)
+                return
         media_urls, media_types, kinds = [], [], []
         for f in files or []:
             voice = f.get("kind") == "voice"
@@ -587,10 +633,9 @@ class WingletAdapter(BasePlatformAdapter):
             raise hermes_api.HermesRefused("This bot isn't running yet. Restart the server and it connects its MCP "
                                            "servers as it starts.")
         chat_id = self._hub.home_chat({"role": "owner"}) if bot else GENERAL_CHAT_ID
-        source = self.build_source(chat_id=chat_id, chat_name=chat_id if bot else "General", chat_type="dm",
-                                   user_id=USER_PREFIX + "app", user_name="Winglet", role_authorized=True)
-        if bot:
-            source.profile = bot
+        owner = self._bot_adapter(bot or "") or self
+        source = owner.build_source(chat_id=chat_id, chat_name=chat_id if bot else "General", chat_type="dm",
+                                    user_id=USER_PREFIX + "app", user_name="Winglet", role_authorized=True)
         event = MessageEvent(text="/reload-mcp", message_type=MessageType.COMMAND, source=source,
                              timestamp=datetime.now(tz=timezone.utc))
         return await hermes_api.reload_mcp(getattr(self, "gateway_runner", None), event)
@@ -668,11 +713,11 @@ class WingletAdapter(BasePlatformAdapter):
         runner = getattr(self, "gateway_runner", None)
         if runner is None:
             return None
-        source = self.build_source(chat_id=chat_id, chat_name=chat_id, chat_type="dm", user_id=USER_PREFIX + "app",
-                                   user_name="Winglet", role_authorized=True)
-        bot = self._bot_of(chat_id)
-        if bot and self._serves(bot):
-            source.profile = bot
+        # A bot's chat is keyed through that bot's own adapter: Hermes stamps its profile on the source, so the key
+        # carries the profile's namespace (stop, approvals and steering find the right session).
+        owner = self._bot_adapter(self._bot_of(chat_id) or "") or self
+        source = owner.build_source(chat_id=chat_id, chat_name=chat_id, chat_type="dm", user_id=USER_PREFIX + "app",
+                                    user_name="Winglet", role_authorized=True)
         # The runner's own key (it adds the profile's namespace); a DM key leaves the sender out.
         key_for = getattr(runner, "_session_key_for_source", None)
         if key_for is None:
@@ -686,12 +731,24 @@ class WingletAdapter(BasePlatformAdapter):
         return (chat or {}).get("bot") or None
 
     def _serves(self, bot: str) -> bool:
-        state = hermes_api.multiplex_state(getattr(self, "gateway_runner", None))
-        return state["multiplex"] and bot in state["served"]
+        """A bot is served when Hermes has built (and connected) a Winglet adapter for its profile.
+
+        That adapter is what makes Hermes bind the turn to the bot's profile; with none, a message would
+        quietly be answered by the main bot, so the chat says so instead."""
+        return self._bot_adapter(bot) is not None
+
+    def _bot_adapter(self, bot: str) -> Optional["WingletAdapter"]:
+        """The adapter Hermes built for this bot's profile, once it is connected to the hub (else None)."""
+        if not bot:
+            return None
+        for adapter in _winglet_adapters(getattr(self, "gateway_runner", None)):
+            if adapter._bot_name_for_secondary() == bot and getattr(adapter, "_hub", None) is not None:
+                return adapter
+        return None
 
     def _bots_state(self) -> Dict[str, Any]:
         state = hermes_api.multiplex_state(getattr(self, "gateway_runner", None))
-        bots = [{**b, "served": state["multiplex"] and b["name"] in state["served"]} for b in hermes_api.list_bots()]
+        bots = [{**b, "served": self._serves(b["name"])} for b in hermes_api.list_bots()]
         return {"bots": bots, "multiplex": state["multiplex"], "reason": state["reason"]}
 
     def _chat_model(self, chat_id: str) -> Optional[Dict[str, Any]]:

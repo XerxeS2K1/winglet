@@ -14,8 +14,6 @@ import contextlib
 import json
 import logging
 import os
-import subprocess
-import tempfile
 from typing import Any, Callable, Dict, List, Optional
 
 from . import hermes_api
@@ -70,43 +68,45 @@ def _author(sender: str) -> Dict[str, Any]:
 def can_deliver() -> bool:
     """This Hermes delivers to a teammate the way Bot Mode does, with the sending bot as the turn's author."""
     try:
-        from tools.bot_relay import delivery_env, local_delivery_command  # noqa: F401
+        from tools.bot_live_delivery import find_canonical_live_owner, deliver_to_live_owner, await_delivery  # noqa: F401
     except Exception:
         return False
     return True
 
 
-def _child_env(profile: str, sender: str) -> Dict[str, str]:
-    """Hermes's own environment for a delivery turn: the target profile's (never this one's secrets or
-    session), with the sending bot as its author."""
+def _deliver(profile: str, content: str, sender: str) -> dict:
+    """Deliver a message to a teammate bot and wait for its reply.
+
+    Uses Hermes's bot_live_delivery (the same door Bot Mode uses): the target profile's own
+    gateway runs the turn in its Bot Chat, and we wait on the durable receipt. No subprocess,
+    no turn lock (the target's queue serialises turns). Never resend after a timeout or an
+    unknown outcome.
+    """
+    from tools.bot_live_delivery import (
+        find_canonical_live_owner, deliver_to_live_owner, await_delivery,
+    )
+    import uuid
+
+    owner = find_canonical_live_owner(_profile_home(profile))
+    if owner is None:
+        raise RuntimeError("the target profile has no store yet")
+    author = _author(sender)
+    delivery_id = uuid.uuid4().hex
+    admitted = deliver_to_live_owner(
+        _profile_home(profile), owner, content, delivery_id=delivery_id, author=author)
+    # admitted may be a refusal (admitted: false) — settle it.
+    if not admitted.get("admitted", True):
+        from tools.bot_live_delivery import settle_held_delivery
+        admitted = settle_held_delivery(_profile_home(profile), owner, content, delivery_id=delivery_id, author=author)
+    record = await_delivery(_profile_home(profile), delivery_id, ASK_TIMEOUT_SECONDS)
+    if record is None:
+        raise RuntimeError("no receipt was ever readable")
+    return record
+
+
+def _profile_home(profile: str):
     from hermes_cli.profiles import get_profile_dir
-    from tools.bot_relay import delivery_env
-    return delivery_env(_author(sender), get_profile_dir(profile))
-
-
-def _turn_lock(profile: str):
-    """Hermes's own lock on a profile's Bot Chat turn, so two messages never run at once there."""
-    try:
-        from tools.bot_mode_probe import _hermes_root
-        from tools.bot_relay import acquire_turn_lock
-        from hermes_cli.profiles import _get_default_hermes_home
-        return acquire_turn_lock(_hermes_root(_get_default_hermes_home()), profile)
-    except Exception:
-        return contextlib.nullcontext()
-
-
-def _deliver(profile: str, content: str, sender: str) -> subprocess.CompletedProcess:
-    from tools.bot_relay import local_delivery_command
-    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as fh:
-        fh.write(content)
-        path = fh.name
-    try:
-        with _turn_lock(profile):
-            return subprocess.run(local_delivery_command(profile, path), stdin=subprocess.DEVNULL, capture_output=True,
-                                  text=True, timeout=ASK_TIMEOUT_SECONDS, env=_child_env(profile, sender))
-    finally:
-        with contextlib.suppress(OSError):
-            os.unlink(path)
+    return get_profile_dir(profile)
 
 
 def ask_bot(args: dict, **_: Any) -> str:
@@ -131,19 +131,37 @@ def ask_bot(args: dict, **_: Any) -> str:
     if len(message) > MESSAGE_MAX_CHARS:
         return _error(f"That message is too long ({len(message)} characters, at most {MESSAGE_MAX_CHARS}).")
     sender = next((b for b in roster if b["name"] == me), {"title": me})
-    content = f"Message from 🤖 {sender['title']} (@{_handle(me)}): {message}"
+    # The receipt's reply is the teammate's final text, so tell it to answer here rather than reach for a
+    # messaging tool (a bare "reply with X" was taken literally and sent to the asker instead).
+    content = (f"Message from 🤖 {sender['title']} (@{_handle(me)}): {message}\n\n"
+               "(Answer in your reply to this message. Your reply is returned to the sender automatically, "
+               "so do not message anyone.)")
     try:
-        done = _deliver(bot["name"], content, me)
-    except subprocess.TimeoutExpired:
-        return _error(f"{bot['title']} didn't answer within {ASK_TIMEOUT_SECONDS // 60} minutes.")
+        record = _deliver(bot["name"], content, me)
     except Exception as exc:
+        # find_canonical_live_owner raises ValueError when the authority isn't ready;
+        # await_delivery may time out (returns a pending record, not an exception).
+        if "authority is not ready" in str(exc).lower() or "not ready" in str(exc).lower():
+            return _error(f"{bot['title']} isn't running right now (its gateway authority isn't ready).")
         logger.warning("[winglet] asking %s failed", bot["name"], exc_info=True)
         return _error(f"Couldn't reach {bot['title']}: {exc}")
-    reply = (done.stdout or "").strip()
-    if done.returncode != 0 or not reply:
-        detail = (done.stderr or done.stdout or "").strip()[-600:]
+    # Interpret the receipt record.
+    status = record.get("status") if isinstance(record, dict) else None
+    if status == "settled":
+        reply = (record.get("reply") or "").strip()
+        if not reply:
+            return _error(f"{bot['title']} couldn't answer.", detail=(record.get("error") or "")[-600:])
+        return json.dumps({"bot": bot["title"], "reply": reply})
+    if status in ("failed", "cancelled", "ambiguous"):
+        detail = (record.get("error") or record.get("reason") or "").strip()[-600:]
+        if status == "ambiguous":
+            return _error(f"{bot['title']} may have answered, but the result is unclear — don't resend. "
+                          f"Detail: {detail}")
         return _error(f"{bot['title']} couldn't answer.", detail=detail)
-    return json.dumps({"bot": bot["title"], "reply": reply})
+    # Pending / timeout / unknown.
+    if status == "queued" or status == "claimed":
+        return _error(f"{bot['title']} is still working; try again in a moment.")
+    return _error(f"{bot['title']} didn't answer in time.", detail=str(record)[:600])
 
 
 def make_bot(args: dict, **_: Any) -> str:
@@ -164,8 +182,7 @@ def make_bot(args: dict, **_: Any) -> str:
     if on_bots_changed is not None:
         with contextlib.suppress(Exception):
             on_bots_changed()
-    return json.dumps({"made": bot, "note": "It shows up in the Winglet app. If Hermes isn't serving every profile yet, "
-                                            "the server needs one restart before it can answer."})
+    return json.dumps({"made": bot, "note": "It shows up in the Winglet app."})
 
 
 def approve_making_bots(tool_name: str = "", args: Optional[dict] = None, **_: Any) -> Optional[dict]:

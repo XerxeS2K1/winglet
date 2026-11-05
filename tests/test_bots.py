@@ -11,6 +11,7 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from pathlib import Path
 
 from plugin.hub import Hub
 from plugin.store import Store
@@ -173,6 +174,7 @@ async def test_making_a_bot_from_the_phone(client, hub):
     assert bad.status == 400
     taken = await post_signed(client, owner, "/api/bots", {"name": "researcher", "title": "Again", "persona": ""})
     assert taken.status == 409
+    hub.bot_start_wait = 0  # don't wait for Hermes to start an adapter that this test never will
     real_create = hub.hermes.create_bot
 
     def create_and_serve(name, title, persona, description=""):
@@ -235,26 +237,58 @@ async def test_renaming_and_deleting_a_bot(client, hub):
 # -- the adapter routes a bot's chat to its profile ----------------------------------------------
 
 
-async def test_a_bots_chat_goes_to_its_profile_only_when_hermes_serves_it(adapter, monkeypatch):  # noqa: F811
+def _serve(adapter, **bots):
+    """Hermes's registry of per-profile adapters, which the main adapter reads to find a bot's adapter."""
+    runner = getattr(adapter, "gateway_runner", None) or SimpleNamespace()
+    runner.adapters = {"winglet": adapter}
+    runner._profile_adapters = {name: {"winglet": bot} for name, bot in bots.items()}
+    adapter.gateway_runner = runner
+    for bot in bots.values():  # Hermes hands every adapter it builds the same runner
+        bot.gateway_runner = runner
+
+
+def _bot_adapter(adapter, profile):
+    """What Hermes builds for a served profile: another adapter that stamps that profile on every source."""
+    other = adapter.module.WingletAdapter.__new__(adapter.module.WingletAdapter)
+    other.name = "Winglet"
+    other._hermes_profile_name = profile
+    other._hub = adapter._hub
+    other.handled = []
+    other.build_source = lambda **kw: SimpleNamespace(profile=profile, **kw)
+
+    async def handle_message(event):
+        other.handled.append(event)
+
+    other.handle_message = handle_message
+    return other
+
+
+async def test_a_bots_chat_goes_through_its_own_adapter_and_says_so_when_it_has_none(adapter, monkeypatch):  # noqa: F811
     store = adapter._hub.store
     store.ensure_chat("b-researcher", "Researcher", bot="researcher")
-    state = {"multiplex": True, "served": ["default", "researcher"], "reason": ""}
-    monkeypatch.setattr(adapter.module.hermes_api, "multiplex_state", lambda runner: state)
+    _serve(adapter)
     device = {"id": "d", "name": "Pixel"}
-    await adapter._on_user_message(store.get_chat("b-researcher"), "hi", device, {"id": "m1"})
-    assert adapter.handled[-1].source.profile == "researcher"
-    await adapter._on_user_message(store.get_chat("general") or {"id": "general", "title": "General"}, "hi", device, {"id": "m2"})
-    assert not hasattr(adapter.handled[-1].source, "profile")
-    # Hermes would answer as the main bot instead: the chat says what's wrong, nothing is sent.
-    state = {"multiplex": False, "served": ["default"], "reason": "only one profile exists"}
-    monkeypatch.setattr(adapter.module.hermes_api, "multiplex_state", lambda runner: state)
-    await adapter._on_user_message(store.get_chat("b-researcher"), "hi", device, {"id": "m3"})
-    assert len(adapter.handled) == 2
+    # Hermes has built no adapter for the profile: the main bot must not answer in its place.
+    await adapter._on_user_message(store.get_chat("b-researcher"), "hi", device, {"id": "m0"})
+    assert adapter.handled == []
     assert "isn't running yet" in store.list_messages("b-researcher")[-1]["text"]
-    monkeypatch.setattr(adapter.module.hermes_api, "list_bots", lambda: [{"name": "researcher", "title": "Researcher",
-                                                                          "description": ""}])
-    assert adapter._bots_state() == {"bots": [{"name": "researcher", "title": "Researcher", "description": "",
-                                               "served": False}], "multiplex": False, "reason": "only one profile exists"}
+    # Hermes built one: the turn goes through it, so Hermes binds the bot's profile. Winglet stamps nothing itself.
+    bot = _bot_adapter(adapter, "researcher")
+    _serve(adapter, researcher=bot)
+    await adapter._on_user_message(store.get_chat("b-researcher"), "hi", device, {"id": "m1"})
+    assert adapter.handled == [] and len(bot.handled) == 1 and bot.handled[0].source.profile == "researcher"
+    # The bot's own adapter receiving the message handles it itself (no hand-off loop).
+    await bot._on_user_message(store.get_chat("b-researcher"), "again", device, {"id": "m2"})
+    assert len(bot.handled) == 2
+    # The main chat stays with the main adapter and carries no profile.
+    await adapter._on_user_message(store.get_chat("general") or {"id": "general", "title": "General"}, "hi", device, {"id": "m3"})
+    assert len(adapter.handled) == 1 and not hasattr(adapter.handled[-1].source, "profile") and len(bot.handled) == 2
+    monkeypatch.setattr(adapter.module.hermes_api, "list_bots", lambda: [
+        {"name": "researcher", "title": "Researcher", "description": ""}, {"name": "idle", "title": "Idle", "description": ""}])
+    monkeypatch.setattr(adapter.module.hermes_api, "multiplex_state",
+                        lambda runner: {"multiplex": True, "served": ["default", "researcher"], "reason": ""})
+    served = {b["name"]: b["served"] for b in adapter._bots_state()["bots"]}
+    assert served == {"researcher": True, "idle": False}
 
 
 async def test_reconnecting_mcp_reloads_the_bot_it_was_asked_for(adapter, aiohttp_client, monkeypatch):  # noqa: F811
@@ -270,8 +304,8 @@ async def test_reconnecting_mcp_reloads_the_bot_it_was_asked_for(adapter, aiohtt
         reloaded.append(event)
         return "MCP servers reloaded"
     adapter.gateway_runner = SimpleNamespace(_execute_mcp_reload=execute_mcp_reload)
-    state = {"multiplex": True, "served": ["default", "researcher"], "reason": ""}
-    monkeypatch.setattr(adapter.module.hermes_api, "multiplex_state", lambda runner: state)
+    # Hermes built an adapter for the profile; its sources carry the profile, so the reload is routed there.
+    _serve(adapter, researcher=_bot_adapter(adapter, "researcher"))
     client = await aiohttp_client(hub.build_app())
     owner = await pair_phone(client, hub)
 
@@ -284,7 +318,7 @@ async def test_reconnecting_mcp_reloads_the_bot_it_was_asked_for(adapter, aiohtt
     assert (await post_signed(client, owner, "/api/mcp/reload", {})).status == 200
     assert reloaded[-1].source.chat_id == "general" and not hasattr(reloaded[-1].source, "profile")
     # A bot the gateway doesn't serve yet: say so, and never reload the main bot instead.
-    state = {"multiplex": False, "served": ["default"], "reason": "only one profile exists"}
+    _serve(adapter)
     resp = await post_signed(client, owner, "/api/mcp/reload?bot=researcher", {})
     assert resp.status == 400 and "isn't running yet" in (await resp.json())["error"] and len(reloaded) == 2
 
@@ -334,6 +368,12 @@ def test_a_bot_made_here_is_a_hermes_profile_with_its_own_persona(tmp_path, monk
     assert made == {"name": "chef", "title": "Chef", "description": "Plans meals"}
     assert h.list_bots() == [made]
     profile = home / "profiles" / "chef"
+    # Hermes serves a bot in this app through a Winglet adapter of its own, built only for a profile that has the
+    # plugin and the platform enabled: a new bot is set up that way, with the one installed plugin copy.
+    import yaml
+    chef_cfg = yaml.safe_load((profile / "config.yaml").read_text())
+    assert chef_cfg["platforms"]["winglet"]["enabled"] is True and chef_cfg["plugins"]["enabled"] == ["winglet"]
+    assert (profile / "plugins" / "winglet").resolve() == Path(h.__file__).resolve().parent
     env = (profile / ".env").read_text()
     assert "ANTHROPIC_API_KEY=sk-test" in env and "TELEGRAM_BOT_TOKEN" not in env  # keys yes, chat tokens no
     from tools.bot_mode_probe import is_bot_mode_managed

@@ -228,6 +228,9 @@ def _clip(text: str, n: int) -> str:
 
 
 class Hub:
+    # How long a newly made bot gets to start being served before the phone is told to restart the server.
+    bot_start_wait = 30.0
+
     def __init__(self, store: Store, *, web_root: Optional[Path] = None,
                  bot_info: Optional[Callable[[], Dict[str, Any]]] = None,
                  ntfy_server: str = "https://ntfy.sh", http_client: Any = None,
@@ -2776,8 +2779,15 @@ class Hub:
             logger.warning("[winglet] bot creation failed", exc_info=True)
             await self._finish_job(job_id, "failed", "The bot couldn't be made. The server log has the details.")
             return
-        state = await asyncio.to_thread(self.bots_state, True)
-        served = any(b["name"] == name and b.get("served") for b in state["bots"])
+        # Hermes notices the new profile and starts its adapter within a few seconds; give it that long before
+        # saying the server needs a restart.
+        deadline = time.monotonic() + self.bot_start_wait
+        while True:
+            state = await asyncio.to_thread(self.bots_state, True)
+            served = any(b["name"] == name and b.get("served") for b in state["bots"])
+            if served or time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(2)
         # Phones learn about the bot before they hear it's ready, so they can open it straight away.
         await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
         await self._finish_job(job_id, "succeeded", f"{title} is ready." if served else

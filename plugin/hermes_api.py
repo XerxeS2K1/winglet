@@ -2078,7 +2078,37 @@ def create_bot(name: str, title: str, persona: str, description: str = "") -> di
     _rpc("profiles.create", {"name": name, "soul": persona, "description": description})
     _rpc("profiles.configure", {"name": name, "ui_meta": {"hermes-bots": {"title": title, "created": int(_time.time() * 1000)}}})
     from hermes_cli.profiles import get_profile_dir
+    try:
+        _enable_winglet_for(name)
+    except Exception:
+        # The bot exists and works in Hermes; it just isn't reachable from this app until Winglet is enabled in
+        # its profile (`hermes -p <name> plugins enable winglet`, then `config set platforms.winglet.enabled true`).
+        logger.warning("[winglet] couldn't enable Winglet in the %s profile", name, exc_info=True)
     return _bot_row(name, get_profile_dir(name))
+
+
+def _enable_winglet_for(name: str) -> None:
+    """Hermes serves a profile in this app only through a Winglet adapter of its own, and builds one only for a
+    profile that has the plugin and the platform enabled. Do what `hermes -p <name> plugins enable winglet` and
+    `config set platforms.winglet.enabled true` do; Hermes's running gateway notices the change and starts it."""
+    from pathlib import Path
+    from hermes_cli.config import read_raw_config, save_config
+    from hermes_cli.profiles import get_profile_dir
+    plugin_dir = Path(__file__).resolve().parent
+    link = get_profile_dir(name) / "plugins" / "winglet"
+    if not link.exists():
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(plugin_dir, target_is_directory=True)  # the one installed copy, so updates reach every bot
+    with _bot_scope(name):
+        cfg = read_raw_config()
+        plugins = cfg.setdefault("plugins", {})
+        enabled = [p for p in (plugins.get("enabled") or []) if isinstance(p, str)]
+        if "winglet" not in enabled:
+            enabled.append("winglet")
+        plugins["enabled"] = enabled
+        plugins["disabled"] = [p for p in (plugins.get("disabled") or []) if p != "winglet"]
+        cfg.setdefault("platforms", {}).setdefault("winglet", {})["enabled"] = True
+        save_config(cfg)
 
 
 def multiplex_state(runner) -> dict:
