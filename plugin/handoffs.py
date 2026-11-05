@@ -19,6 +19,30 @@ class HandoffService:
         self.read_receipt = read_receipt
         self._lock = asyncio.Lock()
 
+    def _events(self, message):
+        meta = message.get("meta") or {}
+        key = (meta.get("asked") or meta.get("handoff_origin") or {}).get("delivery_id")
+        if not isinstance(key, str):
+            return []
+        events = []
+        for message_id in ("handoff-" + key, "handoff-target-" + key):
+            row = self.hub.store.get_message(message_id)
+            if row:
+                events.extend([{"type": "message.update", "chat_id": row["chat_id"], "message": row},
+                               {"type": "chat.update", "chat": self.hub.store.get_chat(row["chat_id"])}])
+        return events
+
+    async def begin(self, delivery_id, sender_title):
+        return await self.hub.publish(
+            lambda: self.hub.store.begin_handoff_notes(delivery_id, sender_title),
+            lambda notes: [event for m in notes for event in (
+                {"type": "message.new", "chat_id": m["chat_id"], "message": m},
+                {"type": "chat.update", "chat": self.hub.store.get_chat(m["chat_id"])})])
+
+    async def finish_inline(self, delivery_id, answer, failed=False):
+        return await self.hub.publish(
+            lambda: self.hub.store.finish_handoff(delivery_id, answer, failed, notify=False), self._events)
+
     async def watch(self):
         while True:
             try:
@@ -42,9 +66,8 @@ class HandoffService:
                     answer = reply if not failed else 'The hand-off did not produce a confirmed answer. Do not resend automatically.'
                     message = await self.hub.publish(
                         lambda: self.hub.store.finish_handoff(row['delivery_id'], answer, failed),
-                        lambda m: [{'type': 'message.new', 'chat_id': m['chat_id'], 'message': m},
-                                   {'type': 'chat.update', 'chat': self.hub.store.get_chat(m['chat_id'])}])
-                    if message is not None:
+                        self._events)
+                    if message is not None and self.hub._notifiable(message):
                         # Generic message text; the answer is only in the expandable chat row.
                         # Existing mute/foreground/privacy rules handle this normal message push.
                         self.hub.schedule_push(message['chat_id'], message['id'], final=True)

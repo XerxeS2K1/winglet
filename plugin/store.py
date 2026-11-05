@@ -561,7 +561,35 @@ class Store:
         return [dict(row) for row in self._all("SELECT * FROM handoffs WHERE state='waiting' OR "
                          "(state='inline' AND inline_until < ?) ORDER BY created_at", (_now(),))]
 
-    def finish_handoff(self, delivery_id: str, answer: str, failed: bool) -> Optional[Dict[str, Any]]:
+    def begin_handoff_notes(self, delivery_id: str, sender_title: str) -> List[Dict[str, Any]]:
+        with self.transaction():
+            row = self._one("SELECT * FROM handoffs WHERE delivery_id=?", (delivery_id,))
+            if row is None:
+                return []
+            chat = self.get_chat(row["chat_id"])
+            if chat is None or (chat.get("bot") or "") != row["from_bot"]:
+                raise ValueError("The asking chat is unavailable")
+            notes = []
+            source_id = "handoff-" + delivery_id
+            if self.get_message(source_id) is None:
+                notes.append(self.add_message(row["chat_id"], "system", f"Asked {row['title']} — queued",
+                    status="streaming", message_id=source_id, meta={"notify": False, "asked": {
+                        "bot": row["title"], "question": row["question"], "answer": "", "failed": False,
+                        "state": "queued", "delivery_id": delivery_id}}))
+            target_id = "general" if row["to_bot"] == "default" else "b-" + row["to_bot"]
+            target_bot = None if row["to_bot"] == "default" else row["to_bot"]
+            target = self.ensure_chat(target_id, row["title"], bot=target_bot, implicit=True)
+            note_id = "handoff-target-" + delivery_id
+            if target is not None and target.get("bot") == target_bot and self.get_message(note_id) is None:
+                title = " ".join(chat["title"].split())[:60]
+                sender = " ".join(sender_title.split())[:60]
+                preview = " ".join(row["question"].split())[:120]
+                label = f'Task from {sender} (chat {json.dumps(title, ensure_ascii=False)}): {preview}'
+                notes.append(self.add_message(target_id, "system", label, message_id=note_id,
+                    meta={"notify": False, "handoff_origin": {"label": label, "state": "queued", "delivery_id": delivery_id}}))
+            return [note for note in notes if note is not None]
+
+    def finish_handoff(self, delivery_id: str, answer: str, failed: bool, *, notify: bool = True) -> Optional[Dict[str, Any]]:
         """Atomically add one notice and close its ledger row; a restart cannot duplicate the chat row."""
         with self.transaction():
             row = self._one("SELECT * FROM handoffs WHERE delivery_id=? AND state IN ('inline', 'waiting')", (delivery_id,))
@@ -569,13 +597,29 @@ class Store:
                 return None
             chat = self.get_chat(row["chat_id"])
             self.handoff_state(delivery_id, "done")
+            state = "failed" if failed else "answered"
+            target = self.get_message("handoff-target-" + delivery_id)
+            target_bot = None if row["to_bot"] == "default" else row["to_bot"]
+            if target and (self.get_chat(target["chat_id"]) or {}).get("bot") == target_bot:
+                origin = {**target["meta"]["handoff_origin"], "state": state}
+                target = self.update_message(target["id"], origin["label"] + (" — No confirmed answer" if failed else " — Finished"),
+                                             meta={"notify": False, "handoff_origin": origin})
+            else:
+                target = None
             if chat is None or (chat.get("bot") or "") != row["from_bot"]:
-                return None  # Never recreate a deleted chat or leak into a different bot's scope.
+                return target  # Never recreate a deleted asking chat.
             text = (f"{row['title']} ended the hand-off without a confirmed answer." if failed else
-                    f"{row['title']} finished the handed-off task.")
-            return self.add_message(row["chat_id"], "bot", text, meta={"asked": {
-                "bot": row["title"], "question": row["question"], "answer": answer[:6000],
-                "failed": failed, "delivery_id": delivery_id}}, message_id="handoff-" + delivery_id)
+                    f"{row['title']} finished the handed-off task.") if notify else f"Asked {row['title']}"
+            meta: Dict[str, Any] = {"asked": {"bot": row["title"], "question": row["question"], "answer": answer[:6000],
+                              "failed": failed, "state": state, "delivery_id": delivery_id}}
+            if not notify:
+                meta["notify"] = False
+            message_id = "handoff-" + delivery_id
+            role = "bot" if notify else "system"
+            if self.get_message(message_id):
+                self._exec("UPDATE messages SET role=? WHERE id=?", (role, message_id))
+                return self.update_message(message_id, text, status="final", meta=meta)
+            return self.add_message(row["chat_id"], role, text, meta=meta, message_id=message_id)
 
     # -- messages ----------------------------------------------------------------
 

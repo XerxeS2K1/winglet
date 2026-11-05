@@ -43,6 +43,14 @@ test('the bot picker uses activity labels and a distinct accessible working dot'
   assert.match(screen, /accessibilityLabel="Working"/);
 });
 
+test('pending hand-offs do not claim that the teammate already answered', () => {
+  const label = exports.handoffAnswerLabel ?? (() => 'answered');
+  assert.equal(label({ bot: 'Chef', state: 'queued' }), 'Queued; the answer will appear here');
+  assert.equal(label({ bot: 'Chef', state: 'answered' }), 'Chef answered');
+  assert.equal(label({ bot: 'Chef', state: 'failed', failed: true }), 'No answer');
+  assert.equal(label({ bot: 'Chef', failed: false }), 'Chef answered'); // older server
+});
+
 const { notRunning, teamworkOff } = exports;
 
 test('activity labels keep queued work separate from approvals and unknown data', () => {

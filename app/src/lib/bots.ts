@@ -10,6 +10,12 @@ export function botActivityLabel(activity?: BotActivity): string {
   return queued ? `${queued} queued` : 'Online';
 }
 
+/** The expandable hand-off row must not label a queued task as answered. */
+export function handoffAnswerLabel(asked: { bot: string; state?: string; failed?: boolean }): string {
+  if (asked.state === 'queued') return 'Queued; the answer will appear here';
+  return asked.failed ? 'No answer' : `${asked.bot} answered`;
+}
+
 /** A bot's short name (its Hermes profile name) from what it's called: "Meal Planner!" reads "meal-planner". */
 export function botName(title: string): string {
   return title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')

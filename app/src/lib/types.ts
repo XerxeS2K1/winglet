@@ -166,7 +166,8 @@ export type Message = {
     /** Set by the server on Hermes's own progress (a tool running), which the chat folds away. */
     activity?: boolean;
     /** Another bot this chat's bot asked for help, with what was asked and answered; the chat shows it as one tappable line. */
-    asked?: { bot: string; question: string; answer: string; failed?: boolean };
+    asked?: { bot: string; question: string; answer: string; failed?: boolean;
+      state?: 'queued' | 'answered' | 'failed'; delivery_id?: string };
     /** A local delivery error; never sent to Hermes as part of the prompt. */
     delivery_error?: string;
   };

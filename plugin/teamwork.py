@@ -160,11 +160,12 @@ def _handoff_origin():
     from . import adapter
     active = adapter._ACTIVE
     chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
-    if active is None or active._hub is None or getattr(active, "_loop", None) is None or not chat_id:
+    loop = getattr(active, "_loop", None)
+    if active is None or active._hub is None or loop is None or not chat_id:
         return None
     if active._hub.store.get_chat(chat_id) is None:
         return None
-    return active._hub, chat_id
+    return active._hub, chat_id, loop
 
 
 def ask_bot(args: dict, **_: Any) -> str:
@@ -194,6 +195,7 @@ def ask_bot(args: dict, **_: Any) -> str:
     if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not math.isfinite(wait) or not 0 <= wait <= MAX_ASK_WAIT_SECONDS:
         return _error(f"wait must be a number from 0 to {MAX_ASK_WAIT_SECONDS} seconds.")
     delivery_id = uuid.uuid4().hex
+    sender = next((b for b in roster if b["name"] == me), {"title": me})
     origin = None
     try:
         # Hermes can also call the tool outside Winglet: inline replies still work there,
@@ -204,9 +206,15 @@ def ask_bot(args: dict, **_: Any) -> str:
             pass
         if origin:
             origin[0].store.register_handoff(delivery_id, origin[1], bot["name"], bot["title"], message, wait)
+            future = asyncio.run_coroutine_threadsafe(origin[0].handoffs.begin(delivery_id, sender["title"]), origin[2])
+            try:
+                future.result(timeout=5)
+            except Exception:
+                future.cancel()
+                origin[0].store.finish_handoff(delivery_id, "Nothing was sent: the origin note could not be published.", True, notify=False)
+                raise
     except Exception as exc:
         return _error(f"Couldn't record the hand-off; nothing was sent: {exc}")
-    sender = next((b for b in roster if b["name"] == me), {"title": me})
     # The receipt's reply is the teammate's final text, so tell it to answer here rather than reach for a
     # messaging tool (a bare "reply with X" was taken literally and sent to the asker instead).
     content = (f"Message from 🤖 {sender['title']} (@{_handle(me)}){_origin_clause()}: {message}\n\n"
@@ -226,12 +234,26 @@ def ask_bot(args: dict, **_: Any) -> str:
     # Interpret the receipt record.
     status = record.get("status") if isinstance(record, dict) else None
     if origin:
-        origin[0].store.handoff_state(delivery_id, "done" if status in ("settled", "failed", "cancelled", "ambiguous") else "waiting")
+        if status in ("settled", "failed", "cancelled", "ambiguous"):
+            answer = str(record.get("reply") or "").strip()
+            failed = status != "settled" or not answer
+            future = asyncio.run_coroutine_threadsafe(
+                origin[0].handoffs.finish_inline(delivery_id, answer if not failed else "No confirmed answer.", failed), origin[2])
+            try:
+                future.result(timeout=5)
+            except Exception:
+                # A display failure must not hide an already obtained answer or trigger a resend.
+                logger.debug("[winglet] inline hand-off note will be recovered", exc_info=True)
+                with contextlib.suppress(Exception):
+                    origin[0].store.handoff_state(delivery_id, "waiting")
+        else:
+            origin[0].store.handoff_state(delivery_id, "waiting")
     if status == "settled":
         reply = (record.get("reply") or "").strip()
         if not reply:
             return _error(f"{bot['title']} couldn't answer.", detail=(record.get("error") or "")[-600:])
-        _note_in_chat(bot["title"], message, reply)
+        if not origin:
+            _note_in_chat(bot["title"], message, reply)
         return json.dumps({"bot": bot["title"], "reply": reply})
     if status in ("failed", "cancelled", "ambiguous"):
         detail = (record.get("error") or record.get("reason") or "").strip()[-600:]

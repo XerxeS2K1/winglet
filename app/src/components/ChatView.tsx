@@ -16,6 +16,7 @@ import { useBranching } from '../features/branching/useBranching';
 import { routineHref } from '../features/routine-history/model';
 import { mediaUrl } from '../lib/api';
 import { projectOf } from '../features/projects/logic';
+import { handoffAnswerLabel } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { chatKey } from '../lib/chatOrganization';
 import { clearFocus, requestFocus, useFocusRequest } from '../lib/focus';
@@ -350,7 +351,7 @@ function AskedLine({ asked, label }: { asked: NonNullable<Message['meta']['asked
     {open ? <View style={s.askedBody}>
       <Text selectable style={s.askedLabel}>Asked</Text>
       <Text selectable style={s.askedText}>{asked.question}</Text>
-      <Text selectable style={s.askedLabel}>{asked.failed ? 'No answer' : `${asked.bot} answered`}</Text>
+      <Text selectable style={s.askedLabel}>{handoffAnswerLabel(asked)}</Text>
       <Text selectable style={s.askedText}>{asked.answer}</Text>
     </View> : null}
   </View>;
