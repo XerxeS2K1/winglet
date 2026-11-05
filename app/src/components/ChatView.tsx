@@ -32,6 +32,7 @@ import { FIXED } from '../lib/theme';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { BranchState, DraftFile, InboxItem, Message, ReplyRef, Server, Upload } from '../lib/types';
 import { AgentFace, useAvatarColor } from './AgentFace';
+import { useBotSheet } from './BotSwitcher';
 import { InboxButton, NavigationToggle } from './AppNavigation';
 import { UserAvatar } from './BotAvatar';
 import { Composer, focusComposer } from './Composer';
@@ -103,6 +104,9 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
   const hydrateChat = useApp((st) => st.hydrateChat);
   const setVisibleChat = useApp((st) => st.setVisibleChat);
   const setReplyTo = useApp((st) => st.setReplyTo);
+  // With more than one bot, the face in the header opens the bot picker; picking another bot goes to its chat.
+  const moreThanOneBot = useApp((st) => st.servers.length > 1);
+  const botPicker = useBotSheet(server, () => router.replace('/'));
   const chat = runtime?.chats[chatId];
   const messages = useApp((st) => st.runtime[server.id]?.messages[chatId]);
   const loaded = runtime?.loaded[chatId];
@@ -231,7 +235,11 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
               </Tap>
             </View>
           ) : <>
-            {!composing ? <AgentFace server={server} size={30} still /> : null}
+            {!composing ? (moreThanOneBot && !embedded
+              ? <Tap feedback="selection" scaleTo={0.92} hitSlop={6} onPress={botPicker.open} accessibilityLabel={`${server.bot.title}. Switch bot`}>
+                <AgentFace server={server} size={30} still />
+              </Tap>
+              : <AgentFace server={server} size={30} still />) : null}
             <View style={s.headerFill}>
               <Text style={s.headerTitle} numberOfLines={1} accessibilityRole="header">{title}</Text>
               <View style={s.headerIdentity}>
@@ -265,6 +273,7 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
         prepareChat={landing?.prepareChat} onFocusChange={setInputFocused} onBeforeSend={beginTurn} />}
       {!landing?.action && width > 0 ? <ChatPet key={server.id} server={server} active={committed} width={width} composerHeight={composerH}
         dockHeight={dockHeight} dockOffset={dockOffset} frame={petFrame} sent={sendCount} perched={!landing} /> : null}
+      {moreThanOneBot && !embedded ? botPicker.sheet : null}
       <ChatMenu server={server} chatId={chatId} title={title} visible={menu} onClose={() => setMenu(false)}
         onGoal={goalsSupported && chat?.kind !== 'home' ? () => setGoalOpen(true) : undefined} hasGoal={!!goal && goal.status !== 'done'}
         onFiles={runtime?.info?.features?.files ? () => setFilesOpen(true) : undefined}
