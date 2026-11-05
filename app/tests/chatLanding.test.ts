@@ -12,7 +12,7 @@ function harness() {
   const jsx = (type: any, props: any) => ({ type, props });
   const runtime: any = { status: 'online', chats: { general: { id: 'general', title: 'Main', kind: 'chat' }, fresh: { id: 'fresh', title: 'New topic', kind: 'chat' } },
     messages: { general: [{ id: 'old', text: 'Previous history' }] }, loaded: { general: true }, typing: {} };
-  const st: any = { runtime: { bot: runtime }, network: {}, hydrateChat: () => {}, setVisibleChat: () => {}, setReplyTo: () => {} };
+  const st: any = { runtime: { bot: runtime }, servers: [], network: {}, hydrateChat: () => {}, setVisibleChat: () => {}, setReplyTo: () => {} };
   const modules: Record<string, any> = {
     react: { memo: (fn: any) => fn, useCallback: (fn: any) => fn, useMemo: (fn: any) => fn(), useEffect: () => {},
       useState: (value: any) => { const i = cursor++; if (!(i in hooks)) hooks[i] = value; return [hooks[i], (next: any) => { hooks[i] = typeof next === 'function' ? next(hooks[i]) : next; }]; },
@@ -29,6 +29,7 @@ function harness() {
     '../lib/modelSheet': { useModelSheet: () => undefined },
     '../lib/messages': { chatMessages: (messages: any[]) => messages },
     './Goal': { useChatGoal: () => ({ goal: null, refresh: () => {}, supported: false }) },
+    './BotSwitcher': { useBotSheet: () => ({ open: () => {}, sheet: null }) },
     './Composer': { Composer: 'Composer' }, './ChatPet': { ChatPet: 'ChatPet' },
   };
   const result: any = {};
