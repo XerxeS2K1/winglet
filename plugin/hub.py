@@ -91,6 +91,8 @@ BOTS_WATCH_SECONDS = 30
 _PET_SLUG = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,79}")
 # Thumbnails of pets not installed yet mean a petdex download each; a few at a time.
 PET_THUMB_FETCHES = 3
+# Where the gallery's pets come from. Petdex is what every older app means; the others are Winglet's own.
+PET_SOURCES = {"petdex": "petdex", "codex": "codex-pets.net"}
 # Seconds the gallery waits for petdex before answering "still loading" (the app gives up at 10).
 PET_CATALOG_WAIT = 8
 # Idempotency keys of recent instant pet switches (a pet already installed starts no job to hold one).
@@ -838,6 +840,8 @@ class Hub:
                 "abilities": self.hermes is not None, "commands": self.commands_provider is not None,
                 "sessions": self.hermes is not None and self._has(self.hermes, "sessions_available"),
                 "pets": self.hermes is not None and self._has(self.hermes, "pets_available"),
+                "pet_sources": self.hermes is not None and self._has(self.hermes, "pets_available")
+                               and self._has_attr(self.hermes, "pet_catalog_from"),
                 "bots": self.bots_provider is not None and self.hermes is not None and self._has(self.hermes, "bots_available"),
                 "bot_teamwork": self._teamwork_works(),
                 # Hands-free voice is the turn loop the app implements. `voice_live` stays false: this
@@ -2925,10 +2929,15 @@ class Hub:
         except ValueError:
             return _error(400, "offset must be a number")
         query = request.query.get("q", "").strip()[:100]
+        source = request.query.get("source") or "petdex"
+        if source not in PET_SOURCES:
+            return _error(400, "That pet source isn't offered.")
+        h = self._need_hermes()
+        call = (h.pet_catalog, query, offset) if source == "petdex" else (h.pet_catalog_from, source, query, offset)
         try:
             # Within the app's request timeout. The fetch carries on and Hermes caches it, so asking
             # again in a moment gets the gallery.
-            data = await asyncio.wait_for(self._call(self._need_hermes().pet_catalog, query, offset), PET_CATALOG_WAIT)
+            data = await asyncio.wait_for(self._call(*call), PET_CATALOG_WAIT)
         except asyncio.TimeoutError:
             return _json({"loading": True, "total": 0, "pets": []})
         for pet in data["pets"]:
@@ -2986,6 +2995,11 @@ class Hub:
         h = self._need_hermes()
         slug = self._pet_slug(request)
         body = await self._body(request)
+        source = str(body.get("source") or request.query.get("source") or "petdex")
+        if source not in PET_SOURCES:
+            return _error(400, "That pet source isn't offered.")
+        if source != "petdex" and not self._has_attr(h, "adopt_pet_from"):
+            return _error(404, "This Hermes version can't do that.")
         # A retried request answers as the first one did, and never undoes a choice made since.
         key = str(body.get("idempotency_key") or "")[:64]
         if key:
@@ -3002,18 +3016,20 @@ class Hub:
             self.audit("pet", device, f"chose {pet['name']}")
             await self._pet_changed()
             return _json({"pet": pet})
-        job = await self._begin_job(request, device, "pet_install", {"pet": slug, "message": f"Getting {slug} from petdex…"},
+        where = PET_SOURCES[source]
+        job = await self._begin_job(request, device, "pet_install", {"pet": slug, "message": f"Getting {slug} from {where}…"},
                                     body=body)
         if isinstance(job, web.Response):
             return job
-        self.audit("pet", device, f"adopted {slug} from petdex")
-        self._spawn(self._adopt_pet(job["id"], slug))
+        self.audit("pet", device, f"adopted {slug} from {where}")
+        self._spawn(self._adopt_pet(job["id"], slug, source))
         return _json({"job": job}, status=202)
 
-    async def _adopt_pet(self, job_id: str, slug: str) -> None:
+    async def _adopt_pet(self, job_id: str, slug: str, source: str = "petdex") -> None:
         h = self._need_hermes()
         try:
-            pet = await asyncio.to_thread(h.adopt_pet, slug)
+            pet = await asyncio.to_thread(h.adopt_pet, slug) if source == "petdex" \
+                else await asyncio.to_thread(h.adopt_pet_from, source, slug)
         except h.HermesRefused as exc:
             await self._finish_job(job_id, "failed", _clip(str(exc), 300))
             return

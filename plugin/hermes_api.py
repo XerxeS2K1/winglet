@@ -1933,14 +1933,20 @@ def pet_sheet(slug: str) -> Optional[dict]:
     return _pet_sheet(pet) if pet is not None and pet.exists else None
 
 
+def _pet_author(store, pet) -> dict:
+    """{"by": name} for a pet whose pet.json names its creator (pets from codex-pets.net do), else nothing."""
+    by = store._read_pet_json(pet.directory).get("author")
+    return {"by": by[:80]} if isinstance(by, str) and by.strip() else {}
+
+
 @_scoped
 def pets() -> dict:
     """Installed pets, and the one showing."""
     _, _, store, _ = _pet_engine()
     active = _active_pet()
     return {"enabled": active is not None, "active": active.slug if active else "",
-            "pets": [{"slug": p.slug, "name": p.display_name, "description": p.description, "generated": p.generated}
-                     for p in store.installed_pets()]}
+            "pets": [{"slug": p.slug, "name": p.display_name, "description": p.description, "generated": p.generated,
+                      **_pet_author(store, p)} for p in store.installed_pets()]}
 
 
 def prefetch_pet_catalog() -> None:
@@ -1971,15 +1977,57 @@ def pet_catalog(query: str = "", offset: int = 0, limit: int = PET_CATALOG_PAGE)
 def pet_thumbnail(slug: str) -> Optional[bytes]:
     """A small PNG of a pet's first frame. Pets that aren't installed are fetched from petdex once and
     cached; Hermes only fetches from petdex's own hosts."""
+    from . import petsource
     _, manifest, store, _ = _pet_engine()
     pet = store.load_pet(slug)
     if pet is not None and pet.exists:
         return store.thumbnail_png(pet.slug)
+    if (codex := petsource.codex_id(slug)) is not None:  # from codex-pets.net, through Winglet's own downloader
+        return petsource.thumbnail(codex, store._thumb_path(slug))
     try:
         entry = manifest.find_entry(slug)
     except manifest.ManifestError:
         return None
     return store.thumbnail_png(entry.slug, source_url=entry.spritesheet_url) if entry else None
+
+
+@_scoped
+def pet_catalog_from(source: str, query: str = "", offset: int = 0, limit: int = PET_CATALOG_PAGE) -> dict:
+    """A page of another source's gallery (codex-pets.net), with what's installed here marked. Petdex is
+    `pet_catalog`; this is only for the sources Winglet downloads from itself."""
+    from . import petsource
+    if source != "codex":
+        raise HermesRefused("That pet source isn't offered.")
+    _, _, store, _ = _pet_engine()
+    try:
+        page = petsource.catalog_page(query, offset)
+    except petsource.PetSourceError as exc:
+        raise HermesRefused("Couldn't reach the pet gallery at codex-pets.net. Try again later.") from exc
+    installed = {p.slug for p in store.installed_pets()}
+    return {"total": page["total"], "next_offset": page["next_offset"], "pets": [
+        {"slug": e["slug"], "name": e["name"], "kind": e["kind"], "by": e["by"], "curated": False,
+         "description": e["description"], "installed": e["slug"] in installed}
+        for e in page["pets"][:limit]]}
+
+
+@_scoped
+def adopt_pet_from(source: str, slug: str) -> dict:
+    """Install a pet from another source when it isn't here yet, and make it the one showing."""
+    from . import petsource
+    if source != "codex" or (pet_id := petsource.codex_id(slug)) is None:
+        raise HermesRefused("That pet source isn't offered.")
+    _, _, store, pet_config = _pet_engine()
+    pet = store.load_pet(slug)
+    if pet is None or not pet.exists:
+        try:
+            petsource.install(pet_id, store.pets_dir())
+        except petsource.PetSourceError as exc:
+            raise HermesRefused(f"Couldn't get that pet: {exc}") from exc
+        pet = store.load_pet(slug)
+        if pet is None or not pet.exists:
+            raise HermesRefused("Couldn't get that pet: the install didn't produce a spritesheet.")
+    pet_config._set_active(pet.slug)
+    return {"slug": pet.slug, "name": pet.display_name}
 
 
 @_scoped
