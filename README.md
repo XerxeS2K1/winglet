@@ -21,7 +21,7 @@ and tap you on the shoulder when they need you.
 
 <sub>30 seconds of Winglet. <a href="docs/media/winglet-explainer.mp4">Watch in full quality</a>.</sub>
 
-**[Get started](#get-started)** · **[Features](#what-it-does)** · **[Tour](#tour)** · **[How it works](#how-it-works)** · **[FAQ](#faq)**
+**[Get started](#get-started)** · **[Notifications](#notifications)** · **[Features](#what-it-does)** · **[Tour](#tour)** · **[How it works](#how-it-works)** · **[FAQ](#faq)**
 
 </div>
 
@@ -90,6 +90,34 @@ Setup gives you a free HTTPS address through Cloudflare. You don't need an accou
 
 The QR code carries your server key's fingerprint, so the phone checks it's really your server before pairing.
 For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**. Which Hermes versions work, and what an older one loses: [compatibility](docs/HERMES_COMPATIBILITY.md).
+
+<a id="notifications"></a>
+
+## Notifications
+
+Turn them on in the app under **Settings → Notifications**. What you can pick depends on the phone:
+
+| Phone | Route | What you need | What the middleman sees |
+|---|---|---|---|
+| **iPhone, desktop** | Web Push | Add the web app to your home screen (iOS 16.4+) and an **https** address | The push service sees that something arrived, not what it says |
+| **Android (default)** | [ntfy](https://ntfy.sh) | The free ntfy app | ntfy sees "Hermes needs you", never the details |
+| **Android (optional)** | **Built-in (Google Play services)** | A phone with Google Play services. No second app, no Firebase account or key of your own | Google sees timing, message size and your server's IP, never titles, bodies or approvals |
+
+Messages are end-to-end encrypted with keys that live on your server, whichever route you use. The Google route is never chosen
+for you. Pick it in the same list as ntfy, and switch back whenever you like.
+
+**Before you pick the Google route:**
+- It has only been tested on one phone (a Galaxy Z Fold 7), with registration, a test push, and delivery with the app killed and the
+  phone locked. It has not been tried on other phones, or on a phone that also has ntfy installed.
+- It uses an internal Google Play services interface, not a public API, so a Google update could break it. The ntfy route doesn't
+  depend on that.
+- With the default Quick Tunnel address, Android still uses ntfy.sh to recover your server's address when it changes. The Google route
+  removes the ntfy *app*, not ntfy.sh. A permanent address (your own domain or a named tunnel) avoids that.
+- When the phone is deeply asleep, ordinary pushes (chat replies, routine results) can arrive late, sometimes by tens of minutes.
+  Questions and approvals are sent as urgent and arrive straight away.
+- The piece that talks to Google Play services is LGPL-2.1 code, unmodified and credited in the app's notices.
+
+More detail, including what Google can see: [setup guide](docs/SETUP.md#notifications) and [SECURITY.md](SECURITY.md).
 
 <a id="what-it-does"></a>
 
