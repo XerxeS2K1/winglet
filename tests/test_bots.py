@@ -414,6 +414,114 @@ def test_a_bot_made_here_is_a_hermes_profile_with_its_own_persona(tmp_path, monk
         h.delete_bot("chef")
 
 
+def _hermes_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    (home / "config.yaml").write_text("model:\n  provider: anthropic\n  default: claude-x\n")
+    (home / ".env").write_text("ANTHROPIC_API_KEY=sk-test\n")
+    (home / "SOUL.md").write_text("You are Hermes.")
+    return home
+
+
+class FakeGateway:
+    """Stands in for the running gateway's control socket: records each ask, and what the profile looked like when
+    it was made. `answers` is what it replies, one per ask (the last one repeats)."""
+
+    def __init__(self, profile, answers):
+        self.profile, self.answers, self.asks = profile, list(answers), []
+
+    def __call__(self, home, verb, *, params=None, timeout=30.0):
+        import yaml
+        link = self.profile / "plugins" / "winglet"
+        cfg = yaml.safe_load((self.profile / "config.yaml").read_text()) if (self.profile / "config.yaml").exists() else {}
+        self.asks.append({"home": Path(home), "verb": verb, "params": params,
+                          "linked": link.exists(), "plugin_enabled": "winglet" in ((cfg.get("plugins") or {}).get("enabled") or []),
+                          "platform_enabled": ((cfg.get("platforms") or {}).get("winglet") or {}).get("enabled") is True})
+        return self.answers[min(len(self.asks), len(self.answers)) - 1]
+
+
+@needs_hermes
+def test_a_new_bot_tells_the_running_gateway_to_look_again_once_winglet_is_set_up_in_it(tmp_path, monkeypatch):
+    """Hermes's gateway looks at a profile the moment `profiles.create` returns, and it looks at its plugins only
+    once: it reads the profile *before* Winglet's symlink and config are written, never rescans, and so can never
+    start the bot's Winglet adapter (its retry loop only re-arms plugins that were seen). Writing the files first is
+    impossible (Hermes publishes the profile and notifies the gateway inside `profiles.create`), so after writing
+    them the bot must ask the gateway to rediscover that profile's plugins."""
+    home = _hermes_home(tmp_path, monkeypatch)
+    from gateway import control_socket
+    from plugin import hermes_api as h
+    gateway = FakeGateway(home / "profiles" / "chef", [{"reloaded": True, "adapters_rewired": 0}])
+    monkeypatch.setattr(control_socket, "query_gateway_control", gateway)
+    h.create_bot("chef", "Chef", "You are Chef.")
+    assert len(gateway.asks) == 1, gateway.asks
+    ask = gateway.asks[0]
+    assert ask["verb"] == "reload-plugins" and ask["home"].resolve() == home.resolve()
+    assert Path(ask["params"]["home"]).resolve() == (home / "profiles" / "chef").resolve()
+    # The point of the ordering: by the time the gateway rescans, the bot is fully set up for Winglet.
+    assert ask["linked"] and ask["plugin_enabled"] and ask["platform_enabled"]
+
+
+@needs_hermes
+def test_a_gateway_that_hasnt_taken_the_profile_in_yet_is_asked_again(tmp_path, monkeypatch):
+    home = _hermes_home(tmp_path, monkeypatch)
+    from gateway import control_socket
+    from plugin import hermes_api as h
+    monkeypatch.setattr(h.time, "sleep", lambda s: None)
+    not_yet = {"reloaded": False, "error": "home is not served by this gateway"}
+    gateway = FakeGateway(home / "profiles" / "chef", [not_yet, not_yet, {"reloaded": True}])
+    monkeypatch.setattr(control_socket, "query_gateway_control", gateway)
+    h.create_bot("chef", "Chef", "You are Chef.")
+    assert len(gateway.asks) == 3
+
+
+@needs_hermes
+def test_no_gateway_or_one_that_never_answers_still_makes_the_bot(tmp_path, monkeypatch, caplog):
+    home = _hermes_home(tmp_path, monkeypatch)
+    from gateway import control_socket
+    from plugin import hermes_api as h
+    monkeypatch.setattr(h.time, "sleep", lambda s: None)
+    gateway = FakeGateway(home / "profiles" / "chef", [None])  # no socket, or a gateway too old for the verb
+    monkeypatch.setattr(control_socket, "query_gateway_control", gateway)
+    made = h.create_bot("chef", "Chef", "You are Chef.")
+    assert made["name"] == "chef" and len(gateway.asks) == 1  # nobody there: no point asking again
+    refused = FakeGateway(home / "profiles" / "cook", [{"reloaded": False, "error": "home is not served by this gateway"}])
+    monkeypatch.setattr(control_socket, "query_gateway_control", refused)
+    with caplog.at_level("WARNING"):
+        assert h.create_bot("cook", "Cook", "You are Cook.")["name"] == "cook"
+    assert 1 < len(refused.asks) <= h.GATEWAY_RESCAN_TRIES  # it gives up, and says what to do
+    assert "restart" in caplog.text.lower() and "cook" in caplog.text
+
+
+@needs_hermes
+def test_a_gateway_that_blows_up_does_not_stop_the_bot_being_made(tmp_path, monkeypatch):
+    home = _hermes_home(tmp_path, monkeypatch)
+    from gateway import control_socket
+    from plugin import hermes_api as h
+
+    def explode(*a, **k):
+        raise RuntimeError("socket on fire")
+    monkeypatch.setattr(control_socket, "query_gateway_control", explode)
+    assert h.create_bot("chef", "Chef", "You are Chef.")["name"] == "chef"
+    assert (home / "profiles" / "chef" / "plugins" / "winglet").exists()
+
+
+@needs_hermes
+def test_no_rescan_is_asked_for_when_winglet_could_not_be_enabled(tmp_path, monkeypatch):
+    home = _hermes_home(tmp_path, monkeypatch)
+    from gateway import control_socket
+    from plugin import hermes_api as h
+    gateway = FakeGateway(home / "profiles" / "chef", [{"reloaded": True}])
+    monkeypatch.setattr(control_socket, "query_gateway_control", gateway)
+
+    def refuse(name):
+        raise OSError("read-only")
+    monkeypatch.setattr(h, "_enable_winglet_for", refuse)
+    assert h.create_bot("chef", "Chef", "You are Chef.")["name"] == "chef"
+    assert gateway.asks == []  # nothing changed in the profile, so nothing for the gateway to see
+
+
 async def test_the_server_says_whether_bots_can_ask_each_other(hub):
     assert hub.features()["bot_teamwork"] is False  # nothing wired: off
     hub.teamwork_ok = lambda: True
