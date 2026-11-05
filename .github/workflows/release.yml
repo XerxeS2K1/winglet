@@ -99,8 +99,8 @@ jobs:
         run: |
           APKSIGNER="$(ls -d "$ANDROID_HOME"/build-tools/*/ | sort -V | tail -1)apksigner"
           AAPT="${APKSIGNER%apksigner}aapt"
-          # Public certificate from v0.9.0. A different key would break installed-app upgrades.
-          EXPECTED_CERT="bd45603350eb7873f0b3034c57762375689822b8cfa3b9aa5ea2965ad36bb86e"
+          # Public certificate of this fork's release key (upstream's v0.9.0 key is not ours). A different key would break installed-app upgrades.
+          EXPECTED_CERT="48be2677740ba3ba5c2b93e0195906ebdcc3b7525cb32acbf86090807fa279ae"
           EXPECTED_CODE="$(node -e 'const [a,b,c]=process.env.WINGLET_VERSION.split("-")[0].split(".").map(Number); console.log(a*10000+b*100+c)')"
           for ABI in arm64-v8a armeabi-v7a; do
             APK="app/android/app/build/outputs/apk/release/app-${ABI}-release.apk"

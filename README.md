@@ -32,6 +32,8 @@ and tap you on the shoulder when they need you.
 > through Hermes's live delivery, `/approve`, `/yolo` and `/approvals` that need a signed request, a bot picker in the
 > chat header, and tests that run against Hermes `main` every week. Which Hermes versions work, and what an older one
 > loses: [Hermes compatibility](docs/HERMES_COMPATIBILITY.md). The in-app updater reads this fork's releases.
+>
+> **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
 > **New in [v0.10.0](docs/releases/v0.10.0.md):** Rooms in Projects, clearer Smart approval cards,
@@ -66,7 +68,7 @@ Winglet brings that to Hermes Agent, the open-source agent by Nous Research, wit
 **1. On your Hermes machine**, with the Hermes messaging gateway installed:
 
 ```bash
-hermes plugins install VIKASRP24/winglet/plugin
+hermes plugins install XerxeS2K1/winglet/plugin
 hermes plugins enable winglet
 hermes winglet setup          # sets up HTTPS, starts the gateway, shows a QR code
 ```
@@ -77,7 +79,7 @@ Setup gives you a free HTTPS address through Cloudflare. You don't need an accou
 
 | Android | iPhone | Desktop |
 |---|---|---|
-| Install `winglet-<version>-arm64-v8a.apk` from the [latest release](https://github.com/VIKASRP24/winglet/releases/latest), open it and tap **Scan QR code**. | Scan with the Camera app, then **Share → Add to Home Screen** and open Winglet from there. | Open the link from `hermes winglet pair` in any browser. |
+| Install `winglet-<version>-arm64-v8a.apk` from the [latest release](https://github.com/XerxeS2K1/winglet/releases/latest), open it and tap **Scan QR code**. | Scan with the Camera app, then **Share → Add to Home Screen** and open Winglet from there. | Open the link from `hermes winglet pair` in any browser. |
 
 **3. Say hello.** Your bot is on the landing screen, ready for a message.
 

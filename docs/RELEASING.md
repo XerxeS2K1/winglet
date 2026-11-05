@@ -9,8 +9,8 @@ The tag sets the app version: `v0.1.1` becomes version `0.1.1`, Android versionC
 `101` (major × 10000 + minor × 100 + patch), so every release installs as an update over the last.
 
 The release workflow checks both APKs' package name, versionName and versionCode,
-and requires the production signing certificate used by v0.9.0. Its public SHA-256
-fingerprint is `bd45603350eb7873f0b3034c57762375689822b8cfa3b9aa5ea2965ad36bb86e`.
+and requires this fork's release signing certificate. Its public SHA-256
+fingerprint is `48be2677740ba3ba5c2b93e0195906ebdcc3b7525cb32acbf86090807fa279ae`.
 Changing a signing secret alone must not silently publish APKs that existing users
 cannot install as updates. Any planned key rotation needs a separate upgrade plan
 and an intentional update to that check.

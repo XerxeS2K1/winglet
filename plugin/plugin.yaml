@@ -6,7 +6,7 @@ description: >
   Winglet: your Hermes agents on your phone. Adds the Winglet mobile app as a
   messaging platform, with QR pairing, push notifications, and one-tap
   approvals. Serves the installable web app for iPhone and desktop.
-author: VIKASRP24
+author: VIKASRP24 (original); maintained by XerxeS2K1
 python_dependencies:
   # Hermes pins exact versions in its shared environment and disables any plugin whose ranges
   # conflict on update, so only cap majors with known breaking APIs.

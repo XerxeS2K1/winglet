@@ -20,7 +20,7 @@ See [approval compatibility](../docs/APPROVALS.md).
 ## Install
 
 ```bash
-hermes plugins install VIKASRP24/winglet/plugin
+hermes plugins install XerxeS2K1/winglet/plugin
 hermes plugins enable winglet
 hermes winglet setup          # prepares HTTPS, starts/restarts the gateway and shows a QR
 ```
