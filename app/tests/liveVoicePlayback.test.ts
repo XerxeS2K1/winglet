@@ -4,6 +4,11 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 import ts from 'typescript';
 
+const abortHelper: any = (() => { const exports: any = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/lib/abort.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { exports, Error });
+  return exports; })();
+
 function browser() {
   const instances: any[] = [];
   class AudioStub {
@@ -19,7 +24,7 @@ function browser() {
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/features/live-voice/playback.ts', import.meta.url), 'utf8'),
     { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
     exports, Audio: AudioStub, setTimeout, clearTimeout,
-    require: (id: string) => id === 'react-native' ? { Platform: { OS: 'web' } } : {
+    require: (id: string) => id === 'react-native' ? { Platform: { OS: 'web' } } : id === '../../lib/abort' ? abortHelper : {
       createAudioPlayer: () => { throw new Error('Browser must not use a native player'); },
       setAudioModeAsync: () => { throw new Error('Browser must not set native audio mode'); },
     },
