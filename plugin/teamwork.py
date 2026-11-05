@@ -10,6 +10,7 @@ owner's approval.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -109,6 +110,27 @@ def _profile_home(profile: str):
     return get_profile_dir(profile)
 
 
+def _note_in_chat(bot_title: str, question: str, answer: str, failed: bool = False) -> None:
+    """Leave a small "Asked <bot>" note in the Winglet chat this question came from, carrying the exchange, so
+    the owner can open it from the chat. It stays in Winglet's own store (never in Hermes's session), never
+    notifies, never holds up the answer, and is skipped quietly anywhere it doesn't apply."""
+    try:
+        from gateway.session_context import get_session_env
+        from . import adapter
+        chat = get_session_env("HERMES_SESSION_CHAT_ID")
+        active = adapter._ACTIVE
+        if get_session_env("HERMES_SESSION_PLATFORM") != "winglet" or not chat:
+            return
+        if active is None or active._hub is None or active._loop is None or active._hub.store.get_chat(chat) is None:
+            return
+        meta = {"asked": {"bot": bot_title, "question": question[:2000], "answer": answer[:6000], "failed": failed}}
+        future = asyncio.run_coroutine_threadsafe(
+            active._hub.post_message(chat, f"Asked {bot_title}", role="system", meta=meta, push=False), active._loop)
+        future.add_done_callback(lambda f: f.exception() and logger.debug("[winglet] couldn't note the exchange: %s", f.exception()))
+    except Exception:
+        logger.debug("[winglet] couldn't note the exchange", exc_info=True)
+
+
 def ask_bot(args: dict, **_: Any) -> str:
     """Ask another bot on this server, and get its answer."""
     try:
@@ -151,6 +173,7 @@ def ask_bot(args: dict, **_: Any) -> str:
         reply = (record.get("reply") or "").strip()
         if not reply:
             return _error(f"{bot['title']} couldn't answer.", detail=(record.get("error") or "")[-600:])
+        _note_in_chat(bot["title"], message, reply)
         return json.dumps({"bot": bot["title"], "reply": reply})
     if status in ("failed", "cancelled", "ambiguous"):
         detail = (record.get("error") or record.get("reason") or "").strip()[-600:]

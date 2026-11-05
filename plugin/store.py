@@ -588,6 +588,18 @@ class Store:
                         "AND json_extract(meta, '$.client_id') = ? AND role = 'user'", (chat_id, client_id))
         return self._message(row) if row else None
 
+    def settle_interrupted_streams(self) -> int:
+        """At start-up nothing is streaming any more: a reply cut off by a crash or restart keeps what it had
+        and stops showing a live cursor; one with no text at all is removed. Returns how many it settled."""
+        settled = 0
+        for row in self._all("SELECT id, text FROM messages WHERE status = 'streaming'"):
+            if (row["text"] or "").strip():
+                self.update_message(row["id"], row["text"], status="final")
+            else:
+                self.delete_message(row["id"])
+            settled += 1
+        return settled
+
     def streaming_messages(self, chat_id: str) -> List[Dict[str, Any]]:
         rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? AND status = 'streaming'", (chat_id,))
         return [self._message(r) for r in rows]

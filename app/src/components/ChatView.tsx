@@ -329,6 +329,24 @@ function editAgain(server: Server, m: Message, failed: boolean) {
 }
 
 /** What a screen reader says for a message: who, when, and what it says. */
+/** "Asked Research": one quiet line; a tap opens what was asked and what came back. */
+function AskedLine({ asked, label }: { asked: NonNullable<Message['meta']['asked']>; label: string }) {
+  const s = useStyles();
+  const [open, setOpen] = useState(false);
+  return <View style={s.systemLine}>
+    <Pressable onPress={() => setOpen((v) => !v)} accessibilityRole="button" accessibilityState={{ expanded: open }}
+      accessibilityLabel={`${label}. ${open ? 'Hide' : 'Show'} the conversation`} hitSlop={8}>
+      <Text style={s.systemText}>{label}  {open ? '▴' : '▾'}</Text>
+    </Pressable>
+    {open ? <View style={s.askedBody}>
+      <Text selectable style={s.askedLabel}>Asked</Text>
+      <Text selectable style={s.askedText}>{asked.question}</Text>
+      <Text selectable style={s.askedLabel}>{asked.failed ? 'No answer' : `${asked.bot} answered`}</Text>
+      <Text selectable style={s.askedText}>{asked.answer}</Text>
+    </View> : null}
+  </View>;
+}
+
 function describe(m: Message, who: string, files: number) {
   const body = m.text ? plainText(m.text) : '';
   const extra = files ? `${body ? '. ' : ''}${files === 1 ? 'One attachment' : `${files} attachments`}` : '';
@@ -634,6 +652,7 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
           : <View style={s.botRow}><View style={s.botBody}><InboxCard serverId={server.id} item={inboxItem} embedded /></View></View>}
       </Animated.View>;
     }
+    if (message.meta?.asked) return <AskedLine asked={message.meta.asked} label={message.text} />;
     return <View style={s.systemLine}><Text style={s.systemText}>{message.text}</Text></View>;
   }
 
@@ -1067,6 +1086,9 @@ const useStyles = makeStyles((t) => ({
   statusNoticeText: { ...t.type.footnote, color: t.colors.textTertiary },
   systemLine: { alignItems: 'center', marginVertical: 10, paddingHorizontal: 24 },
   systemText: { ...t.type.caption, color: t.colors.textSecondary, textAlign: 'center' },
+  askedBody: { alignSelf: 'stretch', marginTop: 8, padding: 12, borderRadius: 12, backgroundColor: t.colors.surface, gap: 4 },
+  askedLabel: { ...t.type.caption, color: t.colors.textSecondary, marginTop: 4 },
+  askedText: { ...t.type.body, color: t.colors.text },
   quote: {
     flexDirection: 'row', gap: 8, paddingVertical: 6, paddingRight: 10, paddingLeft: 8, marginBottom: 6, borderRadius: 10,
     backgroundColor: t.colors.surfaceSunken, alignSelf: 'stretch', maxWidth: 420,

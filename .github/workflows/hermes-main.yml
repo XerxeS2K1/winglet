@@ -1,0 +1,51 @@
+name: Hermes main check (fork only)
+
+# Weekly: the plugin's tests against the newest Hermes `main`, so a removed or changed Hermes function shows
+# up here as a red run, not as a bug on the phone. CI proper stays pinned to a Hermes release (ci.yml).
+# GitHub only runs scheduled workflows from the repository's default branch, so this file has to be there;
+# it checks out and tests integration/dev-all explicitly. Do not send this file upstream.
+# The ref inputs can only be typed by someone who can already push to this repository (workflow_dispatch).
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      hermes_ref:
+        description: "Hermes ref to test against (default: main)"
+        default: main
+      plugin_ref:
+        description: "Winglet ref to test (default: integration/dev-all)"
+        default: integration/dev-all
+
+jobs:
+  hermes-main:
+    name: Plugin tests with Hermes main
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.plugin_ref || 'integration/dev-all' }}
+      - uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ inputs.hermes_ref || 'main' }}
+          path: hermes-agent
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      # Hermes only supports editable installs.
+      - run: pip install -e ./hermes-agent pytest pytest-aiohttp http_ece pyyaml packaging
+      - name: Install the plugin's declared dependencies
+        run: |
+          python - <<'PY'
+          import pathlib, subprocess, sys, yaml
+          manifest = yaml.safe_load(pathlib.Path('plugin/plugin.yaml').read_text())
+          subprocess.check_call([sys.executable, '-m', 'pip', 'install', *manifest['python_dependencies']])
+          PY
+      - name: Which Hermes this is
+        run: |
+          git -C hermes-agent log -1 --format='%H %cs %s'
+          python -c "import gateway.run_turn, hermes_cli.tools_config, tools.bot_live_delivery"
+      - run: pytest -q

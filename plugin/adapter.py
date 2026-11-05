@@ -283,6 +283,8 @@ class WingletAdapter(BasePlatformAdapter):
             # can be answered any more.
             for kind in ("approval", "question"):
                 store.expire_pending(kind)
+            # Likewise a reply that was mid-stream when the server went down will never be finished.
+            store.settle_interrupted_streams()
             hub = Hub(store, web_root=Path(__file__).parent / "web", bot_info=profile_info,
                       ntfy_server=self._ntfy_server)
             hub.connection = {"mode": self._connection, "url": None}

@@ -131,3 +131,19 @@ async def test_hermes_matching_receipt_outcome(hub, outcome, exit_code, current,
     result = hub.store.get_job(job["id"])
     assert result["state"] == expected
     assert result["detail"]["lines"] == ["update log"]
+
+
+def test_a_reply_cut_off_by_a_restart_is_settled_at_start_up(tmp_path):
+    store = Store(tmp_path / "state.db")
+    chat = store.create_chat("Working")
+    half = store.add_message(chat["id"], "bot", "The answer begins", status="streaming")
+    empty = store.add_message(chat["id"], "bot", "  ", status="streaming")
+    done = store.add_message(chat["id"], "bot", "Finished", status="final")
+    assert store.settle_interrupted_streams() == 2
+    assert store.get_message(half["id"])["status"] == "final"
+    assert store.get_message(half["id"])["text"] == "The answer begins"
+    assert store.get_message(empty["id"]) is None
+    assert store.get_message(done["id"])["text"] == "Finished"
+    assert store.streaming_messages(chat["id"]) == []
+    assert store.settle_interrupted_streams() == 0
+    store.close()

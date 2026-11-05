@@ -99,3 +99,34 @@ def test_a_hermes_without_live_delivery_says_why_ask_bot_is_missing(monkeypatch,
         teamwork.register(ctx)
     assert registered == ["ask_bot", "make_bot"]
     assert any("ask_bot is off" in r.getMessage() for r in caplog.records)
+
+
+async def test_an_answer_leaves_a_note_in_the_asking_chat(team, tmp_path, monkeypatch):
+    import asyncio
+    session = pytest.importorskip("gateway.session_context")
+    from plugin import adapter
+    from plugin.hub import Hub
+    from plugin.store import Store
+
+    store = Store(tmp_path / "state.db")
+    hub = Hub(store, web_root=tmp_path / "web")
+    chat = store.create_chat("Planning")
+    env = {"HERMES_SESSION_PLATFORM": "winglet", "HERMES_SESSION_CHAT_ID": chat["id"]}
+    monkeypatch.setattr(session, "get_session_env", lambda key, default="": env.get(key, default))
+    monkeypatch.setattr(adapter, "_ACTIVE", SimpleNamespace(_hub=hub, _loop=asyncio.get_running_loop()))
+    try:
+        # The tool runs on a worker thread in Hermes; the note is posted back onto the hub's loop.
+        reply = json.loads(await asyncio.to_thread(teamwork.ask_bot, {"bot": "chef", "message": "What's for dinner?"}))
+        assert reply["reply"] == "Pasta on Tuesday."
+        await asyncio.sleep(0.2)
+        notes = [m for m in store.list_messages(chat["id"]) if m["role"] == "system"]
+        assert [(m["text"], m["meta"]["asked"]["question"], m["meta"]["asked"]["answer"], m["meta"].get("notify"))
+                for m in notes] == [("Asked Chef", "What's for dinner?", "Pasta on Tuesday.", False)]
+        # From anywhere else (another platform, an unknown chat) nothing is posted and the answer is the same.
+        env["HERMES_SESSION_CHAT_ID"] = "not-a-chat"
+        assert json.loads(await asyncio.to_thread(teamwork.ask_bot, {"bot": "chef", "message": "Again?"}))["reply"]
+        await asyncio.sleep(0.1)
+        assert len([m for m in store.list_messages(chat["id"]) if m["role"] == "system"]) == 1
+    finally:
+        await hub.aclose()
+        store.close()
