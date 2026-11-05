@@ -11,8 +11,7 @@ Your agents run on *your* server, keep working while you're away,
 and tap you on the shoulder when they need you.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Latest release](https://img.shields.io/github/v/release/VIKASRP24/winglet?label=release)](https://github.com/VIKASRP24/winglet/releases/latest)
-[![CI](https://github.com/VIKASRP24/winglet/actions/workflows/ci.yml/badge.svg)](https://github.com/VIKASRP24/winglet/actions/workflows/ci.yml)
+[![CI](https://github.com/XerxeS2K1/winglet/actions/workflows/ci.yml/badge.svg)](https://github.com/XerxeS2K1/winglet/actions/workflows/ci.yml)
 ![Android APK](https://img.shields.io/badge/android-APK-3DDC84)
 ![iPhone PWA](https://img.shields.io/badge/iPhone-web%20app-lightgrey)
 
@@ -25,6 +24,14 @@ and tap you on the shoulder when they need you.
 **[Get started](#get-started)** · **[Features](#what-it-does)** · **[Tour](#tour)** · **[How it works](#how-it-works)** · **[FAQ](#faq)**
 
 </div>
+
+> [!NOTE]
+> **This is a maintained fork.** The original project ([VIKASRP24/winglet](https://github.com/VIKASRP24/winglet)) stopped
+> maintenance on 5 November 2026. This fork keeps Winglet working with current Hermes Agent releases and adds:
+> bots served through Hermes's own per-profile adapters (so a second bot like "Research" works in the app), `ask_bot`
+> through Hermes's live delivery, `/approve`, `/yolo` and `/approvals` that need a signed request, a bot picker in the
+> chat header, and tests that run against Hermes `main` every week. Which Hermes versions work, and what an older one
+> loses: [Hermes compatibility](docs/HERMES_COMPATIBILITY.md). The in-app updater reads this fork's releases.
 
 > [!TIP]
 > **New in [v0.10.0](docs/releases/v0.10.0.md):** Rooms in Projects, clearer Smart approval cards,
