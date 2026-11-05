@@ -42,7 +42,7 @@ function PersonaScreen() {
       await signedApi(server, 'PUT', '/api/identity', { content: text });
       haptic.success();
       setSaved(text);
-      setMessage('Saved for new chats.');
+      setMessage('Saved for new chats. Existing chats, including hand-offs from other bots, keep their current persona.');
     } catch (e) {
       setMessage((e as Error).message);
     } finally {
@@ -66,7 +66,7 @@ function PersonaScreen() {
         <Text style={s.count}>{text.length.toLocaleString()} / {MAX.toLocaleString()}</Text>
         {changed ? <Button size="sm" variant="ghost" title="Undo changes" onPress={() => setText(saved ?? '')} /> : null}
       </View>
-      <Footnote>Changes apply to new chats.</Footnote>
+      <Footnote>Changes apply to new chats. Existing chats, including hand-offs from other bots, keep their current persona.</Footnote>
       <Button style={{ marginTop: t.space.lg }} title="Save persona" loading={busy} disabled={!changed} onPress={save} />
       {message ? <Text style={s.message} accessibilityLiveRegion="polite">{message}</Text> : null}
     </Screen>
