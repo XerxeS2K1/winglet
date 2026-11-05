@@ -2,7 +2,7 @@ import { router } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
-import { mainFirst, notRunning } from '../lib/bots';
+import { botActivityLabel, mainFirst, notRunning } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { usePrefs } from '../lib/prefs';
 import { homeChat, useApp } from '../lib/store';
@@ -49,7 +49,7 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
       const on = x.id === server.id;
       return <ListRow key={x.id} title={x.bot.title} value={i === 0 ? 'Main' : undefined}
         icon={<View><AgentFace server={x} size={28} still /></View>}
-        subtitle={view.kind === 'online' ? notRunning(x.bot) ?? 'Online' : view.title} chevron={false}
+        subtitle={view.kind === 'online' ? notRunning(x.bot) ?? botActivityLabel(rt?.botActivity?.[x.profile ?? 'default']) : view.title} chevron={false}
         right={<View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
           {rt?.pending ? <Badge count={rt.pending} /> : null}
           {on ? <Check size={20} color={t.colors.accent} accessibilityLabel="Current bot" /> : null}
@@ -91,6 +91,9 @@ export function BotFaces({ server }: { server: Server }) {
   const s = useStyles();
   const servers = useApp((st) => st.servers);
   const pending = useApp(useShallow((st) => Object.fromEntries(st.servers.map((x) => [x.id, st.runtime[x.id]?.pending ?? 0]))));
+  const working = useApp(useShallow((st) => Object.fromEntries(st.servers.map((x) => [x.id,
+    st.runtime[x.id]?.status === 'online' && x.bot.served !== false &&
+    st.runtime[x.id]?.botActivity?.[x.profile ?? 'default']?.state === 'working']))));
   const chosen = usePrefs((st) => st.prefs.mainBot);
   const picker = useBotSheet(server);
   return <>
@@ -99,11 +102,12 @@ export function BotFaces({ server }: { server: Server }) {
       {mainFirst(servers, chosen).map((x) => {
         const on = x.id === server.id;
         const waiting = pending[x.id] ?? 0;
-        return <Tap key={x.id} feedback="selection" scaleTo={0.9} accessibilityLabel={`${x.bot.title}${waiting ? `, ${waiting} waiting` : ''}${on ? ', current bot' : '. Switch bot'}`}
+        return <Tap key={x.id} feedback="selection" scaleTo={0.9} accessibilityLabel={`${x.bot.title}${working[x.id] ? ', working' : ''}${waiting ? `, ${waiting} waiting` : ''}${on ? ', current bot' : '. Switch bot'}`}
           accessibilityState={{ selected: on }}
           onPress={() => { if (!on) useApp.getState().select(x.id, homeChat(useApp.getState().runtime[x.id])); }}
           style={({ hovered }) => [s.face, on ? s.faceOn : hovered && { backgroundColor: t.colors.pressed }]}>
           <AgentFace server={x} size={30} still />
+          {working[x.id] ? <View accessibilityLabel="Working" style={[s.workDot, { backgroundColor: t.colors.accent }]} /> : null}
           {waiting && !on ? <Badge count={waiting} dot style={s.dot} /> : null}
         </Tap>;
       })}
@@ -160,5 +164,6 @@ const useStyles = makeStyles((t) => ({
   face: { width: 44, height: 44, borderRadius: 22, alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: 'transparent' },
   faceOn: { borderColor: t.colors.text },
   more: { backgroundColor: t.colors.surface, borderColor: t.colors.border, borderWidth: 1 },
+  workDot: { position: 'absolute', bottom: 2, right: 2, width: 8, height: 8, borderRadius: 4 },
   dot: { position: 'absolute', top: 2, right: 2, borderWidth: 2, borderColor: t.colors.surface },
 }));

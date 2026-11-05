@@ -93,6 +93,99 @@ async def hello(client, phone, bot=""):
     return ws, await ws.receive_json()
 
 
+async def test_simultaneous_activity_requests_share_one_scan(hub):
+    import time
+    calls = []
+    def provider():
+        calls.append(1)
+        time.sleep(0.05)
+        return {"default": {"state": "idle", "queued": 0}}
+    hub.activity_provider = provider
+    await asyncio.gather(*[hub.refresh_bot_activity() for _ in range(8)])
+    assert len(calls) == 1
+
+
+async def test_slow_activity_scan_does_not_block_connections_or_start_duplicate_scans(hub):
+    import threading
+    gate = threading.Event()
+    calls = []
+    def provider():
+        calls.append(1)
+        assert gate.wait(2)
+        return {"default": {"state": "idle", "queued": 0}}
+    hub.activity_provider = provider
+    hub.activity_wait = 0.01
+    try:
+        first = await asyncio.wait_for(hub.refresh_bot_activity(), timeout=0.5)
+        assert first == {"default": {"state": "unknown", "queued": None}}
+        await asyncio.wait_for(hub.refresh_bot_activity(), timeout=0.5)
+        assert len(calls) == 1
+    finally:
+        gate.set()
+        if hub._activity_refresh is not None:
+            await asyncio.wait_for(hub._activity_refresh, timeout=1)
+    assert hub._bot_activity == {"default": {"state": "idle", "queued": 0}}
+
+
+async def test_owner_receives_activity_on_connect_and_when_it_changes(client, hub):
+    owner = await pair_phone(client, hub)
+    activity = {"default": {"state": "working", "queued": 2}, "researcher": {"state": "idle", "queued": 0}}
+    hub.activity_provider = lambda: dict(activity)
+    ws, snapshot = await hello(client, owner)
+    assert snapshot.get("bot_activity") == activity
+    listing = await (await client.get("/api/bots", headers=owner.auth)).json()
+    assert listing.get("bot_activity") == activity
+    assert listing["bots"][0].get("activity") == activity["researcher"]
+    activity["default"] = {"state": "idle", "queued": 0}
+    await hub.refresh_bot_activity(fresh=True)
+    update = await ws.receive_json(timeout=2)
+    assert update == {"type": "bot.activity", "activities": activity}
+    await ws.close()
+
+
+async def test_activity_is_owner_only_in_hello_http_and_live_events(client, hub):
+    member = await pair_phone(client, hub, "Alex", role="member")
+    hub.activity_provider = lambda: {"default": {"state": "working", "queued": 1}}
+    ws, snapshot = await hello(client, member)
+    assert "bot_activity" not in snapshot
+    assert (await client.get("/api/bots", headers=member.auth)).status == 403
+    assert not hub._event_visible(hub.store.get_device(member.id), {"type": "bot.activity"})
+    await hub.refresh_bot_activity()
+    await ws.send_json({"type": "ping", "t": 123})
+    assert (await ws.receive_json(timeout=2))["type"] == "pong"  # no activity leaked ahead of it
+    await ws.close()
+
+
+async def test_activity_provider_failure_does_not_report_idle_on_first_connection(client, hub):
+    owner = await pair_phone(client, hub)
+    def unavailable():
+        raise RuntimeError("unsupported Hermes")
+    hub.activity_provider = unavailable
+    ws, snapshot = await hello(client, owner)
+    assert snapshot["bot_activity"] == {name: {"state": "unknown", "queued": None}
+                                        for name in ("default", "researcher")}
+    await ws.close()
+
+
+async def test_activity_reads_canonical_queue_not_stale_receipts(client, hub, tmp_path, monkeypatch):
+    import sqlite3
+    from plugin import hermes_api
+    control = pytest.importorskip("gateway.control_socket")
+    home = tmp_path / "profile"
+    home.mkdir()
+    with sqlite3.connect(home / "state.db") as db:
+        db.execute("CREATE TABLE session_admissions (seq INTEGER PRIMARY KEY, request_id TEXT, status TEXT)")
+        db.executemany("INSERT INTO session_admissions VALUES (?, ?, ?)", [
+            (1, "bot:running", "started"), (2, "bot:waiting", "queued"),
+            (3, "bot:done", "terminal"), (4, "chat:unrelated", "queued")])
+    monkeypatch.setattr(control, "query_gateway_control", lambda *a, **kw: {"active_agents": 1})
+    hub.activity_provider = lambda: {"default": hermes_api.bot_activity(home)}
+    owner = await pair_phone(client, hub)
+    ws, snapshot = await hello(client, owner)
+    assert snapshot.get("bot_activity") == {"default": {"state": "working", "queued": 1}}
+    await ws.close()
+
+
 async def test_each_bot_has_its_own_chats_and_the_main_socket_lists_the_bots(client, hub):
     owner = await pair_phone(client, hub)
     main, main_hello = await hello(client, owner)

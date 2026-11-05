@@ -122,6 +122,21 @@ function harness(os = 'web') {
 const msg = (n: number) => ({ id: `m${n}`, position: n, chat_id: 'general', role: 'bot',
   text: String(n), status: 'final', meta: {}, created_at: 1, updated_at: 1 });
 
+test('bot activity is transient socket state, replaced on reconnect and never an approval count', async () => {
+  const h = harness();
+  await h.connect();
+  const activity = { default: { state: 'working', queued: 2 }, chef: { state: 'idle', queued: 0 } };
+  h.event({ type: 'hello', chats: [], pending: 5, bot_activity: activity });
+  assert.equal(h.store.getState().runtime.s.botActivity?.default?.state, 'working');
+  assert.equal(h.store.getState().runtime.s.botActivity.default.queued, 2);
+  assert.equal(h.store.getState().runtime.s.pending, 5);
+  h.event({ type: 'bot.activity', activities: { default: { state: 'idle', queued: 0 } } });
+  assert.equal(h.store.getState().runtime.s.botActivity.default.state, 'idle');
+  assert.equal(h.store.getState().runtime.s.botActivity.chef, undefined);
+  await h.hello(); // old server or role downgrade must clear the prior snapshot
+  assert.equal(h.store.getState().runtime.s.botActivity, undefined);
+});
+
 /** A server that stores posted messages and answers everything else with empty lists. */
 function echoServer(sent: any[], fail = () => 0) {
   return async (_: any, route: string, init?: any) => {

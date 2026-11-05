@@ -1,3 +1,15 @@
+import type { BotActivity } from './types';
+
+/** Human-readable work state, separate from inbox approvals and connection failures. */
+export function botActivityLabel(activity?: BotActivity): string {
+  if (!activity) return 'Online'; // older server
+  const queued = typeof activity.queued === 'number' && Number.isFinite(activity.queued)
+    ? Math.max(0, Math.floor(activity.queued)) : 0;
+  if (activity.state === 'unknown') return `Activity unavailable${queued ? `, ${queued} queued` : ''}`;
+  if (activity.state === 'working') return `Working${queued ? `, ${queued} queued` : ''}`;
+  return queued ? `${queued} queued` : 'Online';
+}
+
 /** A bot's short name (its Hermes profile name) from what it's called: "Meal Planner!" reads "meal-planner". */
 export function botName(title: string): string {
   return title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')

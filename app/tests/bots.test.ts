@@ -37,7 +37,23 @@ test('the main bot leads, the others keep their order', () => {
   assert.equal(mainFirst([]).length, 0);
 });
 
+test('the bot picker uses activity labels and a distinct accessible working dot', () => {
+  const screen = readFileSync(new URL('../src/components/BotSwitcher.tsx', import.meta.url), 'utf8');
+  assert.match(screen, /botActivityLabel\(rt\?\.botActivity\?\.\[x\.profile \?\? 'default'\]\)/);
+  assert.match(screen, /accessibilityLabel="Working"/);
+});
+
 const { notRunning, teamworkOff } = exports;
+
+test('activity labels keep queued work separate from approvals and unknown data', () => {
+  const label = exports.botActivityLabel ?? (() => 'Online');
+  assert.equal(label({ state: 'working', queued: 2 }), 'Working, 2 queued');
+  assert.equal(label({ state: 'working', queued: 0 }), 'Working');
+  assert.equal(label({ state: 'idle', queued: 0 }), 'Online');
+  assert.equal(label({ state: 'idle', queued: 1 }), '1 queued');
+  assert.equal(label({ state: 'unknown', queued: null }), 'Activity unavailable');
+  assert.equal(label(undefined), 'Online'); // older servers are unchanged
+});
 
 test("a bot Hermes isn't running says so, and one whose state is unknown says nothing", () => {
   assert.equal(notRunning({ served: false }), 'Not running');

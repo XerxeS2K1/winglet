@@ -274,6 +274,11 @@ class Hub:
         self._recovery_lock = asyncio.Lock()
         self._janitor: Optional[asyncio.Task] = None
         self._bots_watch: Optional[asyncio.Task] = None
+        self.activity_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        self._bot_activity: Dict[str, Any] = {}
+        self._activity_refresh: Optional[asyncio.Task] = None
+        self._activity_at = 0.0
+        self.activity_wait = 1.5
         # Upload limits: one file, one device per day, and everything stored. Overridable in .env.
         self.max_upload_bytes = _env_mb("WINGLET_MAX_UPLOAD_MB", 50)
         self.device_daily_upload_bytes = _env_mb("WINGLET_DAILY_UPLOAD_MB", 500)
@@ -511,6 +516,55 @@ class Hub:
             self._spawn(self.reconcile_jobs())
         if self._bots_watch is None and self.bots_provider is not None:
             self._bots_watch = asyncio.create_task(self._watch_bots())
+        if self.activity_provider is not None:
+            self._spawn(self._watch_bot_activity())
+
+    def _unknown_bot_activity(self) -> Dict[str, Any]:
+        names = {"default", *self._bot_activity,
+                 *[bot["name"] for bot in (self._bots_cache[1]["bots"] if self._bots_cache else [])]}
+        return {name: {"state": "unknown", "queued": None} for name in names}
+
+    async def refresh_bot_activity(self, fresh: bool = False) -> Dict[str, Any]:
+        if self.activity_provider is None:
+            return {}
+        if not fresh and self._activity_at and time.monotonic() - self._activity_at < 2:
+            return self._bot_activity
+        if self._activity_refresh is None or self._activity_refresh.done():
+            self._activity_refresh = self._spawn(self._collect_bot_activity())
+        try:
+            # All sockets share one scan; a slow scan continues once, without blocking hello/HTTP.
+            return await asyncio.wait_for(asyncio.shield(self._activity_refresh), self.activity_wait)
+        except asyncio.TimeoutError:
+            self._bot_activity = self._unknown_bot_activity()
+            return self._bot_activity
+
+    async def _collect_bot_activity(self) -> Dict[str, Any]:
+        provider = self.activity_provider
+        if provider is None:
+            return {}
+        try:
+            activity = await asyncio.to_thread(provider)
+            if not isinstance(activity, dict):
+                raise ValueError("bot activity provider returned no snapshot")
+        except Exception:
+            logger.debug("[winglet] bot activity unavailable", exc_info=True)
+            activity = self._unknown_bot_activity()
+        changed = activity != self._bot_activity
+        self._bot_activity = activity
+        self._activity_at = time.monotonic()
+        if changed:
+            # Transient state: reconnects take a fresh snapshot; never replay old busy states.
+            async with self._publish_lock:
+                await self._broadcast({"type": "bot.activity", "activities": activity})
+        return activity
+
+    async def _watch_bot_activity(self) -> None:
+        while True:
+            await asyncio.sleep(3)
+            if any(not ws.closed and meta.get("visible", True) and
+                   (self.current_device(meta["device"]["id"]) or {}).get("role") == "owner"
+                   for ws, meta in self._sockets.items()):
+                await self.refresh_bot_activity()
 
     async def _watch_bots(self) -> None:
         """Tell owners' phones when bots come and go, wherever they were made (Hermes Desktop, the CLI, the
@@ -2019,6 +2073,9 @@ class Hub:
         if problem is not None:
             await ws.close(code=4404, message=b"no such bot")
             return ws
+        if device.get("role") == "owner":
+            await asyncio.to_thread(self.bots_state)
+            await self.refresh_bot_activity()
         try:
             async with self._publish_lock:
                 self._sockets[ws] = {"device": device, "bot": bot, "auth_token": socket_token}
@@ -2039,6 +2096,8 @@ class Hub:
                         listing = self.bots_state()
                         if listing.get("known", True):
                             hello["bots"] = listing["bots"]
+                    if device.get("role") == "owner" and self.activity_provider is not None:
+                        hello["bot_activity"] = self._bot_activity
                     await asyncio.wait_for(ws.send_json(hello), timeout=2.0)
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
@@ -2208,6 +2267,8 @@ class Hub:
         """Members only hear about their own chats; owners hear everything."""
         if device.get("role") == "owner":
             return True
+        if event.get("type") == "bot.activity":
+            return False
         if event.get("type") == "system.paused":
             return True
         if str(event.get("type") or "").startswith(("system.", "checkpoint.", "routine.")):
@@ -2761,7 +2822,12 @@ class Hub:
     async def h_bots(self, request: web.Request) -> web.Response:
         """The bots on this server, and whether the gateway serves them all (Hermes's multi-profile mode)."""
         self._require(request)
-        return _json(await asyncio.to_thread(self.bots_state, True))
+        state = await asyncio.to_thread(self.bots_state, True)
+        if self.activity_provider is None:
+            return _json(state)
+        activity = await self.refresh_bot_activity()
+        return _json({**state, "bot_activity": activity,
+                      "bots": [{**bot, "activity": activity.get(bot["name"])} for bot in state["bots"]]})
 
     async def h_bot_create(self, request: web.Request) -> web.Response:
         """Make a new bot the way Hermes Desktop does, as a job (Hermes seeds its skills and tells the gateway)."""
