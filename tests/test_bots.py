@@ -412,3 +412,15 @@ def test_a_bot_made_here_is_a_hermes_profile_with_its_own_persona(tmp_path, monk
     assert h.list_bots() == [] and not profile.exists()
     with pytest.raises(h.HermesRefused):
         h.delete_bot("chef")
+
+
+async def test_the_server_says_whether_bots_can_ask_each_other(hub):
+    assert hub.features()["bot_teamwork"] is False  # nothing wired: off
+    hub.teamwork_ok = lambda: True
+    assert hub.features()["bot_teamwork"] is True
+    hub.teamwork_ok = lambda: False
+    assert hub.features()["bot_teamwork"] is False
+    def broken():
+        raise RuntimeError("no")
+    hub.teamwork_ok = broken
+    assert hub.features()["bot_teamwork"] is False  # an error means off, never a crash

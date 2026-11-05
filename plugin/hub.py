@@ -315,6 +315,8 @@ class Hub:
         # The other bots this gateway serves (Hermes profiles), installed by the adapter:
         # () -> {"bots": [{name, title, description, served}], "multiplex": bool, "reason": str}.
         self.bots_provider: Optional[Callable[[], Dict[str, Any]]] = None
+        # True when bots can hand work to each other (ask_bot); the app says so when it can't.
+        self.teamwork_ok: Optional[Callable[[], bool]] = None
         self._bots_cache: Optional[tuple] = None
         self._pet_choices: Dict[str, Dict[str, Any]] = {}
         # Reconnects MCP servers (Hermes's /reload-mcp), installed by the adapter. Server changes wait for it.
@@ -764,6 +766,12 @@ class Hub:
                                       "reason": str(state.get("reason") or "")})
         return self._bots_cache[1]
 
+    def _teamwork_works(self) -> bool:
+        try:
+            return bool(self.teamwork_ok and self.teamwork_ok())
+        except Exception:
+            return False
+
     def bots(self) -> List[Dict[str, Any]]:
         return self.bots_state()["bots"]
 
@@ -831,6 +839,7 @@ class Hub:
                 "sessions": self.hermes is not None and self._has(self.hermes, "sessions_available"),
                 "pets": self.hermes is not None and self._has(self.hermes, "pets_available"),
                 "bots": self.bots_provider is not None and self.hermes is not None and self._has(self.hermes, "bots_available"),
+                "bot_teamwork": self._teamwork_works(),
                 # Hands-free voice is the turn loop the app implements. `voice_live` stays false: this
                 # server has no full-duplex audio, and calling the loop "live" would be a lie.
                 "voice_handsfree": handsfree, "voice_live": False, "voice_barge_in": handsfree,

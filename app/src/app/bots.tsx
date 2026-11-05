@@ -7,7 +7,7 @@ import { AgentFace } from '../components/AgentFace';
 import { Plus, Trash2 } from '../components/icons';
 import { Screen } from '../components/Screen';
 import { Button, Footnote, SectionHeader, Tap } from '../components/ui';
-import { mainFirst, notRunning } from '../lib/bots';
+import { mainFirst, notRunning, teamworkOff } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
@@ -27,6 +27,7 @@ export default function BotsScreen() {
   const [confirm, setConfirm] = useState<string | null>(null);
   const addBot = useAddBot();
   const chosenMain = usePrefs((st) => st.prefs.mainBot);
+  const noTeamwork = teamworkOff(servers, Object.fromEntries(servers.map((x) => [x.id, runtime[x.id]?.info])));
   return (
     <Screen title="Your bots">
       <SectionHeader title={`${servers.length} paired`} />
@@ -68,6 +69,7 @@ export default function BotsScreen() {
         <Button title="Add a bot" variant="secondary" icon={<Plus size={18} color={t.colors.text} />} onPress={addBot.open} style={s.add} />
       </View>
       {addBot.sheet}
+      {noTeamwork ? <Footnote>Your bots can't ask each other for help on this server yet. Its Hermes needs updating to v0.22.5 or later.</Footnote> : null}
       <Footnote>Removing a server unpairs all its bots from this phone. Chats stay on the server; you can pair again.</Footnote>
     </Screen>
   );

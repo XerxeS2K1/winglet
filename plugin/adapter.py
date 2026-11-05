@@ -326,6 +326,7 @@ class WingletAdapter(BasePlatformAdapter):
             hub.reload_mcp = self._reload_mcp
             # Other Hermes profiles this gateway serves are more bots on the same server (no new port or pairing).
             hub.bots_provider = self._bots_state if hermes_api.bots_available() else None
+            hub.teamwork_ok = lambda: hermes_api.bots_available() and teamwork.can_deliver()
             if hub.bots_provider is not None:
                 loop = asyncio.get_running_loop()
                 teamwork.on_bots_changed = lambda: loop.call_soon_threadsafe(

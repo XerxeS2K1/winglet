@@ -37,10 +37,19 @@ test('the main bot leads, the others keep their order', () => {
   assert.equal(mainFirst([]).length, 0);
 });
 
-const { notRunning } = exports;
+const { notRunning, teamworkOff } = exports;
 
 test("a bot Hermes isn't running says so, and one whose state is unknown says nothing", () => {
   assert.equal(notRunning({ served: false }), 'Not running');
   assert.equal(notRunning({ served: true }), null);
   assert.equal(notRunning({}), null); // an older server doesn't say
+});
+
+test('the bots screen warns only when a multi-bot server says teamwork is off', () => {
+  const two = [{ id: 'a' }, { id: 'b' }];
+  assert.equal(teamworkOff(two, { a: { features: { bot_teamwork: false } } }), true);
+  assert.equal(teamworkOff(two, { a: { features: { bot_teamwork: true } } }), false);
+  assert.equal(teamworkOff(two, { a: { features: {} } }), false); // an older server doesn't say; stay quiet
+  assert.equal(teamworkOff(two, {}), false);
+  assert.equal(teamworkOff([{ id: 'a' }], { a: { features: { bot_teamwork: false } } }), false); // one bot: nothing to ask
 });

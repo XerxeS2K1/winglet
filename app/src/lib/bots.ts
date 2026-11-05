@@ -22,3 +22,9 @@ export function mainFirst<T extends { id: string; parent?: string }>(servers: re
 export function notRunning(bot: { served?: boolean }): string | null {
   return bot.served === false ? 'Not running' : null;
 }
+
+/** True when a server with more than one bot says its bots can't ask each other (its Hermes lacks the delivery step).
+ *  Only an explicit `false` counts: an older server that doesn't report it is left alone. */
+export function teamworkOff(servers: { id: string }[], infos: Record<string, { features?: Record<string, boolean> } | undefined>): boolean {
+  return servers.length > 1 && servers.some((x) => infos[x.id]?.features?.bot_teamwork === false);
+}
