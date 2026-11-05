@@ -75,7 +75,7 @@ Setup gives you a free HTTPS address through Cloudflare. You don't need an accou
 **3. Say hello.** Your bot is on the landing screen, ready for a message.
 
 The QR code carries your server key's fingerprint, so the phone checks it's really your server before pairing.
-For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**.
+For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**. Which Hermes versions work, and what an older one loses: [compatibility](docs/HERMES_COMPATIBILITY.md).
 
 <a id="what-it-does"></a>
 
