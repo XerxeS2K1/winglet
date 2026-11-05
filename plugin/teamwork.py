@@ -131,6 +131,26 @@ def _note_in_chat(bot_title: str, question: str, answer: str, failed: bool = Fal
         logger.debug("[winglet] couldn't note the exchange", exc_info=True)
 
 
+def _origin_clause() -> str:
+    """Label a Winglet hand-off without exposing chat contents or breaking other callers."""
+    try:
+        from gateway.session_context import get_session_env
+        from . import adapter
+        if get_session_env("HERMES_SESSION_PLATFORM") != "winglet":
+            return ""
+        chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+        active = adapter._ACTIVE
+        if not chat_id or active is None or active._hub is None:
+            return ""
+        chat = active._hub.store.get_chat(chat_id)
+        title = " ".join(str((chat or {}).get("title") or "").split())[:60]
+        if title:
+            return f', sent from the chat {json.dumps(title, ensure_ascii=False)}'
+    except Exception:
+        logger.debug("[winglet] couldn't read the asking chat title", exc_info=True)
+    return ""
+
+
 def ask_bot(args: dict, **_: Any) -> str:
     """Ask another bot on this server, and get its answer."""
     try:
@@ -155,7 +175,7 @@ def ask_bot(args: dict, **_: Any) -> str:
     sender = next((b for b in roster if b["name"] == me), {"title": me})
     # The receipt's reply is the teammate's final text, so tell it to answer here rather than reach for a
     # messaging tool (a bare "reply with X" was taken literally and sent to the asker instead).
-    content = (f"Message from 🤖 {sender['title']} (@{_handle(me)}): {message}\n\n"
+    content = (f"Message from 🤖 {sender['title']} (@{_handle(me)}){_origin_clause()}: {message}\n\n"
                "(Answer in your reply to this message. Your reply is returned to the sender automatically, "
                "so do not message anyone.)")
     try:

@@ -101,6 +101,38 @@ def test_a_hermes_without_live_delivery_says_why_ask_bot_is_missing(monkeypatch,
     assert any("ask_bot is off" in r.getMessage() for r in caplog.records)
 
 
+@pytest.mark.parametrize("platform,chat_id,chat,title", [
+    ("telegram", "known", {"title": "Private"}, None),
+    ("winglet", "", {"title": "Private"}, None),
+    ("winglet", "unknown", None, None),
+    ("winglet", "known", {"title": "  \n\t "}, None),
+    ("winglet", "known", {"title": 'Plan\n\t"meals"'}, 'Plan "meals"'),
+    ("winglet", "known", {"title": "x" * 100}, "x" * 60),
+])
+def test_origin_label_is_short_and_only_for_known_winglet_chats(team, monkeypatch, platform, chat_id, chat, title):
+    session = pytest.importorskip("gateway.session_context")
+    from plugin import adapter
+    env = {"HERMES_SESSION_PLATFORM": platform, "HERMES_SESSION_CHAT_ID": chat_id}
+    monkeypatch.setattr(session, "get_session_env", lambda key, default="": env.get(key, default))
+    store = SimpleNamespace(get_chat=lambda _: chat)
+    monkeypatch.setattr(adapter, "_ACTIVE", SimpleNamespace(_hub=SimpleNamespace(store=store), _loop=None))
+    reply = json.loads(teamwork.ask_bot({"bot": "chef", "message": "Dinner?"}))
+    assert reply["reply"] == "Pasta on Tuesday."
+    clause = f', sent from the chat {json.dumps(title, ensure_ascii=False)}' if title else ""
+    assert team.sent[-1][1].startswith(f"Message from 🤖 Hermes (@hermes){clause}: Dinner?\n\n")
+
+
+def test_origin_lookup_failure_does_not_prevent_delivery(team, monkeypatch):
+    session = pytest.importorskip("gateway.session_context")
+    from plugin import adapter
+    monkeypatch.setattr(session, "get_session_env", lambda key, default="": "winglet" if key.endswith("PLATFORM") else "known")
+    def broken_store(_):
+        raise RuntimeError("store unavailable")
+    monkeypatch.setattr(adapter, "_ACTIVE", SimpleNamespace(_hub=SimpleNamespace(store=SimpleNamespace(get_chat=broken_store))))
+    assert json.loads(teamwork.ask_bot({"bot": "chef", "message": "Dinner?"}))["reply"]
+    assert team.sent[-1][1].startswith("Message from 🤖 Hermes (@hermes): Dinner?")
+
+
 async def test_an_answer_leaves_a_note_in_the_asking_chat(team, tmp_path, monkeypatch):
     import asyncio
     session = pytest.importorskip("gateway.session_context")
@@ -118,6 +150,8 @@ async def test_an_answer_leaves_a_note_in_the_asking_chat(team, tmp_path, monkey
         # The tool runs on a worker thread in Hermes; the note is posted back onto the hub's loop.
         reply = json.loads(await asyncio.to_thread(teamwork.ask_bot, {"bot": "chef", "message": "What's for dinner?"}))
         assert reply["reply"] == "Pasta on Tuesday."
+        assert team.sent[-1][1].startswith(
+            'Message from 🤖 Hermes (@hermes), sent from the chat "Planning": What\'s for dinner?')
         await asyncio.sleep(0.2)
         notes = [m for m in store.list_messages(chat["id"]) if m["role"] == "system"]
         assert [(m["text"], m["meta"]["asked"]["question"], m["meta"]["asked"]["answer"], m["meta"].get("notify"))
