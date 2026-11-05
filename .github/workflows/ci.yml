@@ -2,8 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, integration/dev-all]
   pull_request:
+  workflow_dispatch:
 
 jobs:
   plugin:
