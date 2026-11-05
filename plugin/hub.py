@@ -1102,6 +1102,36 @@ class Hub:
             return _error(404, "no such chat")
         return _json({"chat": chat})
 
+    # -- naming chats from Hermes's own session title ------------------------------------------------
+
+    def can_auto_title(self, chat_id: str) -> bool:
+        """True while a chat is still unnamed, or still carries the name we gave it ourselves.
+
+        A name somebody typed (or a branch, room or project title) is never replaced.
+        """
+        chat = self.store.get_chat(chat_id)
+        if chat is None or chat.get("kind") not in (None, "chat"):
+            return False
+        current = chat.get("title") or ""
+        return current == "New chat" or current == self.store.get_kv(f"autotitle:{chat_id}")
+
+    async def auto_title_chat(self, chat_id: str, title: str) -> bool:
+        """Name a chat after the title Hermes made for its session. Returns True when the name changed."""
+        title = " ".join(str(title or "").split())[:80]
+        if not title or not self.can_auto_title(chat_id):
+            return False
+
+        def write() -> Any:
+            chat = self.store.get_chat(chat_id)
+            if chat is None or (chat.get("title") or "") == title:
+                return None
+            row = self.store.rename_chat(chat_id, title)
+            self.store.set_kv(f"autotitle:{chat_id}", title)
+            return row
+
+        chat = await self.publish(write, lambda row: {"type": "chat.update", "chat": row})
+        return chat is not None
+
     async def h_chat_delete(self, request: web.Request) -> web.Response:
         device = self._require(request)
         chat_id = request.match_info["chat_id"]

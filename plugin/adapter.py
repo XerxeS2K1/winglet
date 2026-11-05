@@ -247,6 +247,7 @@ class WingletAdapter(BasePlatformAdapter):
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Broadcasts started by hook callbacks; kept referenced until they finish.
         self._execution_tasks: set = set()
+        self._title_followers: Dict[str, Any] = {}
 
     # -- lifecycle -------------------------------------------------------------------------
 
@@ -711,6 +712,60 @@ class WingletAdapter(BasePlatformAdapter):
         except RuntimeError:
             # The loop closed between the check and the hand-off (a restart): nothing to deliver to.
             pass
+
+    # -- chat names: Hermes titles every session itself; Winglet shows that title ---------------------
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        hub, loop = self._hub, self._loop
+        if not chat_id or hub is None or loop is None or not hub.can_auto_title(chat_id):
+            return
+        if chat_id in self._title_followers:
+            return
+        task = loop.create_task(self._follow_hermes_title(chat_id))
+        self._title_followers[chat_id] = task
+        task.add_done_callback(lambda _t, c=chat_id: self._title_followers.pop(c, None))
+
+    async def _follow_hermes_title(self, chat_id: str, *, wait: float = 1.5, patience: float = 45.0) -> None:
+        """Copy Hermes's title for this chat's session into the chat as it improves.
+
+        Hermes writes a quick title from the first message as the turn starts, then swaps in a better
+        one from the model a few seconds later. Stop once it is the model's (or the user's) title.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + patience
+        while self._running and loop.time() < deadline:
+            hub = self._hub
+            if hub is None or not hub.can_auto_title(chat_id):
+                return
+            try:
+                title, source = await asyncio.to_thread(self._hermes_title, chat_id)
+                if title:
+                    await hub.auto_title_chat(chat_id, title)
+                if title and source not in (None, "derived"):
+                    return
+            except Exception:
+                logger.debug("[%s] could not read Hermes's title for a chat", self.name, exc_info=True)
+                return
+            await asyncio.sleep(wait)
+
+    def _hermes_title(self, chat_id: str) -> tuple:
+        """(title, source) Hermes holds for this chat's session, or (None, None) when it has none yet."""
+        runner = getattr(self, "gateway_runner", None)
+        store = getattr(runner, "session_store", None)
+        key = self._session_key(chat_id)
+        if store is None or not key or not callable(getattr(store, "peek_session_id", None)):
+            return None, None
+        session_id = store.peek_session_id(key)
+        if not session_id:
+            return None, None
+        getter = getattr(store, "_db_for_session_id", None)
+        db = getter(session_id) if callable(getter) else getattr(store, "_db", None)
+        if db is None or not callable(getattr(db, "get_session_title", None)):
+            return None, None
+        title = db.get_session_title(session_id)
+        source_of = getattr(db, "get_session_title_source", None)
+        return title, (source_of(session_id) if callable(source_of) else None)
 
     def _session_key(self, chat_id: str) -> Optional[str]:
         """The key Hermes files this chat's session under, or None outside a gateway."""
