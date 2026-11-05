@@ -17,7 +17,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from plugin import keys
-from plugin.hub import MEMBER_COMMANDS, ROUTE_POLICY, Hub, _push_for
+from plugin.hub import MEMBER_COMMANDS, ROUTE_POLICY, Hub, MessageRejected, _push_for
 from plugin.store import Store
 
 RAW = serialization.Encoding.Raw
@@ -371,6 +371,35 @@ async def test_owner_approve_slash_command_needs_signed_http(client, hub):
     await ws.close()
     assert (await post_signed(client, owner, path, {'text': '/approve once'})).status == 200
     assert [entry[1] for entry in hub.received] == ['/approve once']
+
+
+@pytest.mark.parametrize("text", ["/yolo", "/YOLO", "/yolo@winglet", "/approvals off", "/approvals", " /approvals smart"])
+async def test_owner_commands_that_weaken_approvals_need_signed_http(client, hub, text):
+    """/yolo and /approvals switch dangerous-command approvals off, so a login token alone must not send them."""
+    owner = await pair_phone(client, hub)
+    path = '/api/chats/general/messages'
+    response = await client.post(path, json={'text': text}, headers=owner.auth)
+    assert response.status == 403 and not hub.received
+    ws = await client.ws_connect('/api/ws')
+    await ws.send_json({'type': 'auth', 'token': owner.token})
+    assert (await ws.receive_json())['type'] == 'hello'
+    await ws.send_json({'type': 'message.send', 'chat_id': 'general', 'text': text})
+    assert (await ws.receive_json())['type'] == 'error' and not hub.received
+    await ws.close()
+    assert (await post_signed(client, owner, path, {'text': text})).status == 200
+    assert [entry[1] for entry in hub.received] == [text.strip()]
+
+
+async def test_other_ways_in_cannot_send_signed_only_commands(client, hub):
+    """The watch and branching call user_message directly; they must not be a way round the signature."""
+    owner = await pair_phone(client, hub)
+    device = hub.store.get_device(owner.id)
+    for text in ("/yolo", "/approvals off", "/approve once"):
+        with pytest.raises(MessageRejected):
+            await hub.user_message(device, "general", text)
+    assert not hub.received
+    assert await hub.user_message(device, "general", "/help") is not None  # ordinary commands are unaffected
+    assert await hub.user_message(device, "general", "/yolo", signed=True) is not None  # the signed path passes it on
 
 
 async def test_confirm_picker_requires_signature(client, hub):

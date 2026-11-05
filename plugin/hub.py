@@ -180,6 +180,10 @@ ROUTE_POLICY = {
 MEMBER_COMMANDS = frozenset({"new", "retry", "undo", "title", "stop", "queue", "steer", "btw", "background",
                              "status", "help"})
 
+# Commands that approve a dangerous action or switch approvals off. Even an owner's login token isn't enough to
+# send one: the request must carry the device's signature, the same as answering an approval card.
+SIGNED_ONLY_COMMANDS = frozenset({"approve", "yolo", "approvals"})
+
 
 def _env_mb(name: str, default: int) -> int:
     try:
@@ -1263,11 +1267,13 @@ class Hub:
         if device is None:
             return _error(401, "This pairing was revoked. Reconnect before sending.")
         self._visible_chat(device, request.match_info["chat_id"])
-        if device["role"] == "owner" and self._approval_command(str(body.get("text") or "")):
+        signed = False
+        if device["role"] == "owner" and self._signed_only_command(str(body.get("text") or "")):
             problem = await self._signature_problem(request, device)
             if problem:
                 needs = {"needs": "verify"} if problem in (VERIFY_FIRST, BAD_SIGNATURE) else {}
                 return _json({"error": problem, **needs}, status=403)
+            signed = True
         attachments = body.get("attachments") or []
         if not isinstance(attachments, list) or not all(isinstance(a, str) for a in attachments):
             return _error(400, "attachments must be a list of upload ids")
@@ -1275,7 +1281,7 @@ class Hub:
             message = await self.user_message(device, request.match_info["chat_id"], str(body.get("text") or ""),
                                               str(body.get("client_id") or ""), attachments=attachments,
                                               reply_to=str(body.get("reply_to") or ""),
-                                              hidden=body.get("hidden") is True, quote=body.get("quote"))
+                                              hidden=body.get("hidden") is True, quote=body.get("quote"), signed=signed)
         except MessageRejected as exc:
             return _error(400, str(exc))
         if message is None:
@@ -1284,7 +1290,10 @@ class Hub:
 
     async def user_message(self, device: Dict[str, Any], chat_id: str, text: str,
                            client_id: str = "", *, attachments: Optional[List[str]] = None,
-                           reply_to: str = "", hidden: bool = False, quote=None) -> Optional[Dict[str, Any]]:
+                           reply_to: str = "", hidden: bool = False, quote=None,
+                           signed: bool = False) -> Optional[Dict[str, Any]]:
+        """`signed` is for the one caller that has checked the request's signature (the signed HTTP route); every
+        other way in (the socket, the watch, a branch) is refused a command that needs one."""
         text = (text or "").strip()[:MAX_TEXT]
         attachments = list(dict.fromkeys(attachments or []))
         if (not text and not attachments) or not chat_id:
@@ -1298,6 +1307,8 @@ class Hub:
                 return existing
         if self.context_insights is not None and self.context_insights.busy(chat_id):
             raise MessageRejected("Hermes is updating this chat context. Wait for the result before sending.")
+        if not signed and device["role"] == "owner" and self._signed_only_command(text):
+            raise MessageRejected("That command needs a signed request from the app, so it can't be sent this way.")
         chat = self.store.get_chat(chat_id)
         if not self.can_see(device, chat):
             return None  # deleted (or never created, or someone else's): don't bring it back
@@ -1368,16 +1379,17 @@ class Hub:
                                         role="system", push=False)
         return message
 
-    def _approval_command(self, text: str) -> bool:
+    def _signed_only_command(self, text: str) -> bool:
+        """True for a slash command that needs a signed request (see SIGNED_ONLY_COMMANDS), by name or alias."""
         text = text.strip()
         if not text.startswith("/") or not text[1:].strip():
             return False
         typed = text[1:].split(maxsplit=1)[0].split("@")[0].lower()
-        if typed == "approve":
+        if typed in SIGNED_ONLY_COMMANDS:
             return True
         if self.command_resolver is not None:
             try:
-                return self.command_resolver(typed) == "approve"
+                return (self.command_resolver(typed) or "") in SIGNED_ONLY_COMMANDS
             except Exception:
                 return False
         return False
@@ -2019,8 +2031,8 @@ class Hub:
         if kind == "ping":
             await ws.send_json({"type": "pong", "t": data.get("t")})
         elif kind == "message.send":
-            if device["role"] == "owner" and self._approval_command(str(data.get("text") or "")):
-                await ws.send_json({"type": "error", "message": "Approve from the app using signed HTTP."})
+            if device["role"] == "owner" and self._signed_only_command(str(data.get("text") or "")):
+                await ws.send_json({"type": "error", "message": "Send that command from the app using signed HTTP."})
                 return
             with contextlib.suppress(MessageRejected):
                 await self.user_message(device, str(data.get("chat_id") or ""), str(data.get("text") or ""),

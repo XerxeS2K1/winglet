@@ -9,7 +9,7 @@ The WebSocket cannot approve commands. Owners may still deny without a signature
 signed notification links remain deny-only. An unverified owner must scan a fresh owner code before
 approving; replacing a verified device key requires both an appropriate code and a request signed
 by its current key. Owner picker selections, including slash-command confirmations, also require
-signed requests. Typed `/approve` fallback commands also require signed HTTP and are never queued
+signed requests. Typed `/approve`, `/yolo` and `/approvals` commands (the last two switch approvals off) also require signed HTTP and are never queued
 offline. If a verified device loses its signing key, it must be paired again instead of
 replacing that key with a code alone.
 

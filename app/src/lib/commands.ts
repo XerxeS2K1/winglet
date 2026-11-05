@@ -30,3 +30,9 @@ export function matchCommands(all: Command[], typed: string): Command[] {
   const contains = q.length > 1 ? all.filter((c) => !starts.includes(c) && (c.cmd.toLowerCase().includes(q) || c.hint.toLowerCase().includes(q))) : [];
   return [...starts, ...contains].slice(0, 40);
 }
+
+/** Commands that approve something dangerous or switch approvals off. The server only takes these in a signed
+ *  request (plugin/hub.py SIGNED_ONLY_COMMANDS), so they're sent that way and never wait in the offline outbox. */
+export function needsSignature(text: string): boolean {
+  return /^\/(?:approve|yolo|approvals)(?:@[^\s]+)?(?:\s|$)/i.test(text.trim());
+}

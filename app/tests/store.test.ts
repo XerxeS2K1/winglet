@@ -80,6 +80,7 @@ function harness(os = 'web') {
     './recovery': { RecoveryCoordinator: FakeCoordinator },
     '../features/phone-tools/runtime': { phoneHello: () => phoneCalls.push('hello'), phoneEvent: () => phoneCalls.push('event'), phoneDisconnect: () => phoneCalls.push('disconnect'), phoneVisibility: () => phoneCalls.push('visibility') },
     './messages': helpers,
+    './commands': { needsSignature: (text: string) => /^\/(?:approve|yolo|approvals)(?:@[^\s]+)?(?:\s|$)/i.test(text.trim()) },
     '../features/projects/logic': projectHelpers,
     '../features/event-replay/session': replaySession,
     '../features/event-replay/merge': replayMerge,
@@ -291,6 +292,21 @@ test('messages sent offline are queued, then delivered in order with their origi
   assert.equal(h.outbox().length, 0);
   assert.equal(JSON.stringify(h.messages().map((m: any) => m.status)), JSON.stringify(['final', 'final']));
   assert.equal(sent[0].client_id, h.messages()[0].meta.client_id);
+});
+
+test('/yolo and /approvals are sent at once, never queued offline (they need a signed request)', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  const sent: any[] = [];
+  h.setRequest(echoServer(sent));
+  await h.store.getState().sendMessage('s', 'general', '/yolo');
+  assert.deepEqual(sent.map((b) => b.text), ['/yolo']);
+  h.disconnect();
+  for (const text of ['/yolo', '/approvals off', '/approve once'])
+    await assert.rejects(() => h.store.getState().sendMessage('s', 'general', text), /Reconnect/);
+  assert.equal(h.outbox().length, 0);
+  assert.deepEqual(sent.map((b) => b.text), ['/yolo']);
 });
 
 test('a send whose reply is lost is retried with the same id, so the server can de-duplicate it', async () => {

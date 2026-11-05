@@ -5,6 +5,7 @@ import { Platform } from 'react-native';
 import { RecoveryCoordinator } from './recovery';
 import { sound } from './sounds';
 import { api, ApiError, signedApi, wsUrl } from './api';
+import { needsSignature } from './commands';
 import { cacheGet, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
@@ -900,9 +901,9 @@ export const useApp = create<AppState>((set, get) => {
         !isLocal(m) && m.meta?.client_id === retryClientId)) return;
       // A retry reuses the original id so the server can tell it already has the message.
       const clientId = retryClientId ?? o.clientId ?? `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
-      // Approval commands must never wait in the offline outbox or travel unsigned.
-      if (/^\/approve(?:@[^\s]+)?(?:\s|$)/i.test(text.trim())) {
-        if (!get().network || get().runtime[serverId]?.status !== 'online') throw new ApiError('Reconnect, then approve again.', 0);
+      // Approval commands (/approve, /yolo, /approvals) must never wait in the offline outbox or travel unsigned.
+      if (needsSignature(text)) {
+        if (!get().network || get().runtime[serverId]?.status !== 'online') throw new ApiError('Reconnect, then send it again.', 0);
         const data = await signedApi<{ message: Message }>(server, 'POST', `/api/chats/${encodeURIComponent(chatId)}/messages`,
           { text: text.trim(), client_id: clientId });
         if (get().servers.some((s) => s.id === serverId)) upsertMessage(serverId, chatId, data.message);
