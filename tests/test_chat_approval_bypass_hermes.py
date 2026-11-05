@@ -72,8 +72,17 @@ async def gateway(tmp_path, monkeypatch, aiohttp_client):
     adapter.platform = SimpleNamespace(value="winglet")  # as in test_smart_approvals_hermes
     adapter._hub = hub
     adapter._typing_paused = set()
-    adapter.gateway_runner = Runner()
-    adapter._serves = lambda bot: bot == "work"  # the multiplexer serves the "work" profile
+    runner = adapter.gateway_runner = Runner()
+    # Hermes serves the "work" profile through a Winglet adapter of its own, which stamps that profile on its sources.
+    work = WingletAdapter.__new__(WingletAdapter)
+    work.platform = adapter.platform
+    work._hub = hub
+    work._typing_paused = set()
+    work._hermes_profile_name = "work"
+    work._owner_profile = "work"  # what Hermes's set_owner_profile does for a bot's adapter
+    work.gateway_runner = runner
+    runner.adapters = {"winglet": adapter}
+    runner._profile_adapters = {"work": {"winglet": work}}
     hub.on_approval = adapter._on_approval
     hub.chat_approval_bypass = bridge.chat_approval_bypass(adapter)
     assert hub.chat_approval_bypass is not None
@@ -85,7 +94,7 @@ async def gateway(tmp_path, monkeypatch, aiohttp_client):
         ctx = SimpleNamespace(_status_adapter=adapter, _status_chat_id=chat, session_key=key,
                               _status_thread_metadata=None, stream_consumer_holder=None, _loop_for_step=loop)
         approval.register_gateway_notify(key, TurnRunner(None, ctx)._approval_notify_sync)
-    yield SimpleNamespace(store=store, hub=hub, client=client, phone=phone, adapter=adapter, keys=keys)
+    yield SimpleNamespace(store=store, hub=hub, client=client, phone=phone, adapter=adapter, work=work, keys=keys)
     for key in keys.values():
         approval.resolve_gateway_approval(key, "deny", resolve_all=True)  # unblock a failed test
         approval.unregister_gateway_notify(key)
@@ -130,6 +139,7 @@ async def test_bypass_key_is_the_inbound_session_and_distinct_per_chat_and_profi
     async def capture(event):
         events.append(event)
     g.adapter.handle_message = capture
+    g.work.handle_message = capture  # a bot's chat is handled by that bot's own adapter
     device = {"id": "dev1", "name": "Pixel"}
     for chat in ("general", "other", "work-chat"):
         await g.adapter._on_user_message(g.store.get_chat(chat), "hi", device, {"id": "m-" + chat})
