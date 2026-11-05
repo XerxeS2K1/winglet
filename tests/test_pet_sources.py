@@ -162,15 +162,19 @@ def test_an_oversize_download_is_refused_and_nothing_is_kept(net, tmp_path):
 
 def test_reads_stop_at_the_cap():
     class Body:
+        """An endless stream; read(-1) and read() mean everything, as on a real response."""
+
         def __init__(self):
             self.served = 0
 
-        def read(self, n):
+        def read(self, n=-1):
+            n = 65536 if n is None or n <= 0 else n
             self.served += n
+            assert self.served < 1_000_000, "kept reading an endless body"
             return b"y" * n
     body = Body()
     assert len(petsource._read_capped(body, 1000)) == 1001
-    assert body.served == 1001  # not an endless stream
+    assert body.served == 1001  # one byte past the cap is enough to know; no more is read
 
 
 # -- what an install must be -------------------------------------------------------------------------------
