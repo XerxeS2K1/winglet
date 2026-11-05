@@ -13,6 +13,7 @@ import functools
 import hashlib
 import json
 import logging
+import time
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -2074,9 +2075,8 @@ def create_bot(name: str, title: str, persona: str, description: str = "") -> di
         validate_profile_name(name)
     except ValueError as exc:
         raise HermesRefused(str(exc)) from exc
-    import time as _time
     _rpc("profiles.create", {"name": name, "soul": persona, "description": description})
-    _rpc("profiles.configure", {"name": name, "ui_meta": {"hermes-bots": {"title": title, "created": int(_time.time() * 1000)}}})
+    _rpc("profiles.configure", {"name": name, "ui_meta": {"hermes-bots": {"title": title, "created": int(time.time() * 1000)}}})
     from hermes_cli.profiles import get_profile_dir
     try:
         _enable_winglet_for(name)
@@ -2084,7 +2084,48 @@ def create_bot(name: str, title: str, persona: str, description: str = "") -> di
         # The bot exists and works in Hermes; it just isn't reachable from this app until Winglet is enabled in
         # its profile (`hermes -p <name> plugins enable winglet`, then `config set platforms.winglet.enabled true`).
         logger.warning("[winglet] couldn't enable Winglet in the %s profile", name, exc_info=True)
+    else:
+        _ask_gateway_to_rescan_plugins(name)
     return _bot_row(name, get_profile_dir(name))
+
+
+# Tries (about half a second apart) while the gateway is still taking a new profile in.
+GATEWAY_RESCAN_TRIES = 8
+
+
+def _ask_gateway_to_rescan_plugins(name: str) -> bool:
+    """Make the running gateway look at the new bot's plugins again, now that Winglet is set up in it.
+
+    `profiles.create` publishes the profile and tells the gateway about it before it returns, so the gateway reads
+    the profile's plugins while Winglet's symlink and config don't exist yet. It reads them once per profile
+    (`discover_plugins()` is a no-op after the first scan, and its retry loop only re-arms plugins that scan saw), so
+    without this the bot's Winglet adapter never starts until the gateway restarts. Hermes's own `plugins enable`
+    sends the same `reload-plugins` request to the gateway for the same reason. Best effort: the bot is made either way.
+    """
+    try:
+        from gateway.control_socket import reload_gateway_plugins
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import get_default_hermes_root
+        root, home = get_default_hermes_root(), get_profile_dir(name)
+    except Exception:
+        logger.debug("[winglet] this Hermes can't be asked to reload plugins", exc_info=True)
+        return False
+    answer = None
+    for attempt in range(GATEWAY_RESCAN_TRIES):
+        try:
+            answer = reload_gateway_plugins(root, profile_home=home)
+        except Exception:
+            logger.debug("[winglet] asking the gateway to reload plugins failed", exc_info=True)
+            return False
+        if answer is None:  # no gateway answered (none running, or one too old for the request): asking again won't help
+            break
+        if answer.get("reloaded"):
+            return True
+        if attempt + 1 < GATEWAY_RESCAN_TRIES:  # "not served" yet: the gateway is still taking the new profile in
+            time.sleep(0.5)
+    logger.warning("[winglet] the gateway wasn't told to load Winglet for the %s bot%s; if it shows as not running, "
+                   "restart the gateway", name, f" ({answer.get('error')})" if answer and answer.get("error") else "")
+    return False
 
 
 def _enable_winglet_for(name: str) -> None:
