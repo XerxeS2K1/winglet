@@ -52,7 +52,7 @@ export function VoicePanel({ server, chatId, onClose, onType }: { server: Server
     let alive = true;
     if (!agent) return;
     api<any>(server, `/api/agent?chat=${encodeURIComponent(chatId)}`).then((i) => {
-      const m = i.chat_model ?? i.model;
+      const m = i.chat?.model ?? i.configured?.model;
       if (alive && m) setModel(typeof m === 'string' ? m : m.label ?? m.model ?? 'the selected chat model');
     }).catch(() => undefined);
     return () => { alive = false; };
