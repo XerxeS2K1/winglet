@@ -49,8 +49,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.14"
-      # Hermes only supports editable installs.
-      - run: pip install -e ./hermes-agent pytest pytest-aiohttp http_ece pyyaml packaging
+      # Hermes only supports editable installs. Its own pyproject overrides a Pillow pin that two of its
+      # dependencies disagree about (see [tool.uv] there); plain pip ignores that, so install with uv.
+      - run: |
+          pip install uv
+          echo "Pillow==13.0.0" > overrides.txt
+          uv pip install --system --override overrides.txt -e ./hermes-agent pytest pytest-aiohttp http_ece pyyaml packaging
       - name: Install the plugin's declared dependencies
         run: |
           python - <<'PY'
