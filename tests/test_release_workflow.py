@@ -140,3 +140,83 @@ def test_a_failing_gate_fails_the_step_when_run_the_way_github_runs_it(workflow,
     (root / "docs" / "releases" / "v1.2.3.md").unlink()
     missing = run_step(pr_step, root, env)
     assert missing.returncode != 0 and "docs/releases/v1.2.3.md does not exist" in missing.stdout
+
+
+def ancestry_step(workflow):
+    steps = steps_running(workflow["jobs"]["checks"], "is-ancestor")
+    assert len(steps) == 1, "A tag must be proven to be on main"
+    return steps[0]
+
+
+def git(cwd, *args):
+    return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
+                          cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+
+
+@pytest.fixture
+def repository(tmp_path):
+    server, work, runner = (tmp_path / name for name in ("server.git", "work", "runner"))
+    git(tmp_path, "init", "--bare", "-b", "main", str(server))
+    git(tmp_path, "clone", str(server), str(work))
+    (work / "a").write_text("main")
+    git(work, "add", "a")
+    git(work, "commit", "-m", "on main")
+    main = git(work, "rev-parse", "HEAD")
+    git(work, "push", "origin", "main")
+    git(work, "checkout", "-b", "integration/dev-all")
+    (work / "b").write_text("side")
+    git(work, "add", "b")
+    git(work, "commit", "-m", "not yet on main")
+    side = git(work, "rev-parse", "HEAD")
+    git(work, "push", "origin", "integration/dev-all")
+    git(tmp_path, "clone", str(server), str(runner))
+    return work, runner, main, side
+
+
+def check_ancestry(workflow, runner, sha):
+    git(runner, "checkout", "--detach", sha)
+    return run_step(ancestry_step(workflow), runner,
+                    {**os.environ, "GITHUB_SHA": sha, "GITHUB_REF_NAME": "v1.2.3"})
+
+
+def test_tag_on_main_is_allowed(workflow, repository):
+    _, runner, main, _ = repository
+    assert check_ancestry(workflow, runner, main).returncode == 0
+
+
+def test_tag_outside_main_is_refused_with_an_actionable_error(workflow, repository):
+    _, runner, _, side = repository
+    result = check_ancestry(workflow, runner, side)
+    assert result.returncode != 0
+    assert "::error::Tag v1.2.3 is not on main" in result.stdout + result.stderr
+
+
+def test_old_main_commit_is_allowed_after_main_advances(workflow, repository):
+    work, runner, main, _ = repository
+    git(work, "checkout", "main")
+    (work / "c").write_text("later")
+    git(work, "add", "c")
+    git(work, "commit", "-m", "later main")
+    git(work, "push", "origin", "main")
+    assert check_ancestry(workflow, runner, main).returncode == 0
+
+
+def test_side_commit_is_allowed_once_merged_into_main(workflow, repository):
+    work, runner, _, side = repository
+    git(work, "checkout", "main")
+    git(work, "merge", "--no-ff", "-m", "release", "integration/dev-all")
+    git(work, "push", "origin", "main")
+    assert check_ancestry(workflow, runner, side).returncode == 0
+
+
+def test_ancestry_check_is_tag_only_blocking_and_early(workflow):
+    step = ancestry_step(workflow)
+    assert step["if"] == "github.ref_type == 'tag'"
+    assert "continue-on-error" not in step
+    steps = workflow["jobs"]["checks"]["steps"]
+    assert steps.index(step) < next(i for i, s in enumerate(steps) if str(s.get("run", "")).startswith("pytest"))
+
+
+def test_checkout_provides_history_for_tag_ancestry(workflow):
+    checkout = next(s for s in workflow["jobs"]["checks"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout"))
+    assert str(checkout.get("with", {}).get("fetch-depth")) in ("0", "${{ github.ref_type == 'tag' && 0 || 1 }}")

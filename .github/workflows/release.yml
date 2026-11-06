@@ -19,6 +19,18 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+        with:
+          # A tag push needs the history to prove its commit is on main; other runs only need the tip.
+          fetch-depth: ${{ github.ref_type == 'tag' && 0 || 1 }}
+      # Releases are cut from main (docs/RELEASING.md): a tag on any other commit publishes nothing.
+      - name: Tag is on main
+        if: github.ref_type == 'tag'
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" refs/remotes/origin/main; then
+            echo "::error::Tag $GITHUB_REF_NAME is not on main. Merge the release pull request into main first, then tag main (docs/RELEASING.md)."
+            exit 1
+          fi
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

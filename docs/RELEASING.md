@@ -70,7 +70,8 @@ pull request template has the checklist), so at release time only the release no
    ```
 
 5. **The tag publishes.** The Release workflow checks the tag against `plugin/plugin.yaml` and the release documents, builds
-   both APKs and the plugin bundle, and publishes the GitHub Release. Nothing is published from any other branch.
+   both APKs and the plugin bundle, and publishes the GitHub Release. It also refuses a tag whose commit is not on `main`,
+   so nothing is published from any other branch.
 
 ### Betas
 

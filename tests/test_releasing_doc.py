@@ -69,3 +69,12 @@ def test_the_parts_that_did_not_change_are_still_there():
 
 def test_it_no_longer_tells_anyone_to_tag_before_the_pull_request_merges():
     assert "Before tagging, set the same version" not in DOC
+
+
+def test_the_doc_only_promises_what_the_workflow_checks():
+    """The doc says a tag outside main publishes nothing; that must be a check the workflow really makes."""
+    body = section("Cutting a release")
+    assert "refuses a tag whose commit is not on `main`" in body
+    assert "Nothing is published from any other branch." not in body                  # the old, unchecked promise
+    workflow = (REPO / ".github" / "workflows" / "release.yml").read_text()
+    assert "git merge-base --is-ancestor \"$GITHUB_SHA\" refs/remotes/origin/main" in workflow
