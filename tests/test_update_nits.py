@@ -23,6 +23,43 @@ from test_plugin_update_rollback import NOW, back_up, pretend_the_update_ran, re
 from test_trust import post_signed
 
 
+# -- 4. a retry key belongs to one kind of job ----------------------------------------------------------------------------
+
+
+async def test_a_winglet_update_does_not_answer_with_a_job_of_another_kind(client, hub, owner):
+    first = await post_signed(client, owner, "/api/system/restart", {"idempotency_key": "same-key"})
+    restart_job = (await first.json())["job"]
+    await settle(hub)
+    resp = await update(client, owner, version=NEXT, key="same-key")
+    assert resp.status == 409
+    body = await resp.json()
+    assert "job" not in body or body["job"]["id"] != restart_job["id"]
+    assert not any(call[0] == "begin" for call in hub.hermes.calls)               # nothing was started on the strength of it
+
+
+async def test_a_restart_does_not_answer_with_an_update_job(client, hub, owner):
+    hub.activity_provider = lambda: {"default": {"state": "idle", "queued": 0}}
+    first = await update(client, owner, version=NEXT, key="same-key")
+    update_job = (await first.json())["job"]
+    await settle(hub)
+    for job in hub.store.list_jobs(running=True):
+        hub.store.update_job(job["id"], state="succeeded")                          # so only the key can be what stops it
+    resp = await post_signed(client, owner, "/api/system/restart", {"idempotency_key": "same-key"})
+    assert resp.status == 409
+    body = await resp.json()
+    assert "job" not in body or body["job"]["id"] != update_job["id"]
+
+
+async def test_a_retry_of_the_same_kind_still_gets_its_own_job(client, hub, owner):
+    hub.activity_provider = lambda: {"default": {"state": "idle", "queued": 0}}
+    first = (await (await update(client, owner, version=NEXT, key="k-same")).json())["job"]
+    await settle(hub)
+    again = (await (await update(client, owner, version=NEXT, key="k-same")).json())["job"]
+    assert again["id"] == first["id"]
+    restart = (await (await post_signed(client, owner, "/api/system/restart", {"idempotency_key": "r-same"})).json())["job"]
+    assert (await (await post_signed(client, owner, "/api/system/restart", {"idempotency_key": "r-same"})).json())["job"]["id"] == restart["id"]
+
+
 # -- 7. a kept folder is never reused -------------------------------------------------------------------------------------------
 
 

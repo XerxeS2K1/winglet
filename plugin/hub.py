@@ -49,6 +49,11 @@ VERSION = "0.10.4"
 PROTOCOL = 2
 MIN_APP_PROTOCOL = 1
 HOME_CHAT_ID = "home"
+def _key_in_use() -> web.Response:
+    """A retry key finds only a job of the same kind; one that belongs to something else is refused, not answered with."""
+    return _error(409, "That request key was already used for something else. Try again.")
+
+
 RESTART_DELAY_SECONDS = 0.8
 # An installed update restarts the gateway only when no chat is running. Waiting is bounded: 30 minutes is long enough for
 # a normal chat or hand-off to finish, and shorter than the hour after which an unconfirmed update stops blocking a new one
@@ -3207,7 +3212,7 @@ class Hub:
         if key:
             existing = self.store.job_by_key(key)
             if existing is not None:  # a retry, perhaps after the restart: answer with the job, not with "already up to date"
-                return _json({"job": existing}, status=202)
+                return _json({"job": existing}, status=202) if existing["kind"] == "winglet_update" else _key_in_use()
         version = body.get("version")
         if not isinstance(version, str) or h.parse_version(version) is None:
             return _error(400, "Say which Winglet version to install, like 0.10.5.")
@@ -3241,7 +3246,7 @@ class Hub:
         if key:
             existing = self.store.job_by_key(key)
             if existing is not None:
-                return _json({"job": existing}, status=202)
+                return _json({"job": existing}, status=202) if existing["kind"] == kind else _key_in_use()
         busy = self._busy_job()
         if busy is not None:
             return _json({"error": "Something else is already in progress. Wait for it to finish.", "job": busy}, status=409)
