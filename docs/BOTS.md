@@ -28,6 +28,11 @@ brings back the answer, the way Hermes Desktop's Bot Mode does (the message land
 Ask your bot to make a new one ("make me a bot that plans meals") and it does, after you approve it like a
 risky command. Both tools are in the "bots" toolset under Tools.
 
+A bot that is working on a hand-off shows "Working". Owners can see how many hand-offs are queued behind it and
+open a read-only queue sheet showing their order (nothing can be cancelled or reordered from the phone). A hand-off
+shows which Winglet chat asked, and a short "finished" note appears in that chat when it is done. The note does not
+wake the asking bot. These need a server plugin that matches the app.
+
 ## On another server
 
 Pair it as usual; it stacks up in the sidebar with the others. A profile can also keep its own gateway

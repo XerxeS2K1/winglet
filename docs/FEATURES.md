@@ -36,6 +36,9 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   whether this phone's notifications are getting through. Moved the server to Tailscale or a new domain?
   Point the Android app at the new address; it only moves once your server has signed that address as
   its own.
+- **A one-time battery question (Android).** About 5 seconds after Winglet opens, once paired and unlocked, it explains
+  in a sentence and, if you continue, opens Android's own dialog to leave Winglet out of battery optimisation. The web
+  app never shows it.
 
 ## It asks, you answer
 
@@ -51,7 +54,11 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   from the phone; keys are encrypted for your server before they leave the phone.
   Star models for quick access in the chat picker, or choose from the last eight successful choices.
   Stars do not change the active model; saved choices only appear for providers offered by that server.
-- **Persona, memory and usage.** Edit who it is, see and fix what it remembers, and track tokens and cost.
+- **A fallback notice.** While Hermes has switched to a fallback model, a strip above the message box shows the reason
+  (for example rate limit), the model in use and a countdown to when the main model is tried again, or "next message"
+  when there is no cooldown. It disappears on its own, and tapping it opens the model sheet. Needs a server plugin
+  that matches the app.
+- **Persona, memory and usage.** Persona edits apply to new chats, not to hand-offs already running. Edit who it is, see and fix what it remembers, and track tokens and cost.
 - **A pet.** Give your agent an animated face from the [petdex](https://petdex.dev) or [Codex Pets](https://codex-pets.net) gallery
   (a switch on the Pet screen; Codex Pets are downloaded by the server from that one host only). It waves when
   a reply lands, runs while it works and waits when it needs you, on every phone paired with the bot.
@@ -60,6 +67,10 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   its colors from its own sprite.
   Focusing the landing's message box hides the other dock pages and settles the selected pet onto the box;
   it gives a small hop when you send and stays perched while you chat.
+- **Bots helping each other.** When one bot asks another for help (`ask_bot`), the chat shows a short "Asked <bot>"
+  line you can tap to read the question and answer. A busy bot shows "Working". Owners also see how many hand-offs
+  are queued behind it and can open a read-only queue sheet. A hand-off shows which Winglet chat asked, and a short
+  "finished" note appears when it is done, without waking the asking bot. These need a server plugin that matches the app.
 - **Your main bot.** Choose one in Agent → Main bot. The app selects it on startup. The chat landing has an
   unboxed pet dock above the message box; both move above the keyboard. Drag between pets without changing your main bot
   or its main conversation. New chat sits to its left with a separate composer for the main bot; the first send starts a fresh topic.

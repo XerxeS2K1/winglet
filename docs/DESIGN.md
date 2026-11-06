@@ -68,3 +68,12 @@ its tail. No gradients or glows outside the pets.
   (touch) or hover (mouse).
 - Gateway progress notices ("⏳ Working …", "⚡ Stopped …") are status, not conversation: one muted line.
 - Tool activity collapses into a single "N steps" pill.
+
+## Bots working together
+
+- **Fallback strip**: one muted line above the message box, "Fallback · rate limit  1 h 52 min". It shows what the
+  model button already fetched (nothing extra is asked of the server), disappears the moment the fallback ends with no
+  message of its own, and opens the model sheet when tapped.
+- **Queue sheet**: owner-only and read-only, titled "<Bot> queue". It never admits, cancels or reorders work. A footnote
+  says what it shows and what it does not, and empty or unavailable states say so in one line.
+- **Hand-off notices** are status, not conversation: a short muted line, never a reply that wakes a bot.
