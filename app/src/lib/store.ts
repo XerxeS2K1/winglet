@@ -14,6 +14,7 @@ import { isNotifiable, markFailed, mergeMessages } from './messages';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { refreshNetworkNow } from './network';
+import { AUTH_RECHECK_DELAYS_MS, confirmRejected, pause, type AuthAnswer } from './authCheck';
 import { pushNative } from '../features/encrypted-push/native';
 import { chatNoteTag, handledNoteTags, inboxNoteTag } from './handledNotifications';
 import type { Attachment, Bot, BotRow, Chat, ConnStatus, DraftFile, InboxItem, Job, Me, Message, PauseState, PetSheet, Project, ProjectSnapshot, ReplyRef, Server, ServerInfo, TaskCapabilities, TaskEnvelope, TaskSnapshot, SyncState } from './types';
@@ -832,7 +833,7 @@ export const useApp = create<AppState>((set, get) => {
         });
         return true;
       } catch (e) {
-        if (e instanceof ApiError && e.status === 401) patch(serverId, () => ({ status: 'unauthorized' }));
+        if (e instanceof ApiError && e.status === 401) connections.get(serverId)?.checkSignIn();
         return false;
       }
     },
@@ -1201,6 +1202,9 @@ type ConnCallbacks = {
 class Connection {
   private ws?: WebSocket;
   private closed = false;
+  /** Proven signed out (several rejections in a row). Not the same as closed: a later check can undo it. */
+  private signedOut = false;
+  private checking = false;
   private attempt = 0;
   private timer?: ReturnType<typeof setTimeout>;
   private pingTimer?: ReturnType<typeof setInterval>;
@@ -1228,6 +1232,7 @@ class Connection {
 
   open() {
     if (this.closed) return;
+    this.signedOut = false;
     this.sync.closed();
     // A quick tunnel gets a new address when the server restarts: look for one straight away.
     if (this.recovers && this.attempt === 0) this.coordinator.want(this.server.id);
@@ -1276,8 +1281,12 @@ class Connection {
       this.sync.closed();
       if (this.closed) return;
       // The server rejects the upgrade with 401 when this device was unpaired.
+      // One rejection after sleep is not proof: check again a few times before saying "Signed out".
       if (e.code === 1008 || e.code === 4401) {
-        this.cb.onStatus('unauthorized', 'device removed');
+        if (this.signedOut) return;
+        this.cb.onStatus('offline', 'sign-in rejected, checking');
+        void this.confirmSignedOut('device removed');
+        this.retry('sign-in rejected');
         return;
       }
       if (e.code === 4000) {
@@ -1293,6 +1302,7 @@ class Connection {
   }
 
   private retry(why: string) {
+    if (this.signedOut) return;
     clearTimeout(this.timer);
     const cap = this.visible ? 10000 : 30000;
     const delay = Math.min(cap, 1000 * 2 ** this.attempt) * (0.7 + Math.random() * 0.6);
@@ -1323,12 +1333,57 @@ class Connection {
     } catch (e) {
       if (this.closed || this.server !== before) return;
       if (e instanceof ApiError && e.status === 401) {
-        this.closed = true;
-        clearTimeout(this.timer);
-        this.cb.onStatus('unauthorized', 'token rejected');
+        void this.confirmSignedOut('token rejected');
       } else if (this.recovers) {
         this.coordinator.want(this.server.id);
       }
+    }
+  }
+
+  private async askMe(server: Server): Promise<AuthAnswer> {
+    try {
+      await api(server, '/api/me');
+      return 'fine';
+    } catch (e) {
+      // Only a real 401 counts as a rejection; a network error proves nothing about the pairing.
+      return e instanceof ApiError && e.status === 401 ? 'rejected' : 'fine';
+    }
+  }
+
+  /** Says "Signed out" only when every one of several checks is rejected; otherwise keeps retrying. */
+  private async confirmSignedOut(why: string) {
+    if (this.checking || this.signedOut) return;
+    this.checking = true;
+    const before = this.server;
+    const stillWanted = () => !this.closed && this.server === before && this.ws?.readyState !== 1;
+    try {
+      const sure = await confirmRejected(() => this.askMe(before), AUTH_RECHECK_DELAYS_MS, pause, stillWanted);
+      if (!sure) return;
+      this.signedOut = true;
+      clearTimeout(this.timer);
+      this.cb.onStatus('unauthorized', why);
+    } finally {
+      this.checking = false;
+    }
+  }
+
+  /** A request on its own got a 401 (loading a chat, say). Treat it as a hint to re-check, never as proof. */
+  checkSignIn() {
+    void this.confirmSignedOut('token rejected');
+  }
+
+  /** On reopening or "Try now" while signed out: one fresh look, and a normal connect if it is fine after all. */
+  private async recheckSignedOut() {
+    if (this.checking) return;
+    this.checking = true;
+    const before = this.server;
+    try {
+      if ((await this.askMe(before)) === 'fine' && this.signedOut && !this.closed && this.server === before) {
+        this.attempt = 0;
+        this.open();
+      }
+    } finally {
+      this.checking = false;
     }
   }
 
@@ -1358,6 +1413,7 @@ class Connection {
   /** Back in the foreground: make sure the socket is really alive, not just open on paper. */
   ensureOpen() {
     if (this.closed) return;
+    if (this.signedOut) { void this.recheckSignedOut(); return; }
     if (!this.ws) {
       this.retryNow();
       return;
@@ -1381,7 +1437,9 @@ class Connection {
 
   /** Skip the backoff and try right away (the "Try now" button, or the network coming back). */
   retryNow() {
-    if (this.closed || this.ws) return;
+    if (this.closed) return;
+    if (this.signedOut) { void this.recheckSignedOut(); return; }
+    if (this.ws) return;
     clearTimeout(this.timer);
     this.attempt = 0;
     this.open();

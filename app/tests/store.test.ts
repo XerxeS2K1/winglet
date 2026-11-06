@@ -73,6 +73,7 @@ function harness(os = 'web') {
   const replaySession = compile('../src/features/event-replay/session.ts', { './protocol': replayProtocol });
   const replayMerge = compile('../src/features/event-replay/merge.ts', {});
   const projectHelpers = compile('../src/features/projects/logic.ts', {});
+  const authCheck = compile('../src/lib/authCheck.ts', {});
   const { useApp: store } = compile('../src/lib/store.ts', {
     zustand: { create: (fn: any) => createStore(fn) },
     'zustand/react/shallow': { useShallow: (fn: any) => fn },
@@ -95,6 +96,8 @@ function harness(os = 'web') {
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
     './network': { refreshNetworkNow: async () => {} },
+    // Same logic, but no real waiting between the re-checks.
+    './authCheck': { ...authCheck, AUTH_RECHECK_DELAYS_MS: [1, 1], pause: async () => {} },
     './handledNotifications': handled,
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
@@ -1046,4 +1049,90 @@ test('hearing from the server proves the phone is online, even when Android said
   await h.hello();
   assert.equal(h.store.getState().network, true);
   assert.equal(h.store.getState().runtime.s.status, 'online');
+});
+
+// ---- "Signed out" needs proof: several rejections in a row, never one ----
+const rejected = () => Object.assign(new ApiError('Unauthorized', 401), {});
+const status = (h: ReturnType<typeof harness>) => h.store.getState().runtime.s.status;
+async function closeRejected(h: ReturnType<typeof harness>, code = 1008) {
+  h.socket().readyState = 3;
+  h.socket().onclose?.({ code });
+  for (let i = 0; i < 12; i++) await h.tick();
+}
+
+test('a server that keeps rejecting this phone still ends at Signed out', async () => {
+  const h = harness();
+  await h.connect();
+  let asked = 0;
+  h.setRequest(async (_s: any, path: string) => { if (path === '/api/me') { asked += 1; throw rejected(); } return {}; });
+  await closeRejected(h);
+  assert.equal(status(h), 'unauthorized');
+  assert.equal(asked, 3); // the first look plus two re-checks
+});
+
+test('one rejection followed by an accepted check is NOT Signed out (the deep-sleep case)', async () => {
+  const h = harness();
+  await h.connect();
+  let asked = 0;
+  h.setRequest(async (_s: any, path: string) => { if (path === '/api/me') { asked += 1; if (asked === 1) throw rejected(); } return {}; });
+  await closeRejected(h);
+  assert.notEqual(status(h), 'unauthorized');
+  assert.equal(asked, 2);
+  assert.ok(h.timers.length > 0); // and it is still going to retry
+});
+
+test('a network error while checking proves nothing and never signs out', async () => {
+  const h = harness();
+  await h.connect();
+  h.setRequest(async (_s: any, path: string) => { if (path === '/api/me') throw new ApiError('offline', 0); return {}; });
+  await closeRejected(h, 4401);
+  assert.notEqual(status(h), 'unauthorized');
+});
+
+test('a socket that opens during the checks cancels the sign-out', async () => {
+  const h = harness();
+  await h.connect();
+  h.setRequest(async (_s: any, path: string) => {
+    if (path === '/api/me') { h.retry(); throw rejected(); } // the retry timer fires: a new socket is up meanwhile
+    return {};
+  });
+  await closeRejected(h);
+  assert.notEqual(status(h), 'unauthorized');
+});
+
+test('a 401 while loading a chat is only a hint: if the check is fine it stays online', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.setRequest(async (_s: any, path: string) => { if (path.startsWith('/api/chats')) throw rejected(); return {}; });
+  await h.store.getState().loadMessages('s', 'general');
+  for (let i = 0; i < 12; i++) await h.tick();
+  assert.equal(status(h), 'online');
+});
+
+test('while Signed out, reopening the app looks again and reconnects if the pairing is fine', async () => {
+  const h = harness();
+  await h.connect();
+  h.setRequest(async (_s: any, path: string) => { if (path === '/api/me') throw rejected(); return {}; });
+  await closeRejected(h);
+  assert.equal(status(h), 'unauthorized');
+  const sockets = h.sockets.length;
+  h.setRequest(async () => ({})); // the pairing was fine all along
+  h.store.getState().setForeground(true);
+  for (let i = 0; i < 12; i++) await h.tick();
+  assert.ok(h.sockets.length > sockets);
+  assert.notEqual(status(h), 'unauthorized');
+});
+
+test('while Signed out and still rejected, reopening does not open sockets or flicker the screen', async () => {
+  const h = harness();
+  await h.connect();
+  h.setRequest(async (_s: any, path: string) => { if (path === '/api/me') throw rejected(); return {}; });
+  await closeRejected(h);
+  const sockets = h.sockets.length;
+  h.store.getState().setForeground(true);
+  h.store.getState().retryNow('s');
+  for (let i = 0; i < 12; i++) await h.tick();
+  assert.equal(h.sockets.length, sockets);
+  assert.equal(status(h), 'unauthorized');
 });
