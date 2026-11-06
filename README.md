@@ -36,8 +36,9 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.0](docs/releases/v0.10.0.md):** Rooms in Projects, clearer Smart approval cards,
-> approval bypass for one chat, custom MCP servers, and links to skill sources.
+> **New in [v0.10.4](docs/releases/v0.10.4.md):** no more false "No internet" after the phone sleeps, a one-time
+> battery question on Android, and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and
+> which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
 ## Why Winglet?
 
@@ -148,7 +149,7 @@ More detail, including what Google can see: [setup guide](docs/SETUP.md#notifica
   <tr>
     <td valign="top">
       <h4>Many bots, one tap</h4>
-      Add a bot for each job and switch between them from the landing. Give each an animated pet from <a href="https://petdex.dev">petdex</a>. <a href="docs/BOTS.md">More on bots →</a>
+      Add a bot for each job and switch between them from the landing. Give each an animated pet from <a href="https://petdex.dev">petdex</a> or <a href="https://codex-pets.net">Codex Pets</a>. Bots can hand work to each other, and owners see who is busy and what is queued. <a href="docs/BOTS.md">More on bots →</a>
     </td>
     <td valign="top">
       <h4>Your agent</h4>

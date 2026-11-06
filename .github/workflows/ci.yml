@@ -44,7 +44,7 @@ jobs:
         with:
           repository: NousResearch/hermes-agent
           # The Hermes these tests were last checked against. Move it forward on purpose.
-          ref: b200f5bc60e31588ba2cb60e288029c4a54ba5fa  # v0.22.7
+          ref: 2bd378ed1b8d6bf2192cb26e0a55ff3091e6bd19  # v0.23.0
           path: hermes-agent
       - uses: actions/setup-python@v5
         with:
