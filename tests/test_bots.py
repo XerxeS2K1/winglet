@@ -180,6 +180,8 @@ async def test_activity_reads_canonical_queue_not_stale_receipts(client, hub, tm
             (1, "bot:running", "started"), (2, "bot:waiting", "queued"),
             (3, "bot:done", "terminal"), (4, "chat:unrelated", "queued")])
     monkeypatch.setattr(control, "query_gateway_control", lambda *a, **kw: {"active_agents": 1})
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, "_get_default_hermes_home", lambda: home)
     hub.activity_provider = lambda: {"default": hermes_api.bot_activity(home)}
     owner = await pair_phone(client, hub)
     ws, snapshot = await hello(client, owner)
