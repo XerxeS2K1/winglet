@@ -30,6 +30,7 @@ from typing import Optional
 
 BACKUP_FOLDER = "winglet-plugin"        # <hermes root>/backups/winglet-plugin/
 MARKER = "pending-update.json"          # the update that is waiting to be confirmed
+NOTED = "pending-update.noted"          # exists once the record's note has been said (kept apart: the hub rewrites the record)
 SCRIPT_NAME = "winglet-update-watch.py"  # where the server installs this file: <hermes home>/scripts/
 KEEP_BACKUPS = 3
 DEADLINE_SECONDS = 180
@@ -160,6 +161,34 @@ def create_backup(*, plugin_dir, db_path, from_version: str, to_version: str, no
     return backup
 
 
+def refresh_database(backup: Path) -> None:
+    """Replace the database copy in a backup with a fresh one. Used when an installed update waits for a quiet moment to
+    restart: the old version keeps writing chats meanwhile, and a rollback after the restart must not undo them. The
+    plugin files in the backup are not touched, and a copy that cannot be made leaves the earlier one in place."""
+    backup = Path(os.path.abspath(backup))
+    if backup.is_symlink() or not backup.is_dir() or not _BACKUP_NAME.fullmatch(backup.name):
+        raise RollbackError("that is not a Winglet backup folder")
+    manifest_path = backup / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RollbackError("the backup's manifest cannot be read") from exc
+    if not isinstance(manifest, dict):
+        raise RollbackError("the backup's manifest is not valid")
+    verify_backup(backup, Path(manifest.get("plugin_dir", "")).parent.parent)
+    if not manifest.get("db_sha256") or not manifest.get("db_path"):
+        return  # the backup was made without a database: there is nothing to refresh
+    fresh = backup / ".data.db.new"
+    try:
+        _snapshot_db(Path(manifest["db_path"]), fresh)
+        digest = _sha256_file(fresh)
+        os.replace(fresh, backup / "data.db")
+    finally:
+        if fresh.exists():
+            fresh.unlink()
+    _write_json_atomically(manifest_path, {**manifest, "db_sha256": digest, "db_refreshed": time.time()})
+
+
 def prune_backups(folder: Path, keep: int = KEEP_BACKUPS, protect: Optional[Path] = None) -> None:
     """Keep the newest ``keep`` backups. Only folders named like a backup are considered; links are never followed."""
     candidates = []
@@ -185,6 +214,11 @@ def write_marker(folder: Path, data: dict) -> None:
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
     _write_json_atomically(folder / MARKER, data)
+    if "note" not in data:  # a record without a note starts a fresh one; renewals keep their note, and so the 'said' flag
+        try:
+            (folder / NOTED).unlink()
+        except OSError:
+            pass
 
 
 def read_marker(folder: Path) -> Optional[dict]:
@@ -203,10 +237,11 @@ def read_marker(folder: Path) -> Optional[dict]:
 
 
 def clear_marker(folder: Path) -> None:
-    try:
-        (Path(folder) / MARKER).unlink()
-    except FileNotFoundError:
-        pass
+    for name in (MARKER, NOTED):
+        try:
+            (Path(folder) / name).unlink()
+        except FileNotFoundError:
+            pass
 
 
 # -- putting the backup back ------------------------------------------------------------------------------------
@@ -319,6 +354,22 @@ def _clean(value) -> str:
     return value if isinstance(value, str) and _VERSION.match(value) else "?"
 
 
+def _say_note_once(folder: Path, marker: dict, out) -> None:
+    """A message the server left in the record (the update is installed and waits for a quiet moment to restart) goes to
+    Kraig once, through the same cron delivery as a failure."""
+    note = marker.get("note")
+    if not isinstance(note, str) or (folder / NOTED).exists():
+        return
+    text = "".join(ch for ch in " ".join(note.split()) if ch.isprintable())[:800]
+    if not text:
+        return
+    try:
+        (folder / NOTED).write_text("said\n")  # first: if this fails, stay quiet rather than repeat it every minute
+    except OSError:
+        return
+    out.write(text + "\n")
+
+
 def watch(home, now: float, out) -> int:
     """One cron tick. Silent unless an update is pending past its deadline (or its record cannot be read)."""
     root = hermes_root(Path(home))
@@ -336,6 +387,7 @@ def watch(home, now: float, out) -> int:
         return 0
     if marker is None or marker.get("state") != "pending":
         return 0
+    _say_note_once(folder, marker, out)
     deadline = marker.get("deadline")
     if not isinstance(deadline, (int, float)) or isinstance(deadline, bool) or now < deadline:
         return 0

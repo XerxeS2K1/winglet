@@ -431,3 +431,150 @@ def test_the_installed_script_does_the_job_when_cron_runs_it_as_a_separate_progr
 def test_the_installed_script_is_silent_when_no_update_is_pending(world):
     done = subprocess.run([sys.executable, str(world.script)], capture_output=True, text=True, timeout=60)
     assert done.returncode == 0 and done.stdout == "" and done.stderr == ""
+
+
+# -- an installed update that is waiting for a quiet moment to restart --------------------------------------------------
+
+
+def test_a_pending_note_is_delivered_once_and_never_rolls_anything_back(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 170, "state": "pending",
+                                   "cron_job": "job123", "created": NOW, "note": "Winglet 0.10.5 is installed; the gateway restarts when chats finish."})
+    current = tree(world.plugin)
+    assert ur.watch(world.root, NOW + 60, sys.stdout) == 0
+    assert capsys.readouterr().out == "Winglet 0.10.5 is installed; the gateway restarts when chats finish.\n"
+    assert tree(world.plugin) == current and json.loads(world.folder.joinpath(ur.MARKER).read_text())["state"] == "pending"
+    ur.watch(world.root, NOW + 120, sys.stdout)
+    assert capsys.readouterr().out == ""                                  # said once, not every minute
+
+
+def test_the_note_is_only_marked_as_said_beside_the_record_so_the_waiting_hub_cannot_undo_it(world, capsys):
+    backup = back_up(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 170, "state": "pending",
+                                   "created": NOW, "note": "hello"})
+    ur.watch(world.root, NOW + 1, sys.stdout)
+    capsys.readouterr()
+    marker = ur.read_marker(world.folder)
+    ur.write_marker(world.folder, {**marker, "deadline": NOW + 200})      # the hub renews its lease, rewriting the whole record
+    ur.watch(world.root, NOW + 30, sys.stdout)
+    assert capsys.readouterr().out == ""
+
+
+def test_a_new_update_may_say_its_own_note_and_a_cleared_one_forgets(world, capsys):
+    backup = back_up(world)
+    record = {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 170, "state": "pending", "created": NOW, "note": "first"}
+    ur.write_marker(world.folder, record)
+    ur.watch(world.root, NOW + 1, sys.stdout)
+    ur.clear_marker(world.folder)
+    ur.write_marker(world.folder, {**record, "note": "second"})
+    capsys.readouterr()
+    ur.watch(world.root, NOW + 2, sys.stdout)
+    assert capsys.readouterr().out == "second\n"
+    ur.write_marker(world.folder, {k: v for k, v in record.items() if k != "note"})   # an update with no note starts clean
+    ur.write_marker(world.folder, {**record, "note": "third"})
+    ur.watch(world.root, NOW + 3, sys.stdout)
+    assert capsys.readouterr().out == "third\n"
+
+
+@pytest.mark.parametrize("state", ["rolled_back", "rollback_failed"])
+def test_a_note_on_a_finished_update_is_not_said(world, capsys, state):
+    backup = back_up(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW, "state": state, "note": "late"})
+    ur.watch(world.root, NOW + 500, sys.stdout)
+    assert capsys.readouterr().out == ""
+
+
+def test_a_note_never_hides_a_rollback_that_is_due(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 10, "state": "pending",
+                                   "created": NOW, "note": "waiting"})
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    said = capsys.readouterr().out
+    assert "waiting" in said and "put 0.10.4 back" in said and read_db(world.db) == ["hello", "world"]
+
+
+def test_a_note_cannot_be_huge_or_multi_line_noise(world, capsys):
+    backup = back_up(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 170, "state": "pending",
+                                   "created": NOW, "note": "x" * 5000 + "\x07"})
+    ur.watch(world.root, NOW + 1, sys.stdout)
+    said = capsys.readouterr().out
+    assert 0 < len(said) <= 801 and "\x07" not in said
+
+
+def test_the_lease_keeps_a_waiting_update_safe_for_as_long_as_the_hub_vouches_and_no_longer(world, capsys):
+    """The hub renews the deadline while it waits for a quiet moment. Cron stays silent for hours of that, and rolls back
+    within the boot window once the renewals stop (the gateway was restarted, or the hub died)."""
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    for minute in range(0, 120):                                          # two hours of waiting, renewed every 30 seconds
+        now = NOW + minute * 60
+        ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "state": "pending", "created": NOW,
+                                       "deadline": now + 30 + ur.DEADLINE_SECONDS})
+        ur.watch(world.root, now + 30, sys.stdout)
+        assert capsys.readouterr().out == "", minute
+    assert (world.plugin / "hub.py").read_text().startswith("raise ImportError")
+    last = NOW + 119 * 60 + 30
+    ur.watch(world.root, last + ur.DEADLINE_SECONDS - 1, sys.stdout)       # the gateway restarted; the new version is still booting
+    assert capsys.readouterr().out == ""
+    ur.watch(world.root, last + ur.DEADLINE_SECONDS + 60, sys.stdout)      # it never confirmed
+    assert "put 0.10.4 back" in capsys.readouterr().out
+
+
+# -- a fresh database copy for an update that waited -------------------------------------------------------------------
+
+
+def test_a_refreshed_copy_brings_back_the_chats_written_while_the_update_waited(world):
+    backup = back_up(world)
+    db = sqlite3.connect(world.db)
+    db.execute("INSERT INTO messages (text) VALUES ('written while waiting')")
+    db.commit()
+    db.close()
+    ur.refresh_database(backup)
+    report = ur.verify_backup(backup, world.root)
+    assert report["db_sha256"] == ur._sha256_file(backup / "data.db")
+    pretend_the_update_ran(world)
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW, "state": "pending"})
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert read_db(world.db) == ["hello", "world", "written while waiting"]       # nothing the owner wrote is lost
+
+
+def test_the_plugin_files_in_the_backup_are_not_touched_by_a_refresh(world):
+    backup = back_up(world)
+    before = tree(backup / "plugin")
+    ur.refresh_database(backup)
+    assert tree(backup / "plugin") == before
+
+
+def test_a_refresh_that_fails_leaves_the_earlier_copy_and_a_valid_backup(world, monkeypatch):
+    backup = back_up(world)
+    original = (backup / "data.db").read_bytes()
+    monkeypatch.setattr(ur, "_snapshot_db", lambda source, dest: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        ur.refresh_database(backup)
+    assert (backup / "data.db").read_bytes() == original and ur.verify_backup(backup, world.root)
+    assert sorted(p.name for p in backup.iterdir()) == ["data.db", "manifest.json", "plugin"]       # no half-made copy left behind
+
+
+def test_a_backup_made_without_a_database_is_left_alone(world):
+    world.db.unlink()
+    backup = back_up(world)
+    ur.refresh_database(backup)
+    assert not (backup / "data.db").exists() and ur.verify_backup(backup, world.root)
+
+
+@pytest.mark.parametrize("name", ["not-a-backup", "plugin-1.2.3-pre-1.2.4-2027010-080000", "../escape"])
+def test_only_a_real_backup_folder_can_be_refreshed(world, name, tmp_path):
+    bad = world.folder / name
+    bad.mkdir(parents=True, exist_ok=True)
+    with pytest.raises((ur.RollbackError, ValueError)):
+        ur.refresh_database(bad)
+
+
+def test_a_refresh_never_runs_unless_the_backup_verifies(world):
+    backup = back_up(world)
+    (backup / "plugin" / "hub.py").write_text("tampered")
+    with pytest.raises(ur.RollbackError):
+        ur.refresh_database(backup)

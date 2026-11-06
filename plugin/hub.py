@@ -50,6 +50,16 @@ PROTOCOL = 2
 MIN_APP_PROTOCOL = 1
 HOME_CHAT_ID = "home"
 RESTART_DELAY_SECONDS = 0.8
+# An installed update restarts the gateway only when no chat is running. Waiting is bounded: 30 minutes is long enough for
+# a normal chat or hand-off to finish, and shorter than the hour after which an unconfirmed update stops blocking a new one
+# and than the cron watch's life. Hermes itself refuses a restart while sessions are live (and says so only in the log of
+# the detached process it starts), so after asking, the hub keeps the rollback off for a grace period and, if it is still
+# running when that ends, treats the restart as not having happened.
+RESTART_POLL_SECONDS = 30
+RESTART_WAIT_SECONDS = 1800
+RESTART_GRACE_SECONDS = 240
+MAX_RESTART_TRIES = 3
+SNAPSHOT_EVERY_SECONDS = 300
 UPDATE_TIMEOUT_SECONDS = 30 * 60
 UPDATE_CHECK_SECONDS = 10 * 60
 MAX_ROUTINE_PROMPT = 8000
@@ -3309,23 +3319,100 @@ class Hub:
             if code != 0:
                 await self._abandon_update(job_id, h, prepared, "The install didn't finish.", lines)
                 return
-            await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
-            await self._job_event(self.store.update_job(job_id, lines=lines[-12:], message="Installed. Restarting to load it…"))
-            await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
+            await self._job_event(self.store.update_job(job_id, lines=lines[-12:]))
         except Exception as exc:
             logger.warning("[winglet] update stopped before the restart", exc_info=True)
             await self._abandon_update(job_id, h, prepared, f"The update stopped: {_clip(str(exc), 300)}.", [])
             return
-        try:
-            pid = await asyncio.to_thread(h.spawn_restart)
-        except Exception as exc:
-            logger.warning("[winglet] restart after update failed", exc_info=True)
-            await self._abandon_update(job_id, h, prepared, f"The restart couldn't start: {_clip(str(exc), 300)}.", [])
-            return
-        try:
-            await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
-        except Exception:
-            logger.debug("[winglet] could not record the restart", exc_info=True)
+        await self._restart_when_quiet(job_id, h, prepared, to)
+
+    async def _restart_when_quiet(self, job_id: str, h: Any, prepared: Dict[str, Any], to: str) -> None:
+        """The install worked. Restart the gateway now if no chat is running; otherwise leave the new files in place, say
+        so, and restart when the chats have finished (at most RESTART_WAIT_SECONDS). The rollback clock starts only at
+        the restart: while waiting, the cron watch is held off with a lease the hub renews every poll, so it never rolls
+        back a healthy update that is merely waiting. Every failure undoes the install and stops: no failure restarts."""
+        minutes = max(1, round(RESTART_WAIT_SECONDS / 60))
+        give_up = time.monotonic() + RESTART_WAIT_SECONDS
+        waited, tries, last_snapshot = False, 0, time.monotonic()
+        asked = False  # once a restart has been asked for, nothing here may undo the install: the new code may be loading
+        while True:
+            try:
+                quiet = await self._is_quiet(h)
+                if quiet and waited:
+                    await asyncio.to_thread(h.snapshot_database, prepared)  # a rollback must not undo the chats written while waiting
+                    last_snapshot = time.monotonic()
+                    quiet = await self._is_quiet(h)  # a chat may have started while the copy was made
+                if quiet:
+                    await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
+                    await self._job_event(self.store.update_job(job_id, phase="restarting", message="Installed. Restarting to load it…"))
+                    await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
+                    pid = await asyncio.to_thread(h.spawn_restart)
+                    tries, asked = tries + 1, True
+                    await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
+                    if not await self._hold_through_restart(job_id, h, prepared):
+                        return
+                    # Still here: Hermes did not restart the gateway (it refuses while sessions are live).
+                    if tries >= MAX_RESTART_TRIES or time.monotonic() >= give_up:
+                        await self._abandon_update(job_id, h, prepared, "Hermes would not restart the gateway, which it refuses while chats are running, "
+                                                   "so the new version was never loaded. Try again when it is quiet.", [])
+                        return
+                    waited = True
+                    await self._job_event(self.store.update_job(job_id, phase="restart_pending",
+                                                                message=f"Installed. Hermes didn't restart the gateway because chats are running; I'll try again when they finish."))
+                    continue
+                if not waited:
+                    waited = True
+                    note = (f"Winglet {to} is installed but not running yet. The gateway will restart by itself once the running chats have "
+                            f"finished (I will wait up to {minutes} minutes). You can also restart it yourself at any time.")
+                    if not await asyncio.to_thread(h.hold_lease, prepared, note):
+                        await self._finish_gone(job_id)
+                        return
+                    await self._job_event(self.store.update_job(
+                        job_id, phase="restart_pending", wait_until=time.time() + RESTART_WAIT_SECONDS,
+                        message=(f"Winglet {to} is installed. The gateway will restart by itself once the running chats have finished "
+                                 f"(I'll wait up to {minutes} minutes), or you can restart it yourself.")))
+                if time.monotonic() >= give_up:
+                    await self._abandon_update(job_id, h, prepared, f"Chats were still running after {minutes} minutes, so the new version was never loaded. "
+                                               "Try again when it is quiet.", [])
+                    return
+                await asyncio.sleep(RESTART_POLL_SECONDS)
+                if not await asyncio.to_thread(h.hold_lease, prepared):
+                    await self._finish_gone(job_id)
+                    return
+                if time.monotonic() - last_snapshot >= SNAPSHOT_EVERY_SECONDS:
+                    last_snapshot = time.monotonic()
+                    try:
+                        await asyncio.to_thread(h.snapshot_database, prepared)
+                    except Exception:
+                        logger.info("[winglet] could not refresh the database copy while waiting", exc_info=True)
+            except asyncio.CancelledError:
+                raise  # the gateway is going down: this is the restart working
+            except Exception as exc:
+                logger.warning("[winglet] update stopped while waiting to restart", exc_info=True)
+                if asked:
+                    return  # the restart was asked for: leave the install and the watch exactly as they are
+                await self._abandon_update(job_id, h, prepared, f"The restart couldn't be arranged: {_clip(str(exc), 300)}.", [])
+                return
+
+    async def _is_quiet(self, h: Any) -> bool:
+        """Nothing is running or queued in any bot. Not being able to tell is not quiet."""
+        busy = await self._update_busy(h)
+        return not busy["bots"] and not busy["unknown"]
+
+    async def _hold_through_restart(self, job_id: str, h: Any, prepared: Dict[str, Any]) -> bool:
+        """After the restart was asked for: keep the rollback off while the gateway may still be draining. True if this
+        process is still alive when the grace period ends (the restart did not happen); False if the update is over."""
+        end = time.monotonic() + RESTART_GRACE_SECONDS
+        while time.monotonic() < end:
+            await asyncio.sleep(RESTART_POLL_SECONDS)
+            if not await asyncio.to_thread(h.hold_lease, prepared):
+                await self._finish_gone(job_id)
+                return False
+        return True
+
+    async def _finish_gone(self, job_id: str) -> None:
+        await self._finish_job(job_id, "failed", "The previous version was already put back before the restart, so nothing was restarted. "
+                                                 "Details were sent to your Telegram.")
 
     async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
         """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what

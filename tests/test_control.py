@@ -34,7 +34,10 @@ class FakeHermes:
         self.routines = {}
         self.release_calls = []
         self.calls = []
-        self.begin_error = self.cancel_error = self.restart_error = None
+        self.begin_error = self.cancel_error = self.restart_error = self.snapshot_error = None
+        self.lease_ok = True
+        self.refuses_restart = False   # Hermes refuses a restart while sessions are live: the process carries on
+        self.hub = self.loop = None
         self.install_result = (0, ["Installed winglet"])
         self.installed_ok = True
         self.settled = None
@@ -57,6 +60,8 @@ class FakeHermes:
         if self.restart_error:
             raise self.restart_error
         self.restarts += 1
+        if self.loop is not None and not self.refuses_restart:
+            self.loop.call_soon_threadsafe(self.loop.call_later, 0.05, self._gateway_goes_down)
         return 4242
 
     async def start_hermes_update(self):
@@ -102,6 +107,25 @@ class FakeHermes:
 
     def arm_deadline(self, prepared):
         self.calls.append(("arm",))
+
+    def hold_lease(self, prepared, note=None):
+        """While an installed update waits for a quiet moment: keep the rollback from firing. False if it already has."""
+        self.calls.append(("hold", note))
+        return self.lease_ok
+
+    def snapshot_database(self, prepared):
+        self.calls.append(("snapshot",))
+        if self.snapshot_error:
+            raise self.snapshot_error
+
+    def attach(self, hub, loop):
+        """Restarting the gateway ends the process that is running the update; the fake does the same to the hub's
+        tasks a moment after the restart is asked for (unless a test says the gateway refused)."""
+        self.hub, self.loop = hub, loop
+
+    def _gateway_goes_down(self):
+        for task in list(self.hub._tasks):
+            task.cancel()
 
     def cancel_update(self, prepared):
         self.calls.append(("cancel",))
@@ -173,6 +197,7 @@ def hub(store, tmp_path, monkeypatch):
 
 @pytest.fixture
 async def client(aiohttp_client, hub):
+    hub.hermes.attach(hub, asyncio.get_running_loop())
     return await aiohttp_client(hub.build_app())
 
 

@@ -865,7 +865,7 @@ def _newest_release(fetch) -> Optional[dict]:
 # messages Kraig; he restarts the gateway himself.
 
 UPDATE_INSTALL_WINDOW_SECONDS = 600   # how long the install itself may take before the watch treats the update as failed
-UPDATE_WATCH_RUNS = 30                # the one-minute cron job removes itself after this many runs
+UPDATE_WATCH_RUNS = 60                # the one-minute cron job removes itself after this many runs (outlasts the install and the longest wait for a quiet moment)
 UPDATE_ALERT_DELIVER = "telegram"     # Kraig's home channel through Hermes cron delivery (Winglet itself may be down)
 UPDATE_STALE_SECONDS = 3600           # an unconfirmed update record older than this no longer blocks a new update
 
@@ -976,6 +976,28 @@ def arm_deadline(prepared: dict, *, now=None) -> None:
     if marker is not None:
         marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
         updater.write_marker(folder, marker)
+
+
+def hold_lease(prepared: dict, note: Optional[str] = None, *, now=None) -> bool:
+    """While an installed update waits for a quiet moment to restart: push the rollback deadline a few minutes ahead, so
+    the watch leaves a healthy update that merely hasn't been loaded yet alone. The hub calls this again and again; the
+    rollback clock therefore runs from the last call before the restart, i.e. from the restart. ``note`` is what the
+    watch tells Kraig on Telegram, once. False means the update is not pending any more (the watch already acted)."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    marker = updater.read_marker(folder)
+    if not marker or marker.get("state") != "pending" or marker.get("backup") != Path(prepared["backup"]).name:
+        return False
+    marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
+    if isinstance(note, str) and note.strip() and "note" not in marker:
+        marker["note"] = "".join(ch for ch in " ".join(note.split()) if ch.isprintable())[:800]
+    updater.write_marker(folder, marker)
+    return True
+
+
+def snapshot_database(prepared: dict) -> None:
+    """A fresh copy of the database in this update's backup (see update_rollback.refresh_database)."""
+    _updater().refresh_database(Path(prepared["backup"]))
 
 
 def cancel_update(prepared: dict, *, now=None) -> dict:

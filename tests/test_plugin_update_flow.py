@@ -24,6 +24,7 @@ RELEASE = {"version": NEXT, "tag": f"v{NEXT}", "sha": SHA, "notes": "n", "url": 
 async def owner(client, hub):
     hub.hermes_version = lambda: "0.23.0"
     hub.hermes.release = dict(RELEASE)
+    hub.activity_provider = lambda: {"default": {"state": "idle", "queued": 0}}
     return await pair_phone(client, hub)
 
 
@@ -246,14 +247,22 @@ RESTARTS = ("spawn_restart", "_restart_soon", "h_restart")
 
 
 def test_the_failure_code_in_the_hub_cannot_restart_anything():
+    names = ("_run_winglet_update", "_restart_when_quiet", "_abandon_update", "_is_quiet", "_hold_through_restart", "_finish_gone")
     tree = ast.parse(Path(hub_module.__file__).read_text())
-    methods = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name in ("_run_winglet_update", "_abandon_update")}
-    assert set(methods) == {"_run_winglet_update", "_abandon_update"}
-    assert not [r for r in _references_in(methods["_abandon_update"]) if r[0] in RESTARTS]
-    run = list(_references_in(methods["_run_winglet_update"]))
+    methods = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.AsyncFunctionDef) and n.name in names}
+    assert set(methods) == set(names)
+    for name in names:
+        if name != "_restart_when_quiet":
+            assert not [r for r in _references_in(methods[name]) if r[0] in RESTARTS], name
+    run = list(_references_in(methods["_restart_when_quiet"]))
     restarts = [line for name, line in run if name in RESTARTS]
     arm = [line for name, line in run if name == "arm_deadline"]
-    assert len(restarts) == 1 and arm and restarts[0] > arm[0]            # one restart, and only after the deadline is armed
+    assert len(restarts) == 1 and arm and restarts[0] > arm[0]            # one place restarts, and only after the deadline is armed
+    # ...and it sits on the success path: the only code that reaches it is the branch where the busy list was empty
+    source = Path(hub_module.__file__).read_text().splitlines()
+    spawn_line = restarts[0]
+    guard = max(i for i in range(spawn_line) if source[i].strip() == "if quiet:")
+    assert guard < spawn_line - 1 and all(source[i].startswith("                    ") for i in range(guard + 1, spawn_line))
     # the guard must see a violation, or it proves nothing
     bad = ast.parse("async def f(h):\n    await asyncio.to_thread(h.spawn_restart)")
     assert [r for r in _references_in(bad) if r[0] in RESTARTS]

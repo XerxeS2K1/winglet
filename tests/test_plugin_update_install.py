@@ -305,3 +305,58 @@ def test_settling_survives_cron_being_unavailable_and_an_unreadable_record(world
     assert not (world.folder / ur.MARKER).exists()
     (world.folder / ur.MARKER).write_text("{broken")
     assert api.settle_pending_update("0.10.5", home=world.root) is None                        # reported by the watch, not here
+
+
+# -- an installed update that waits for a quiet moment to restart --------------------------------------------------------
+
+
+def test_holding_the_lease_keeps_the_rollback_off_without_arming_the_restart_clock(world):
+    prepared = begin(world)
+    assert api.hold_lease(prepared, "Installed; restarting when chats finish.", now=NOW + 500) is True
+    marker = json.loads((world.folder / ur.MARKER).read_text())
+    assert marker["deadline"] == NOW + 500 + ur.DEADLINE_SECONDS and marker["note"] == "Installed; restarting when chats finish."
+    assert marker["state"] == "pending" and marker["backup"] == Path(prepared["backup"]).name
+    assert api.hold_lease(prepared, now=NOW + 560) is True                # renewing keeps the note, and does not repeat it
+    marker = json.loads((world.folder / ur.MARKER).read_text())
+    assert marker["deadline"] == NOW + 560 + ur.DEADLINE_SECONDS and marker["note"].startswith("Installed")
+
+
+def test_the_lease_says_no_when_the_watch_has_already_acted(world):
+    prepared = begin(world)
+    marker = ur.read_marker(world.folder)
+    ur.write_marker(world.folder, {**marker, "state": "rolled_back"})
+    assert api.hold_lease(prepared, now=NOW + 500) is False
+    assert ur.read_marker(world.folder)["state"] == "rolled_back"        # a rolled-back update is not turned back into a pending one
+
+
+def test_the_lease_says_no_for_a_different_or_missing_update(world):
+    prepared = begin(world)
+    ur.clear_marker(world.folder)
+    assert api.hold_lease(prepared, now=NOW + 500) is False
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.6", "backup": "plugin-0.10.4-pre-0.10.6-20270101-000000", "state": "pending", "deadline": NOW})
+    assert api.hold_lease(prepared, now=NOW + 500) is False
+
+
+def test_the_note_is_cleaned_and_capped_before_it_is_stored(world):
+    prepared = begin(world)
+    api.hold_lease(prepared, "x" * 5000 + "\x07", now=NOW)
+    note = json.loads((world.folder / ur.MARKER).read_text())["note"]
+    assert len(note) <= 800 and "\x07" not in note
+
+
+def test_the_database_copy_in_the_backup_can_be_refreshed_from_the_hub(world):
+    prepared = begin(world)
+    db = sqlite3.connect(world.db)
+    db.execute("INSERT INTO messages (text) VALUES ('later')")
+    db.commit()
+    db.close()
+    api.snapshot_database(prepared)
+    assert rows(Path(prepared["backup"]) / "data.db") == ["before", "later"]
+
+
+def test_the_watch_outlives_the_longest_wait_with_room_to_spare():
+    """The cron job removes itself after its last run. It must still be there when a slow, waiting update restarts."""
+    from plugin import hub
+    longest = api.UPDATE_INSTALL_WINDOW_SECONDS + hub.RESTART_WAIT_SECONDS + hub.RESTART_GRACE_SECONDS + ur.DEADLINE_SECONDS
+    assert api.UPDATE_WATCH_RUNS * 60 >= longest + 300
+    assert hub.RESTART_WAIT_SECONDS < api.UPDATE_STALE_SECONDS
