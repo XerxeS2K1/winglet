@@ -13,8 +13,8 @@ from test_teamwork import team  # noqa: F401
 
 @pytest.fixture
 async def origin(team, tmp_path, monkeypatch):
+    session = pytest.importorskip('gateway.session_context')  # before the adapter import, which needs Hermes's gateway package
     from plugin import adapter
-    session = pytest.importorskip('gateway.session_context')
     store = Store(tmp_path / 'winglet.db')
     hub = Hub(store, web_root=tmp_path / 'web')
     chat = store.create_chat('Jobs')
