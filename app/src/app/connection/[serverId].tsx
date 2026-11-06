@@ -84,7 +84,7 @@ export default function ConnectionScreen() {
 
   return (
     <Screen title="Connection" subtitle={server.bot.title}>
-      <ConnectionBanner server={server} />
+      <ConnectionBanner server={server} hideDetails />
       <SyncStatus serverId={server.id} details />
       <ListGroup style={{ marginTop: t.space.md }}>
         <ListRow icon={<View style={[s.dot, { backgroundColor: statusColor }]} />}

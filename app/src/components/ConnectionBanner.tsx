@@ -12,7 +12,7 @@ import { FloatingPill } from './Sheet';
 import { Tap } from './ui';
 
 /** Why a bot isn't reachable, with the one thing to do about it. Hidden while online. */
-export function ConnectionBanner({ server, compact }: { server: Server; compact?: boolean }) {
+export function ConnectionBanner({ server, compact, hideDetails }: { server: Server; compact?: boolean; hideDetails?: boolean }) {
   const t = useTheme();
   const s = useStyles();
   const rt = useApp((st) => st.runtime[server.id]);
@@ -43,7 +43,8 @@ export function ConnectionBanner({ server, compact }: { server: Server; compact?
       <View style={compact ? s.textCompact : s.text}>
         <Text style={[s.title, compact && s.titleCompact]} numberOfLines={compact ? 1 : undefined}>{view.title}</Text>
         {!compact && view.detail ? <Text style={s.detail}>{view.detail}</Text> : null}
-        <Text accessibilityRole="link" style={[s.link, compact && s.linkCompact]} onPress={() => router.push(`/connection/${server.id}`)}>Details</Text>
+        {/* On the Connection screen itself the link would only open the screen you are already on. */}
+        {hideDetails ? null : <Text accessibilityRole="link" style={[s.link, compact && s.linkCompact]} onPress={() => router.push(`/connection/${server.id}`)}>Details</Text>}
       </View>
       {action ? (
         <Tap feedback="selection" accessibilityLabel={action} hitSlop={4} style={s.button} onPress={() => {

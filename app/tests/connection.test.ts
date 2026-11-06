@@ -15,6 +15,9 @@ const rt = (over: any = {}) => ({ status: 'online', conn: { recovering: false, h
 test('each connection problem gets its own state and the right action', () => {
   assert.equal(connectionView(true, rt(), 'Bot').kind, 'online');
   assert.equal(connectionView(false, rt({ status: 'offline' }), 'Bot').kind, 'no-internet');
+  assert.equal(connectionView(false, rt({ status: 'offline' }), 'Bot').action, 'retry');
+  // A connection that is open beats a stale "no internet" reading from the phone.
+  assert.equal(connectionView(false, rt({ status: 'online' }), 'Bot').kind, 'online');
   const unreachable = connectionView(true, rt({ status: 'offline', conn: { recovering: false, history: [], nextRetryAt: 6000 } }), 'Bot', 1000);
   assert.equal(unreachable.kind, 'unreachable');
   assert.equal(unreachable.action, 'retry');

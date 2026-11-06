@@ -13,6 +13,7 @@ import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isNotifiable, markFailed, mergeMessages } from './messages';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
+import { refreshNetworkNow } from './network';
 import { pushNative } from '../features/encrypted-push/native';
 import { chatNoteTag, handledNoteTags, inboxNoteTag } from './handledNotifications';
 import type { Attachment, Bot, BotRow, Chat, ConnStatus, DraftFile, InboxItem, Job, Me, Message, PauseState, PetSheet, Project, ProjectSnapshot, ReplyRef, Server, ServerInfo, TaskCapabilities, TaskEnvelope, TaskSnapshot, SyncState } from './types';
@@ -375,6 +376,8 @@ export const useApp = create<AppState>((set, get) => {
         const compat = info.min_app_protocol > APP_PROTOCOL ? 'update-app' as const
           : info.protocol < MIN_SERVER_PROTOCOL ? 'update-server' as const : undefined;
         const projects = ev.projects ? readSnapshot(ev.projects) : undefined;
+        // Hearing from the server proves the phone is online, even if Android's flag has not caught up yet.
+        if (!get().network) get().setNetwork(true);
         patch(serverId, () => ({ status: 'online', chats, typing, pending: ev.pending ?? 0, loaded: {}, info, compat,
           me: ev.me as Me | undefined, paused: (ev.paused ?? null) as PauseState, projects,
           // A fresh connection may be a restarted server: drop old task snapshots and refetch when visible.
@@ -782,6 +785,7 @@ export const useApp = create<AppState>((set, get) => {
     resyncNow: (serverId) => connections.get(serverId)?.resync(),
 
     retryNow: (serverId) => {
+      void refreshNetworkNow();
       connections.get(serverId)?.retryNow();
       coordinator.retryNow();
     },

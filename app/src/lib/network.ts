@@ -1,5 +1,13 @@
-import { Platform } from 'react-native';
+import { AppState, Platform } from 'react-native';
 import * as Network from 'expo-network';
+import { watchPhoneNetwork, type NetworkWatch } from './networkState';
+
+let current: NetworkWatch | undefined;
+
+/** Ask the phone about its network again now (the "Try now" button uses this). */
+export function refreshNetworkNow(): Promise<void> {
+  return current?.refresh() ?? Promise.resolve();
+}
 
 /** Whether the phone has a network at all. "No internet" and "server unreachable" need different help. */
 export function watchNetwork(onChange: (online: boolean) => void): () => void {
@@ -14,9 +22,19 @@ export function watchNetwork(onChange: (online: boolean) => void): () => void {
       globalThis.removeEventListener?.('offline', off);
     };
   }
-  const read = (state: Network.NetworkState) =>
-    onChange(state.isConnected !== false && state.isInternetReachable !== false);
-  Network.getNetworkStateAsync().then(read).catch(() => undefined);
-  const sub = Network.addNetworkStateListener(read);
-  return () => sub.remove();
+  const watch = watchPhoneNetwork({
+    read: () => Network.getNetworkStateAsync(),
+    subscribe: (cb) => {
+      const sub = Network.addNetworkStateListener(cb);
+      return () => sub.remove();
+    },
+    onForeground: (cb) => {
+      const sub = AppState.addEventListener('change', (s: string) => { if (s === 'active') cb(); });
+      return () => sub.remove();
+    },
+    setInterval: (fn, ms) => setInterval(fn, ms),
+    clearInterval: (id) => clearInterval(id as ReturnType<typeof setInterval>),
+  }, onChange);
+  current = watch;
+  return () => { watch.stop(); if (current === watch) current = undefined; };
 }

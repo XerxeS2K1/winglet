@@ -94,6 +94,7 @@ function harness(os = 'web') {
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
+    './network': { refreshNetworkNow: async () => {} },
     './handledNotifications': handled,
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
@@ -1035,4 +1036,14 @@ test('reconnecting takes down the notifications of cards handled while away', as
   await h.connect(); await h.hello(); await h.tick();
   assert.ok(h.cleared.some((c: any[]) => c.includes('inbox-a')));
   assert.ok(!h.cleared.some((c: any[]) => c.includes('inbox-b')));
+});
+
+test('hearing from the server proves the phone is online, even when Android said it was not', async () => {
+  const h = harness();
+  await h.connect();
+  h.store.getState().setNetwork(false);
+  assert.equal(h.store.getState().network, false);
+  await h.hello();
+  assert.equal(h.store.getState().network, true);
+  assert.equal(h.store.getState().runtime.s.status, 'online');
 });

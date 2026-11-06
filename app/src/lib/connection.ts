@@ -28,11 +28,12 @@ export function connectionView(network: boolean, rt: ServerState | undefined, bo
     return { kind: 'update-server', tone: 'warn', action: 'about', title: 'Update Winglet on the server',
       detail: `${bot}'s Winglet plugin is too old for this app. On the server, run: hermes plugins update winglet` };
   }
+  // An open connection to the server is proof the phone is online, whatever Android last reported.
+  if (status === 'online') return { kind: 'online', tone: 'ok', title: 'Online', detail: '' };
   if (!network) {
-    return { kind: 'no-internet', tone: 'warn', title: 'No internet',
+    return { kind: 'no-internet', tone: 'warn', action: 'retry', title: 'No internet',
       detail: "This phone is offline. Messages you send now are queued and go out when you're back." };
   }
-  if (status === 'online') return { kind: 'online', tone: 'ok', title: 'Online', detail: '' };
   if (rt?.conn.recovering) {
     return { kind: 'recovering', tone: 'info', action: 'retry', title: `Finding ${bot}'s new address`,
       detail: 'The server restarted and got a new address. This usually takes a few seconds.' };
