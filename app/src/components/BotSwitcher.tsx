@@ -12,6 +12,7 @@ import { useAddBot } from './AddBot';
 import { AgentFace } from './AgentFace';
 import { Check, ChevronsUpDown, Plus, Settings } from './icons';
 import { Sheet } from './Sheet';
+import { QueueSheet } from './QueueSheet';
 import { Badge, Chip, ListGroup, ListRow, Tap } from './ui';
 
 /**
@@ -42,7 +43,8 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
   const network = useApp((st) => st.network);
   const select = useApp((st) => st.select);
   const chosen = usePrefs((st) => st.prefs.mainBot);
-  return <ListGroup>
+  const [queueBot, setQueueBot] = useState<Server>();
+  return <><ListGroup>
     {mainFirst(servers, chosen).map((x, i) => {
       const rt = runtime[x.id];
       const view = connectionView(network, rt, x.bot.title);
@@ -51,12 +53,16 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
         icon={<View><AgentFace server={x} size={28} still /></View>}
         subtitle={view.kind === 'online' ? notRunning(x.bot) ?? botActivityLabel(rt?.botActivity?.[x.profile ?? 'default']) : view.title} chevron={false}
         right={<View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
+          {view.kind === 'online' && rt?.botActivity?.[x.profile ?? 'default'] ? <Tap
+            accessibilityLabel={`View ${x.bot.title}'s queue`} onPress={(event) => { event.stopPropagation(); setQueueBot(x); }}>
+            <Text style={{ ...t.type.caption, color: t.colors.accent }}>Queue</Text>
+          </Tap> : null}
           {rt?.pending ? <Badge count={rt.pending} /> : null}
           {on ? <Check size={20} color={t.colors.accent} accessibilityLabel="Current bot" /> : null}
         </View>}
         onPress={() => { if (!on) { select(x.id, homeChat(useApp.getState().runtime[x.id])); onSwitch?.(x.id); } onDone(); }} />;
     })}
-  </ListGroup>;
+  </ListGroup><QueueSheet server={queueBot} onClose={() => setQueueBot(undefined)} /></>;
 }
 
 /** Switch bots, or add and manage them, from the same picker everywhere. */

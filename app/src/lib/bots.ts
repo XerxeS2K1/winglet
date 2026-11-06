@@ -16,6 +16,15 @@ export function handoffAnswerLabel(asked: { bot: string; state?: string; failed?
   return asked.failed ? 'No answer' : `${asked.bot} answered`;
 }
 
+/** Unknown details are not an empty queue; sort a copy so socket snapshots stay immutable. */
+export function botQueueRows(activity?: BotActivity): { id: string; title: string; subtitle: string; value: string }[] | undefined {
+  if (!Array.isArray(activity?.queue)) return undefined;
+  return [...activity.queue].sort((a, b) => a.sequence - b.sequence).map((item, i) => ({
+    id: item.id, title: `${i + 1}. ${item.from || 'Unknown sender'}`, subtitle: item.preview,
+    value: item.status === 'started' ? activity.state === 'working' ? 'Running' : 'Started (unconfirmed)' : 'Queued',
+  }));
+}
+
 /** A bot's short name (its Hermes profile name) from what it's called: "Meal Planner!" reads "meal-planner". */
 export function botName(title: string): string {
   return title.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '')

@@ -51,6 +51,32 @@ test('pending hand-offs do not claim that the teammate already answered', () => 
   assert.equal(label({ bot: 'Chef', failed: false }), 'Chef answered'); // older server
 });
 
+test('queue rows use canonical sequence without mutating the snapshot and distinguish unknown from empty', () => {
+  const rows = exports.botQueueRows ?? (() => undefined);
+  const queue = [
+    { id: 'two', sequence: 20, from: 'Research', preview: 'Compare sources', status: 'queued' },
+    { id: 'one', sequence: 10, from: 'Hermes', preview: 'Plan dinner', status: 'started' },
+  ];
+  const result = rows({ state: 'working', queued: 1, queue });
+  assert.equal(result?.[0]?.title, '1. Hermes');
+  assert.equal(result?.[0]?.value, 'Running');
+  assert.equal(result?.[1]?.title, '2. Research');
+  assert.equal(queue[0].id, 'two');
+  assert.equal(rows(undefined), undefined);
+  assert.equal(rows({ state: 'idle', queued: 0, queue: null }), undefined);
+  assert.equal(rows({ state: 'idle', queued: 0, queue: [] }).length, 0);
+  assert.equal(rows({ state: 'unknown', queued: 1, queue })[0].value, 'Started (unconfirmed)');
+});
+
+test('bot picker opens a read-only queue sheet that hides stale offline details', () => {
+  const picker = readFileSync(new URL('../src/components/BotSwitcher.tsx', import.meta.url), 'utf8');
+  assert.ok(picker.includes('<QueueSheet'), 'the queue sheet must be mounted in the picker');
+  const sheet = readFileSync(new URL('../src/components/QueueSheet.tsx', import.meta.url), 'utf8');
+  assert.ok(sheet.includes("rt?.status === 'online'"), 'offline snapshots must not be presented as live queues');
+  assert.ok(sheet.includes('Read-only') && sheet.includes('Queue details unavailable'));
+  assert.ok(!sheet.includes('signedApi'), 'the queue sheet has no scheduling mutations');
+});
+
 const { notRunning, teamworkOff } = exports;
 
 test('activity labels keep queued work separate from approvals and unknown data', () => {

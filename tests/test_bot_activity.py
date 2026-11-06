@@ -77,9 +77,55 @@ def test_old_schema_degrades_without_writing(activity):
     assert (home / 'state.db').read_bytes() == before
 
 
+def test_queue_details_follow_canonical_sequence_and_keep_only_short_display_fields(activity, monkeypatch):
+    import json
+    home, _, _ = activity
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, 'profiles_to_serve', lambda **kw: [('chef', home)])
+    def payload(author, text):
+        return json.dumps({'text': text, 'local_automation_v1': {'turn_author': {'name': author, 'is_bot': True}},
+                           'unrelated_private_field': 'must not leave server'})
+    with sqlite3.connect(home / 'state.db') as db:
+        db.execute("ALTER TABLE session_admissions ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+        db.executemany('INSERT INTO session_admissions VALUES (?, ?, ?, ?)', [
+            (20, 'bot:second', 'queued', payload('research', 'Compare sources')),
+            (10, 'bot:first', 'started', payload('hermes', 'Message from 🤖 Hermes (@hermes): Plan dinner\n\n(Answer in your reply to this message.)')),
+            (30, 'bot:done', 'terminal', payload('secret', 'finished text'))])
+    queue = hermes_api.bot_activities()['chef'].get('queue')
+    assert queue == [
+        {'id': 'bot:first', 'sequence': 10, 'from': 'hermes', 'preview': 'Plan dinner', 'status': 'started'},
+        {'id': 'bot:second', 'sequence': 20, 'from': 'research', 'preview': 'Compare sources', 'status': 'queued'}]
+    assert 'must not leave server' not in json.dumps(queue)
+
+
+def test_queue_display_is_bounded_without_changing_the_total_or_database(activity):
+    import json
+    home, _, _ = activity
+    payload = json.dumps({'text': 'x' * 1000, 'local_automation_v1': {'turn_author': {'name': 'y' * 200}}})
+    with sqlite3.connect(home / 'state.db') as db:
+        db.execute("ALTER TABLE session_admissions ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'")
+        db.executemany('INSERT INTO session_admissions VALUES (?, ?, ?, ?)',
+                       [(i, f'bot:{i}', 'queued', payload) for i in range(55)])
+    before = (home / 'state.db').read_bytes()
+    activity = hermes_api.bot_activity(home, include_queue=True)
+    assert activity['queued'] == 55
+    assert len(activity['queue']) == 50
+    assert activity['queue_truncated'] is True
+    assert len(activity['queue'][0]['from']) == 60
+    assert len(activity['queue'][0]['preview']) == 120
+    assert (home / 'state.db').read_bytes() == before
+
+
+@pytest.mark.parametrize('payload', ['not json', '[]', '{"private":"do not expose"}', 'x' * 70000])
+def test_unknown_queue_payload_never_gets_stringified_as_a_preview(payload):
+    row = hermes_api._bot_queue_entry(1, 'bot:id', 'queued', payload)
+    assert row['preview'] == 'Details unavailable'
+    assert row['from'] == 'Unknown sender'
+
+
 def test_profiles_are_read_separately(activity, monkeypatch):
     home, _, _ = activity
     from hermes_cli import profiles
     monkeypatch.setattr(profiles, 'profiles_to_serve', lambda **kw: [('default', home), ('chef', home / 'missing')])
-    assert hermes_api.bot_activities() == {'default': {'state': 'idle', 'queued': 0},
-                                        'chef': {'state': 'unknown', 'queued': None}}
+    assert hermes_api.bot_activities() == {'default': {'state': 'idle', 'queued': 0, 'queue': None, 'queue_truncated': False},
+                                        'chef': {'state': 'unknown', 'queued': None, 'queue': None, 'queue_truncated': False}}

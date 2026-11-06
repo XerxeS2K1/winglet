@@ -1,5 +1,7 @@
 /** `served`: Hermes is running this bot now. Unknown (undefined) on a server that doesn't say. */
-export type BotActivity = { state: 'idle' | 'working' | 'unknown'; queued: number | null };
+export type BotQueueItem = { id: string; sequence: number; from: string; preview: string; status: 'queued' | 'started' };
+export type BotActivity = { state: 'idle' | 'working' | 'unknown'; queued: number | null;
+  queue?: BotQueueItem[] | null; queue_truncated?: boolean };
 
 export type Bot = { name: string; title: string; description: string; served?: boolean };
 

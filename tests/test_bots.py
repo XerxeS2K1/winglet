@@ -145,7 +145,8 @@ async def test_owner_receives_activity_on_connect_and_when_it_changes(client, hu
 
 async def test_activity_is_owner_only_in_hello_http_and_live_events(client, hub):
     member = await pair_phone(client, hub, "Alex", role="member")
-    hub.activity_provider = lambda: {"default": {"state": "working", "queued": 1}}
+    hub.activity_provider = lambda: {"default": {"state": "working", "queued": 1, "queue": [
+        {"id": "bot:private", "sequence": 1, "from": "hermes", "preview": "owner-only queue text", "status": "queued"}]}}
     ws, snapshot = await hello(client, member)
     assert "bot_activity" not in snapshot
     assert (await client.get("/api/bots", headers=member.auth)).status == 403
