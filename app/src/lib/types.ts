@@ -1,5 +1,7 @@
 /** `served`: Hermes is running this bot now. Unknown (undefined) on a server that doesn't say. */
-export type BotQueueItem = { id: string; sequence: number; from: string; preview: string; status: 'queued' | 'started' };
+/** `title` is the short description the sender gave the hand-off, or the first line of its request; an older server sends
+ *  only `preview`. Both are the sender's own text: show them as plain text. */
+export type BotQueueItem = { id: string; sequence: number; from: string; title?: string; preview?: string; status: 'queued' | 'started' };
 export type BotActivity = { state: 'idle' | 'working' | 'unknown'; queued: number | null;
   queue?: BotQueueItem[] | null; queue_truncated?: boolean };
 

@@ -16,11 +16,32 @@ export function handoffAnswerLabel(asked: { bot: string; state?: string; failed?
   return asked.failed ? 'No answer' : `${asked.bot} answered`;
 }
 
-/** Unknown details are not an empty queue; sort a copy so socket snapshots stay immutable. */
+/** The sender's own text as one line of plain text: whitespace collapsed, control, format and zero-width characters
+ *  (which could hide or reorder what is read) removed. Never markup: the app renders it as text only. */
+function plainLine(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/gu, ' ').replace(/[\p{C}]/gu, '').replace(/\s+/gu, ' ').trim() : '';
+}
+
+const FALLBACK_TITLE_MAX = 60;
+
+/** What a queue row says it is: the sender's title; else the start of the request, cut at a word boundary. */
+function queueRowTitle(item: { title?: unknown; preview?: unknown }): string {
+  const given = plainLine(item.title).slice(0, FALLBACK_TITLE_MAX + 4); // titles are <= 50, a server fallback <= 61
+  if (given) return given;
+  const line = plainLine(item.preview);
+  if (!line) return 'Hand-off';
+  if (line.length <= FALLBACK_TITLE_MAX) return line;
+  let cut = line.slice(0, FALLBACK_TITLE_MAX);
+  if (line[FALLBACK_TITLE_MAX] !== ' ' && cut.includes(' ')) cut = cut.slice(0, cut.lastIndexOf(' '));
+  return cut.replace(/[ ,;:-]+$/u, '') + '\u2026';
+}
+
+/** Rows for the owner's queue sheet: the title on top, "position. sender" underneath. Unknown details are not an empty
+ *  queue; sort a copy so socket snapshots stay immutable. */
 export function botQueueRows(activity?: BotActivity): { id: string; title: string; subtitle: string; value: string }[] | undefined {
   if (!Array.isArray(activity?.queue)) return undefined;
   return [...activity.queue].sort((a, b) => a.sequence - b.sequence).map((item, i) => ({
-    id: item.id, title: `${i + 1}. ${item.from || 'Unknown sender'}`, subtitle: item.preview,
+    id: item.id, title: queueRowTitle(item), subtitle: `${i + 1}. ${plainLine(item.from).slice(0, 60) || 'Unknown sender'}`,
     value: item.status === 'started' ? activity.state === 'working' ? 'Running' : 'Started (unconfirmed)' : 'Queued',
   }));
 }
