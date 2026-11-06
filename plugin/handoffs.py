@@ -3,8 +3,46 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
+import unicodedata
 
 logger = logging.getLogger(__name__)
+
+TITLE_MAX = 50      # the short title a calling agent gives a hand-off
+FALLBACK_MAX = 60   # the first line of the request, when there is no title
+# Hermes admits a hand-off as "bot:" + the delivery id Winglet chose (and the same id with ":retry" for its one retry).
+_REQUEST_ID = re.compile(r"bot:([0-9a-f]{32,64})(?::retry)?")
+
+
+def _plain(text: str) -> str:
+    """One line of plain text: whitespace (including line separators) collapsed; control, format and zero-width
+    characters removed, so nothing can hide, reorder or reshape what the owner reads."""
+    kept = (" " if ch.isspace() else ch for ch in text if ch.isspace() or not unicodedata.category(ch).startswith("C"))
+    return " ".join("".join(kept).split())
+
+
+def clean_title(raw) -> str:
+    """A hand-off title as the sender's untrusted text: plain, one line, cut (never refused) at TITLE_MAX characters."""
+    return _plain(raw)[:TITLE_MAX].rstrip() if isinstance(raw, str) else ""
+
+
+def first_line_title(text) -> str:
+    """The first non-empty line of a request, cut at FALLBACK_MAX characters at a word boundary, with an ellipsis."""
+    if not isinstance(text, str):
+        return ""
+    line = next((plain for plain in (_plain(part) for part in text.splitlines()) if plain), "")
+    if len(line) <= FALLBACK_MAX:
+        return line
+    cut = line[:FALLBACK_MAX]
+    if line[FALLBACK_MAX] != " " and " " in cut:
+        cut = cut[:cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "\u2026"
+
+
+def delivery_id_from_request(request_id) -> "str | None":
+    """The Winglet delivery id inside a Hermes admission request id, or None when it is not a hand-off id."""
+    match = _REQUEST_ID.fullmatch(request_id) if isinstance(request_id, str) else None
+    return match.group(1) if match else None
 
 
 def read_receipt(profile: str, delivery_id: str):

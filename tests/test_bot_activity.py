@@ -103,8 +103,8 @@ def test_queue_details_follow_canonical_sequence_and_keep_only_short_display_fie
             (30, 'bot:done', 'terminal', payload('secret', 'finished text'))])
     queue = hermes_api.bot_activities()['chef'].get('queue')
     assert queue == [
-        {'id': 'bot:first', 'sequence': 10, 'from': 'hermes', 'preview': 'Plan dinner', 'status': 'started'},
-        {'id': 'bot:second', 'sequence': 20, 'from': 'research', 'preview': 'Compare sources', 'status': 'queued'}]
+        {'id': 'bot:first', 'sequence': 10, 'from': 'hermes', 'title': 'Plan dinner', 'preview': 'Plan dinner', 'status': 'started'},
+        {'id': 'bot:second', 'sequence': 20, 'from': 'research', 'title': 'Compare sources', 'preview': 'Compare sources', 'status': 'queued'}]
     assert 'must not leave server' not in json.dumps(queue)
 
 
@@ -120,6 +120,7 @@ def test_queue_display_is_bounded_without_changing_the_total_or_database(activit
     activity = hermes_api.bot_activity(home, include_queue=True)
     assert activity['queued'] == 55
     assert len(activity['queue']) == 50
+    assert all(len(row['title']) <= 61 for row in activity['queue'])   # a title is short however long the request
     assert activity['queue_truncated'] is True
     assert len(activity['queue'][0]['from']) == 60
     assert len(activity['queue'][0]['preview']) == 120

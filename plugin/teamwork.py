@@ -18,6 +18,7 @@ import os
 from typing import Any, Callable, Dict, List, Optional
 
 from . import hermes_api
+from .handoffs import clean_title
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ def ask_bot(args: dict, **_: Any) -> str:
     if isinstance(wait, bool) or not isinstance(wait, (int, float)) or not math.isfinite(wait) or not 0 <= wait <= MAX_ASK_WAIT_SECONDS:
         return _error(f"wait must be a number from 0 to {MAX_ASK_WAIT_SECONDS} seconds.")
     delivery_id = uuid.uuid4().hex
+    subject = clean_title(args.get("title"))  # shown in the owner's queue sheet; too long is cut, not refused
     sender = next((b for b in roster if b["name"] == me), {"title": me})
     origin = None
     try:
@@ -205,7 +207,8 @@ def ask_bot(args: dict, **_: Any) -> str:
         except ImportError:
             pass
         if origin:
-            origin[0].store.register_handoff(delivery_id, origin[1], bot["name"], bot["title"], message, wait)
+            origin[0].store.register_handoff(delivery_id, origin[1], bot["name"], bot["title"], message, wait,
+                                             subject=subject)
             future = asyncio.run_coroutine_threadsafe(origin[0].handoffs.begin(delivery_id, sender["title"]), origin[2])
             try:
                 future.result(timeout=5)
@@ -306,10 +309,13 @@ ASK_SCHEMA = {
         "yourself and say what you need; don't forward private chat content. Call with an empty `bot` to list "
         "the bots and what each is for. Short tasks return inline. Pending tasks return a delivery ID: carry on, "
         "do not resend, poll or wait for a wake-up. A finished notice appears in the asking Winglet chat only. "
-        "Relay inline answers to the user, saying which bot replied."),
+        "Relay inline answers to the user, saying which bot replied. Always pass a short `title` (a few words, "
+        "like 'Plan dinner for six'): it is what the owner sees in the queue of hand-offs."),
     "parameters": {"type": "object", "properties": {
         "bot": {"type": "string", "description": "The bot's name ('hermes' for the main bot), or empty to list them."},
         "message": {"type": "string", "description": "What you want from that bot."},
+        "title": {"type": "string", "description": "A short title for this request, about 50 characters at most "
+                  "(longer is cut). It is shown to the owner in the hand-off queue; the other bot is not sent it."},
         "wait": {"type": "number", "minimum": 0, "maximum": MAX_ASK_WAIT_SECONDS,
                  "description": "Seconds to wait for an inline reply (default 60). 0 hands off immediately."},
     }, "required": ["bot"]},

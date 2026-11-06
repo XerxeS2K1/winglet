@@ -39,6 +39,7 @@ from aiohttp import WSMsgType, web
 from . import checkpoints as checkpoints_api, encrypted_push, keys, live_voice, recovery, uploads, webpush
 from .projects import ProjectConflict, ProjectError, Projects
 from .event_replay import EventStream, MAX_PAYLOAD
+from .handoffs import delivery_id_from_request
 from .store import ROLES, Store, new_id
 
 logger = logging.getLogger(__name__)
@@ -554,6 +555,7 @@ class Hub:
         except Exception:
             logger.debug("[winglet] bot activity unavailable", exc_info=True)
             activity = self._unknown_bot_activity()
+        activity = self._add_queue_titles(activity)
         changed = activity != self._bot_activity
         self._bot_activity = activity
         self._activity_at = time.monotonic()
@@ -562,6 +564,25 @@ class Hub:
             async with self._publish_lock:
                 await self._broadcast({"type": "bot.activity", "activities": activity})
         return activity
+
+    def _add_queue_titles(self, activity: Dict[str, Any]) -> Dict[str, Any]:
+        """Give each queue row the short title its sender passed to ask_bot. Hermes admits a hand-off as "bot:" + the
+        delivery id Winglet chose, so the match is exact; a row with no match keeps the first line of its request."""
+        def row_key(row: Any) -> Optional[str]:
+            return delivery_id_from_request(row.get("id")) if isinstance(row, dict) else None
+        try:
+            wanted = {row_key(row) for entry in activity.values() if isinstance(entry, dict) and isinstance(entry.get("queue"), list)
+                      for row in entry["queue"]} - {None}
+            titles = self.store.handoff_subjects(list(wanted)) if wanted else {}
+            if not titles:
+                return activity
+            return {name: ({**entry, "queue": [{**row, "title": titles[row_key(row)]} if row_key(row) in titles else row
+                                               for row in entry["queue"]]}
+                           if isinstance(entry, dict) and isinstance(entry.get("queue"), list) else entry)
+                    for name, entry in activity.items()}
+        except Exception:
+            logger.debug("[winglet] queue titles unavailable", exc_info=True)
+            return activity
 
     async def _watch_bot_activity(self) -> None:
         while True:
