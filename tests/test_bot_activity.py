@@ -14,11 +14,21 @@ def activity(tmp_path, monkeypatch):
         requests.append((home, verb, kwargs))
         return response
     monkeypatch.setattr(control, 'query_gateway_control', query)
+    # The gateway's control socket is in the main Hermes home; tmp_path stands in for a bot's own folder.
+    host = tmp_path / 'host'
+    from hermes_cli import profiles
+    monkeypatch.setattr(profiles, '_get_default_hermes_home', lambda: host)
     from tools import async_delegation
     monkeypatch.setattr(async_delegation, 'list_async_delegations', lambda: [])
     with sqlite3.connect(tmp_path / 'state.db') as db:
         db.execute('CREATE TABLE session_admissions (seq INTEGER PRIMARY KEY, request_id TEXT, status TEXT)')
     return tmp_path, response, requests
+
+
+def test_a_bots_work_is_asked_of_the_main_gateway_not_the_bots_own_folder(activity):
+    home, _, requests = activity
+    hermes_api.bot_activity(home, 'chef')
+    assert requests[-1][0] == home / 'host' and requests[-1][0] != home
 
 
 def test_background_delegation_keeps_its_own_profile_working(activity, monkeypatch):
@@ -36,7 +46,7 @@ def test_idle_and_working_are_profile_scoped(activity):
     assert hermes_api.bot_activity(home, 'chef') == {'state': 'idle', 'queued': 0}
     response['active_agents'] = 1
     assert hermes_api.bot_activity(home, 'chef') == {'state': 'working', 'queued': 0}
-    assert requests[-1] == (home, 'active-work', {'params': {'profile': 'chef'}, 'timeout': 1.0})
+    assert requests[-1] == (home / 'host', 'active-work', {'params': {'profile': 'chef'}, 'timeout': 1.0})
 
 
 def test_queue_updates_from_canonical_rows_not_receipts(activity):

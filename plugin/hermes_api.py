@@ -2159,7 +2159,14 @@ def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = 
         pass
     try:
         from gateway.control_socket import query_gateway_control
-        work = query_gateway_control(home, "active-work", params={"profile": profile}, timeout=1.0)
+        # One gateway serves every bot and listens in the main Hermes home. A bot's own folder has no
+        # socket, so asking there answers nothing and the bot would always read as "unknown".
+        try:
+            from hermes_cli.profiles import _get_default_hermes_home
+            host = _get_default_hermes_home()
+        except Exception:
+            host = Path(home)
+        work = query_gateway_control(host, "active-work", params={"profile": profile}, timeout=1.0)
         count = (work or {}).get("active_agents")
         known = type(count) is int and count >= 0
     except Exception:
