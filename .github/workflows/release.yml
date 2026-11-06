@@ -22,6 +22,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      # No release without its documents: the release notes for this version and the README banner (docs/RELEASING.md).
+      # Checked first because it is quick and says exactly which file to fix. A manual run publishes nothing, so it skips this.
+      - name: Release documents (tag)
+        if: github.ref_type == 'tag'
+        run: python scripts/check_release_docs.py --tag "$GITHUB_REF_NAME"
+      - name: Release documents (pull request to main)
+        if: github.event_name == 'pull_request'
+        run: python scripts/check_release_docs.py
       - run: pip install pytest pytest-aiohttp http_ece pyyaml packaging pillow
       - name: Install the plugin's declared dependencies
         run: |
