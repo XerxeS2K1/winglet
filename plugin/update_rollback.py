@@ -271,6 +271,20 @@ def verify_backup(backup: Path, root: Path) -> dict:
     return manifest
 
 
+def _new_kept_folder(parent: Path, now: float) -> Path:
+    """A folder for what a failed update leaves behind. The name is the time to the second; a folder that is already there
+    (another rollback in the same second) is never reused or written into, the next free name is taken."""
+    stem = "failed-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now))
+    for number in range(1, 1000):
+        folder = parent / (stem if number == 1 else f"{stem}-{number}")
+        try:
+            folder.mkdir(mode=0o700)
+            return folder
+        except FileExistsError:
+            continue
+    raise RollbackError("there is no free folder to keep the failed update in")
+
+
 def restore(root: Path, backup: Path, now: float, *, with_database: bool = True) -> dict:
     """Put the plugin files, the install record and (unless ``with_database`` is False) the database back. Nothing is
     changed until the backup has been proven sound. The database is left alone when the new code never ran, e.g. after
@@ -278,10 +292,9 @@ def restore(root: Path, backup: Path, now: float, *, with_database: bool = True)
     backups, outside ``plugins/`` where Hermes would load it. Returns {done, kept, from, to}."""
     manifest = verify_backup(backup, root)
     plugin_dir, db_path, metadata = manifest["_plugin_dir"], manifest["_db_path"], manifest["_metadata"]
-    kept = backup.parent / ("failed-" + time.strftime("%Y%m%d-%H%M%S", time.gmtime(now)))
     done: list = []
     try:
-        kept.mkdir(mode=0o700, exist_ok=True)
+        kept = _new_kept_folder(backup.parent, now)
         staged = kept / "restoring"
         shutil.copytree(backup / "plugin", staged, symlinks=True)
         if plugin_dir.exists() or plugin_dir.is_symlink():
