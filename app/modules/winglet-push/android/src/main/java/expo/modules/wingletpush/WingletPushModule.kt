@@ -5,7 +5,11 @@ import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import expo.modules.interfaces.permissions.Permissions
@@ -39,6 +43,22 @@ class WingletPushModule : Module() {
       "received" to entry.optLong("received"),"decrypted" to entry.optLong("decrypted"),"displayed" to entry.optLong("displayed"),
       "suppressed" to entry.optLong("suppressed"))
   }
+  private fun batteryUnrestricted(): Boolean {
+    if(Build.VERSION.SDK_INT<23) return true
+    val power=context.getSystemService(Context.POWER_SERVICE) as PowerManager
+    return power.isIgnoringBatteryOptimizations(context.packageName)
+  }
+  // Android never lets an app switch its own battery limit off; it can only ask, and the person answers in a system dialog.
+  private fun requestBatteryUnrestricted() {
+    if(Build.VERSION.SDK_INT<23 || batteryUnrestricted()) return
+    val ask=Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,Uri.parse("package:"+context.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    try{
+      context.startActivity(ask)
+    }catch(_:Exception){
+      // A phone without that dialog: open the list of battery settings instead.
+      runCatching{context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))}
+    }
+  }
   private fun remove(scope: String){
     UnifiedPush.unregister(context,scope)
     PushStore.delete(context,scope)
@@ -47,6 +67,9 @@ class WingletPushModule : Module() {
   }
   override fun definition()=ModuleDefinition {
     Name("WingletPush")
+    // Not behind the unlock guard: they carry no user content and only open a system dialog.
+    Function("batteryUnrestricted"){ batteryUnrestricted() }
+    Function("requestBatteryUnrestricted"){ requestBatteryUnrestricted() }
     Function("security"){isLocked:Boolean,privatePreviews:Boolean,foreground:Boolean,online:List<String>,pairs:List<Map<String,String>> ->
       lastLocked=isLocked;lastForeground=foreground
       locked=isLocked;visible=foreground;PushVisibility.locked=isLocked

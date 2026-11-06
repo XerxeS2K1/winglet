@@ -16,6 +16,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { UpdatePrompt } from '../components/AppUpdate';
 import { AppNavigation } from '../components/AppNavigation';
+import { BatteryPrompt } from '../components/BatteryPrompt';
 import { LockScreen } from '../components/LockScreen';
 import { ShareListener } from '../components/ShareListener';
 import { Toasts } from '../components/Toasts';
@@ -125,6 +126,7 @@ function Navigator() {
       <ShareListener />
       <Toasts />
       <UpdatePrompt />
+      <BatteryPrompt />
       <VerifySheet />
       <PhoneRequestSheet />
       </AppNavigation>

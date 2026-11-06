@@ -15,5 +15,9 @@ export type PushNative={
   retain:()=>Promise<void>;
   /** Takes down the notifications with these server tags; cancels only, so it works while locked. */
   clear?:(server:string,device:string,tags:string[])=>void;
+  /** Whether Android already leaves Winglet out of battery limits. Missing on an older build. */
+  batteryUnrestricted?:()=>boolean;
+  /** Opens Android's own "allow Winglet to run in the background?" dialog. Missing on an older build. */
+  requestBatteryUnrestricted?:()=>void;
 };
 export const pushNative=Platform.OS==='android' && Number(Platform.Version)>=26?requireOptionalNativeModule<PushNative>('WingletPush'):null;
