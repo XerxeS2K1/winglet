@@ -857,6 +857,203 @@ def _newest_release(fetch) -> Optional[dict]:
     return value
 
 
+# -- installing a release from the app ---------------------------------------------------------------------------
+#
+# Order, each step failing closed: backup, watch script, cron job, pending-update record, then the install. A failed
+# install is undone in-process (files and install record only) and never restarts the gateway. If the new version
+# installs but does not start, the cron script (plugin/update_rollback.py) restores the files, record and database and
+# messages Kraig; he restarts the gateway himself.
+
+UPDATE_INSTALL_WINDOW_SECONDS = 600   # how long the install itself may take before the watch treats the update as failed
+UPDATE_WATCH_RUNS = 30                # the one-minute cron job removes itself after this many runs
+UPDATE_ALERT_DELIVER = "telegram"     # Kraig's home channel through Hermes cron delivery (Winglet itself may be down)
+UPDATE_STALE_SECONDS = 3600           # an unconfirmed update record older than this no longer blocks a new update
+
+
+def _updater():
+    from . import update_rollback
+    return update_rollback
+
+
+def _check_release(release) -> None:
+    """Only a release this module found itself (plain version, matching tag, 40-hex commit) can be installed."""
+    if not isinstance(release, dict):
+        raise ValueError("that release is not one this server can install")
+    version, tag, sha = release.get("version"), release.get("tag"), release.get("sha")
+    if parse_version(version) is None or parse_tag(tag) != parse_version(version) or not (isinstance(sha, str) and _SHA.match(sha)):
+        raise ValueError("that release is not one this server can install")
+
+
+def _default_db_path():
+    from .adapter import data_dir
+    return data_dir() / "data.db"
+
+
+@_scoped
+def _create_watch_job(script) -> str:
+    job = _cron().create_job(None, "every 1m", name="Winglet update watch", deliver=UPDATE_ALERT_DELIVER, script=str(script),
+                             no_agent=True, repeat=UPDATE_WATCH_RUNS)
+    return str(job["id"])
+
+
+@_scoped
+def _remove_job(job_id: str) -> None:
+    _cron().remove_job(job_id)
+
+
+def remove_update_watch(job_id) -> None:
+    """Stand the cron watch down. Best effort: a job that cannot be removed removes itself after its last run."""
+    if isinstance(job_id, str) and job_id:
+        try:
+            _remove_job(job_id)
+        except Exception as exc:
+            logger.info("[winglet] could not remove the update watch job: %s", exc)
+
+
+def _install_watch_script(destination) -> None:
+    """Copy the RUNNING plugin's rollback script into Hermes's scripts folder (cron only runs scripts from there)."""
+    import os
+    updater = _updater()
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_bytes(Path(updater.__file__).read_bytes())
+        os.chmod(temp, 0o700)
+        os.replace(temp, destination)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def begin_update(release, from_version, *, plugin_dir=None, db_path=None, home=None, now=None) -> dict:
+    """Make everything ready for an install and return what the later steps need. Raises (installing nothing, leaving
+    nothing pending) if any part of the safety net cannot be set up."""
+    import os
+    updater = _updater()
+    _check_release(release)
+    if parse_version(from_version) is None:
+        raise ValueError("the running version is not a plain x.y.z")
+    plugin_dir = Path(plugin_dir) if plugin_dir is not None else _plugin_dir()
+    home = Path(home) if home is not None else _home()
+    db_path = db_path if db_path is not None else _default_db_path()
+    now = time.time() if now is None else now
+    root = plugin_dir.parent.parent
+    if os.path.realpath(updater.hermes_root(home)) != os.path.realpath(root):
+        raise ValueError("this install layout cannot update itself: the cron scripts and the backups would be in different places")
+    folder = root / "backups" / updater.BACKUP_FOLDER
+    try:
+        existing = updater.read_marker(folder)
+    except ValueError as exc:
+        raise ValueError("an earlier update's record cannot be read; look in backups/winglet-plugin before updating") from exc
+    if existing and existing.get("state") == "pending":
+        created = existing.get("created")
+        if not isinstance(created, (int, float)) or now - created < UPDATE_STALE_SECONDS:
+            raise ValueError("An update is already waiting to be confirmed.")
+        remove_update_watch(existing.get("cron_job"))
+    backup = updater.create_backup(plugin_dir=plugin_dir, db_path=db_path, from_version=from_version,
+                                   to_version=release["version"], now=now)
+    script = home / "scripts" / updater.SCRIPT_NAME
+    _install_watch_script(script)
+    job_id = None
+    try:
+        job_id = _create_watch_job(script)
+        updater.write_marker(folder, {"from": from_version, "to": release["version"], "backup": backup.name, "state": "pending",
+                                      "cron_job": job_id, "created": now, "deadline": now + UPDATE_INSTALL_WINDOW_SECONDS})
+    except BaseException:
+        remove_update_watch(job_id)
+        updater.clear_marker(folder)
+        raise
+    return {"backup": str(backup), "job": job_id, "script": str(script), "from": from_version, "to": release["version"],
+            "folder": str(folder), "root": str(root)}
+
+
+def arm_deadline(prepared: dict, *, now=None) -> None:
+    """The install is done and the gateway is about to restart: the new version now has a few minutes to confirm itself."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    marker = updater.read_marker(folder)
+    if marker is not None:
+        marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
+        updater.write_marker(folder, marker)
+
+
+def cancel_update(prepared: dict, *, now=None) -> dict:
+    """The install failed (or the restart could not be started): put the old files and install record back. The new
+    code never ran, so the database is left alone. Does not restart anything."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    try:
+        report = updater.restore(Path(prepared["root"]), Path(prepared["backup"]), time.time() if now is None else now,
+                                 with_database=False)
+    except updater.RollbackError as exc:
+        marker = updater.read_marker(folder) or {}
+        marker.update(state="rollback_failed", error=str(exc)[:300])
+        updater.write_marker(folder, marker)
+        raise
+    finally:
+        remove_update_watch(prepared.get("job"))
+    updater.clear_marker(folder)
+    return report
+
+
+def installed_version_is(version, *, plugin_dir=None) -> bool:
+    """Whether the plugin folder on disk now says it is this version (what the install should have produced)."""
+    try:
+        text = ((Path(plugin_dir) if plugin_dir is not None else _plugin_dir()) / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return parse_version(version) is not None and _manifest_field(text, "version") == version
+
+
+def settle_pending_update(current_version, *, home=None) -> Optional[dict]:
+    """Called when Winglet starts. If the update that was waiting is this very version, it worked: clear the record and
+    stand the watch down. If the watch rolled it back, say so once. Otherwise leave it to the watch."""
+    updater = _updater()
+    folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
+    try:
+        marker = updater.read_marker(folder)
+    except ValueError:
+        return None
+    if not marker:
+        return None
+    state = marker.get("state")
+    result = {"from": marker.get("from"), "to": marker.get("to")}
+    if state == "pending" and marker.get("to") == current_version:
+        result = {"outcome": "succeeded", **result}
+    elif state in ("rolled_back", "rollback_failed"):
+        result = {"outcome": state, **result, "error": marker.get("error"), "kept": marker.get("kept")}
+    else:
+        return None
+    updater.clear_marker(folder)
+    remove_update_watch(marker.get("cron_job"))
+    return result
+
+
+async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 60) -> tuple:
+    """`hermes plugins install XerxeS2K1/winglet/plugin --ref <sha> --force --no-enable`, the command used by hand,
+    for a commit id this module resolved itself. Returns (exit code, output tail)."""
+    import asyncio as _asyncio
+    import os
+    if not isinstance(sha, str) or not _SHA.match(sha):
+        raise ValueError("an install needs a full commit id")
+    try:
+        from hermes_cli._launchers import runtime_command
+        from hermes_cli.web_server import PROJECT_ROOT
+    except Exception as exc:
+        raise HermesUnavailable("plugin install unavailable") from exc
+    args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable")
+    env = {**os.environ, "HERMES_HOME": str(_home()), "COLUMNS": "200"}
+    proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, args), env=env, stdin=_asyncio.subprocess.DEVNULL,
+                                                 stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT)
+    try:
+        out, _ = await _asyncio.wait_for(proc.communicate(), timeout)
+    except _asyncio.TimeoutError:
+        proc.kill()
+        return -1, ["The install took too long and was stopped."]
+    return proc.returncode, out.decode("utf-8", errors="replace").splitlines()[-30:]
+
+
 def busy_bots(activity) -> dict:
     """Who a gateway restart would interrupt: {bots: [{bot, state, queued}], unknown}. ``activity`` is the bot activity
     snapshot ({name: {state, queued}}) or None when nothing could look. Unknown stays unknown: it is never counted as

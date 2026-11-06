@@ -31,9 +31,13 @@ class FakeHermes:
         self.restarts = 0
         self.update_started = {"ok": True, "action_id": "a1"}
         self.update_status = {"running": True, "exit_code": None, "lines": ["pulling"]}
-        self.winglet_result = (0, ["Updating winglet...", "Plugin winglet updated."])
         self.routines = {}
         self.release_calls = []
+        self.calls = []
+        self.begin_error = self.cancel_error = self.restart_error = None
+        self.install_result = (0, ["Installed winglet"])
+        self.installed_ok = True
+        self.settled = None
         self.release = {"version": "0.10.5", "tag": "v0.10.5", "sha": "a" * 40, "notes": "What is new",
                         "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.5", "requires_hermes": ">=0.22.7"}
 
@@ -49,6 +53,9 @@ class FakeHermes:
         return self.pause
 
     def spawn_restart(self):
+        self.calls.append(("restart",))
+        if self.restart_error:
+            raise self.restart_error
         self.restarts += 1
         return 4242
 
@@ -66,13 +73,45 @@ class FakeHermes:
         raise AssertionError("the Winglet update answer must not come from Hermes's run_checks")
 
     async def update_winglet(self):
-        return self.winglet_result
+        raise AssertionError("Hermes's cmd_update is gone: a release is installed by commit id after a backup")
 
     # The release lookup is the only part that needs the network; the version rules are the real ones.
+    parse_version = staticmethod(api.parse_version)
     is_newer = staticmethod(api.is_newer)
     hermes_supports = staticmethod(api.hermes_supports)
     busy_bots = staticmethod(api.busy_bots)
     ReleaseCheckFailed = api.ReleaseCheckFailed
+
+    # The steps of an in-app install, recorded in order so tests can say what ran, and in what order.
+    def begin_update(self, release, from_version):
+        self.calls.append(("begin", release["version"], from_version))
+        if self.begin_error:
+            raise self.begin_error
+        return {"backup": "/home/x/.hermes/backups/winglet-plugin/plugin-b", "job": "cron1", "from": from_version,
+                "to": release["version"], "folder": "/f", "root": "/r"}
+
+    async def install_release(self, sha):
+        self.calls.append(("install", sha))
+        if isinstance(self.install_result, Exception):
+            raise self.install_result
+        return self.install_result
+
+    def installed_version_is(self, version):
+        self.calls.append(("verify", version))
+        return self.installed_ok
+
+    def arm_deadline(self, prepared):
+        self.calls.append(("arm",))
+
+    def cancel_update(self, prepared):
+        self.calls.append(("cancel",))
+        if self.cancel_error:
+            raise self.cancel_error
+        return {"done": ["the Winglet plugin files"]}
+
+    def settle_pending_update(self, current_version):
+        self.calls.append(("settle", current_version))
+        return self.settled
 
     def latest_release(self, force=False):
         self.release_calls.append(force)
@@ -188,8 +227,10 @@ async def test_restart_is_a_job_a_retry_does_not_repeat(client, hub):
     assert hub.hermes.restarts == 1
     assert hub.store.get_job(job["id"])["detail"]["pid"] == 4242
     # Something already running blocks a different request.
-    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "idempotency_key": "k2"})
-    assert busy.status == 409
+    hub.hermes_version = lambda: "0.23.0"
+    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "version": "0.10.5", "idempotency_key": "k2"})
+    assert busy.status == 409 and "already in progress" in (await busy.json())["error"]
+    assert not any(call[0] in ("begin", "install") for call in hub.hermes.calls)
 
 
 async def test_a_restart_finishes_when_the_next_process_starts(store, tmp_path):
@@ -249,36 +290,6 @@ async def test_hermes_update_with_no_evidence_is_unknown_not_success(store, tmp_
     new.hermes.update_status = {"running": False, "exit_code": None, "lines": []}
     await new.reconcile_jobs()
     assert store.get_job(job["id"])["state"] == "unknown"
-
-
-async def test_winglet_update_already_current_does_not_restart(client, hub):
-    owner = await pair_phone(client, hub)
-    hub.hermes.winglet_result = (0, ["Plugin winglet is already up to date."])
-    resp = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "idempotency_key": "w1"})
-    job = (await resp.json())["job"]
-    await settle(hub)
-    assert hub.store.get_job(job["id"])["state"] == "succeeded"
-    assert hub.hermes.restarts == 0
-
-
-async def test_winglet_update_restarts_to_load_the_new_code(client, hub):
-    owner = await pair_phone(client, hub)
-    resp = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "idempotency_key": "w2"})
-    job = (await resp.json())["job"]
-    await settle(hub)
-    assert hub.hermes.restarts == 1
-    assert hub.store.get_job(job["id"])["state"] == "running"  # finished by the next process
-
-
-async def test_winglet_update_failure_keeps_the_output(client, hub):
-    owner = await pair_phone(client, hub)
-    hub.hermes.winglet_result = (1, ["fatal: could not read from remote"])
-    resp = await post_signed(client, owner, "/api/system/update", {"target": "winglet"})
-    job = (await resp.json())["job"]
-    await settle(hub)
-    done = hub.store.get_job(job["id"])
-    assert done["state"] == "failed" and done["detail"]["lines"] == ["fatal: could not read from remote"]
-    assert hub.hermes.restarts == 0
 
 
 async def test_job_events_reach_owners_only(hub):

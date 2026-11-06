@@ -236,9 +236,10 @@ def verify_backup(backup: Path, root: Path) -> dict:
     return manifest
 
 
-def restore(root: Path, backup: Path, now: float) -> dict:
-    """Put the plugin files, the install record and the database back. Nothing is changed until the backup has been
-    proven sound. What the failed update left behind (its files, and the database as it was) is kept next to the
+def restore(root: Path, backup: Path, now: float, *, with_database: bool = True) -> dict:
+    """Put the plugin files, the install record and (unless ``with_database`` is False) the database back. Nothing is
+    changed until the backup has been proven sound. The database is left alone when the new code never ran, e.g. after
+    an install that failed: nothing has written to it, and whatever users sent meanwhile must stay. What the failed update left behind (its files, and the database as it was) is kept next to the
     backups, outside ``plugins/`` where Hermes would load it. Returns {done, kept, from, to}."""
     manifest = verify_backup(backup, root)
     plugin_dir, db_path, metadata = manifest["_plugin_dir"], manifest["_db_path"], manifest["_metadata"]
@@ -269,7 +270,7 @@ def restore(root: Path, backup: Path, now: float) -> dict:
             records[manifest["plugin_name"]] = manifest["install_metadata"]
         _write_json_atomically(metadata, records)
         done.append("its install record")
-        if manifest.get("db_sha256") is not None and db_path is not None:
+        if with_database and manifest.get("db_sha256") is not None and db_path is not None:
             if db_path.is_file():
                 _snapshot_db(db_path, kept / "data.db")  # whatever was written since the backup is kept, not thrown away
             source = sqlite3.connect(backup / "data.db")

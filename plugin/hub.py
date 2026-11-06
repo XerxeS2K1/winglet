@@ -3180,15 +3180,47 @@ class Hub:
         target = str(body.get("target") or "")
         if target not in ("hermes", "winglet"):
             return _error(400, "target must be hermes or winglet")
-        if target == "hermes":
-            detail = {"from": self.hermes_version() or "", "message": "Starting the update…"}
-        else:
-            detail = {"from": VERSION, "message": "Downloading the new version…"}
-        job = await self._begin_job(request, device, f"{target}_update", detail, body=body)
+        if target == "winglet":
+            return await self._start_winglet_update(request, device, h, body)
+        detail = {"from": self.hermes_version() or "", "message": "Starting the update…"}
+        job = await self._begin_job(request, device, "hermes_update", detail, body=body)
         if isinstance(job, web.Response):
             return job
-        self.audit("system.update", device, f"started a {'Hermes' if target == 'hermes' else 'Winglet'} update")
-        self._spawn(self._run_hermes_update(job["id"], h) if target == "hermes" else self._run_winglet_update(job["id"], h))
+        self.audit("system.update", device, "started a Hermes update")
+        self._spawn(self._run_hermes_update(job["id"], h))
+        return _json({"job": job}, status=202)
+
+    async def _start_winglet_update(self, request: web.Request, device: Dict[str, Any], h: Any, body: Dict[str, Any]) -> web.Response:
+        """The phone names a version and nothing else. The server accepts it only if it is exactly the newest published
+        release and newer than the one running; the repository and the commit come from its own GitHub lookup."""
+        key = str(body.get("idempotency_key") or "")[:64] or None
+        if key:
+            existing = self.store.job_by_key(key)
+            if existing is not None:  # a retry, perhaps after the restart: answer with the job, not with "already up to date"
+                return _json({"job": existing}, status=202)
+        version = body.get("version")
+        if not isinstance(version, str) or h.parse_version(version) is None:
+            return _error(400, "Say which Winglet version to install, like 0.10.5.")
+        try:
+            release = await asyncio.to_thread(h.latest_release, True)  # looked up afresh: never trust a ten-minute-old answer here
+        except Exception as exc:
+            logger.info("[winglet] release lookup before an update failed: %s", exc)
+            return _error(503, "Couldn't reach GitHub to check the release. Nothing was changed.")
+        if not release:
+            return _error(409, "There is no published Winglet release to install.")
+        if version != release["version"]:
+            return _error(409, f"Winglet {version} isn't the newest release (that is {release['version']}). Check for updates again.")
+        if not h.is_newer(release["version"], VERSION):
+            return _error(409, f"Winglet is already on {VERSION}. Only a newer version can be installed.")
+        needs = release.get("requires_hermes")
+        if h.hermes_supports(needs, self.hermes_version()) is False:
+            return _error(409, f"Winglet {version} needs Hermes {needs}, and this server runs {self.hermes_version()}. Update Hermes first.")
+        detail = {"from": VERSION, "to": version, "message": "Backing up before the update…"}
+        job = await self._begin_job(request, device, "winglet_update", detail, body=body)
+        if isinstance(job, web.Response):
+            return job
+        self.audit("system.update", device, f"started a Winglet update to {version}")
+        self._spawn(self._run_winglet_update(job["id"], h, release))
         return _json({"job": job}, status=202)
 
     async def _begin_job(self, request: web.Request, device: Dict[str, Any], kind: str, detail: Dict[str, Any],
@@ -3256,25 +3288,67 @@ class Hub:
             return
         await self._finish_job(job_id, "unknown", "The update is taking too long to report back. Check the server.")
 
-    async def _run_winglet_update(self, job_id: str, h: Any) -> None:
+    async def _run_winglet_update(self, job_id: str, h: Any, release: Dict[str, Any]) -> None:
+        """Safety net, install, check, then (and only then) restart so the new code loads. Every failure undoes the
+        install and stops: nothing on a failure path restarts the gateway, because Kraig does that himself."""
+        to = release["version"]
         try:
-            code, lines = await h.update_winglet()
+            prepared = await asyncio.to_thread(h.begin_update, release, VERSION)
         except Exception as exc:
-            logger.warning("[winglet] plugin update failed", exc_info=True)
-            await self._finish_job(job_id, "failed", f"The update couldn't start: {_clip(str(exc), 300)}")
+            logger.warning("[winglet] update safety net failed", exc_info=True)
+            await self._finish_job(job_id, "failed", f"The update didn't start, and nothing was changed: {_clip(str(exc), 300)}")
             return
-        if code != 0:
-            await self._finish_job(job_id, "failed", "The update didn't finish. Its output is below.", lines=lines[-20:])
+        try:
+            await self._job_event(self.store.update_job(job_id, backup=Path(prepared["backup"]).name, message=f"Installing Winglet {to}…"))
+            try:
+                code, lines = await h.install_release(release["sha"])
+            except Exception as exc:
+                code, lines = -1, [f"The install couldn't start: {_clip(str(exc), 300)}"]
+            if code == 0 and not await asyncio.to_thread(h.installed_version_is, to):
+                code, lines = 1, [*lines[-10:], f"The install finished, but the plugin is not at {to}."]
+            if code != 0:
+                await self._abandon_update(job_id, h, prepared, "The install didn't finish.", lines)
+                return
+            await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
+            await self._job_event(self.store.update_job(job_id, lines=lines[-12:], message="Installed. Restarting to load it…"))
+            await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
+        except Exception as exc:
+            logger.warning("[winglet] update stopped before the restart", exc_info=True)
+            await self._abandon_update(job_id, h, prepared, f"The update stopped: {_clip(str(exc), 300)}.", [])
             return
-        if any("already up to date" in line.lower() for line in lines):
-            await self._finish_job(job_id, "succeeded", "Winglet is already up to date.", lines=lines[-6:])
+        try:
+            pid = await asyncio.to_thread(h.spawn_restart)
+        except Exception as exc:
+            logger.warning("[winglet] restart after update failed", exc_info=True)
+            await self._abandon_update(job_id, h, prepared, f"The restart couldn't start: {_clip(str(exc), 300)}.", [])
             return
-        await self._job_event(self.store.update_job(job_id, lines=lines[-12:], message="Updated. Restarting to load it…"))
-        await self._restart_soon(job_id, h)
+        try:
+            await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
+        except Exception:
+            logger.debug("[winglet] could not record the restart", exc_info=True)
+
+    async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
+        """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what
+        happened. This never restarts the gateway."""
+        try:
+            await asyncio.to_thread(h.cancel_update, prepared)
+            message = f"{why} The previous version was put back, and the gateway was not restarted."
+        except Exception as exc:
+            logger.warning("[winglet] could not undo a failed update", exc_info=True)
+            message = (f"{why} I could not put the old version back automatically ({_clip(str(exc), 200)}). "
+                       f"The backup is {Path(prepared['backup']).name} in the backups folder. The gateway was not restarted.")
+        await self._finish_job(job_id, "failed", message, lines=lines[-20:])
 
     async def reconcile_jobs(self) -> None:
         """Finish the jobs an earlier process started: a restart or update that ended it is done now."""
         h = self.hermes
+        settled = None
+        if h is not None:  # the new version confirming itself (or learning it was rolled back) happens whether or not a job remembers it
+            try:
+                settled = await asyncio.to_thread(h.settle_pending_update, VERSION)
+            except Exception:
+                logger.debug("[winglet] pending update could not be settled", exc_info=True)
+        outcome = (settled or {}).get("outcome")
         for job in self.store.list_jobs(running=True, limit=50):
             if job["detail"].get("boot") == self.boot_id:
                 continue
@@ -3283,7 +3357,13 @@ class Hub:
                 await self._finish_job(job["id"], "succeeded", "Back online.")
             elif kind == "winglet_update":
                 previous = detail.get("from")
-                if not previous:
+                if outcome == "rolled_back":
+                    state, message = "failed", (f"The new version did not start, so Winglet {settled.get('from')} was put back. "
+                                                f"Details were sent to your Telegram. Winglet did not restart the gateway.")
+                elif outcome == "rollback_failed":
+                    state, message = "failed", ("The new version did not start, and I could not put the old one back automatically. "
+                                                "The backup is in the backups folder on the server; details were sent to your Telegram.")
+                elif not previous:
                     state, message = "unknown", "The server restarted, but the starting Winglet version was not recorded."
                 elif previous == VERSION:
                     state, message = "failed", f"The server restarted, but Winglet is still at version {VERSION}."
