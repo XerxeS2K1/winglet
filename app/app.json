@@ -2,7 +2,7 @@
   "expo": {
     "name": "Winglet",
     "slug": "winglet",
-    "version": "0.10.3",
+    "version": "0.10.4",
     "scheme": "winglet",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
