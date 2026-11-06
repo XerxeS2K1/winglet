@@ -15,7 +15,9 @@ import json
 import logging
 import math
 import re
+import shutil
 import time
+import unicodedata
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -675,46 +677,6 @@ def _plugin_dir():
     return Path(__file__).resolve().parent
 
 
-@_scoped
-def check_winglet_update() -> dict:
-    """Whether a newer Winglet is published where it was installed from: {update_available, current,
-    latest, reason}. update_available is None when it can't tell (a copied folder, no network)."""
-    try:
-        from hermes_cli.plugins_updates import run_checks
-    except Exception as exc:
-        raise HermesUnavailable("plugin update check unavailable") from exc
-    here = _plugin_dir()
-    for result in run_checks(here.parent, include_pip=False):
-        if result.name in (here.name, "winglet"):
-            data = result.to_json()
-            return {k: data.get(k) for k in ("update_available", "current", "latest", "reason", "needs_fixing")}
-    return {"update_available": None, "current": None, "latest": None, "reason": "not installed from git"}
-
-
-async def update_winglet(timeout: float = 300) -> tuple:
-    """`hermes plugins update` for this plugin, without prompts (new capabilities stay ungranted until
-    someone reviews them on the server). Returns (exit code, output tail)."""
-    import asyncio as _asyncio
-    import os
-    try:
-        from hermes_cli._launchers import runtime_command
-        from hermes_cli.web_server import PROJECT_ROOT
-    except Exception as exc:
-        raise HermesUnavailable("plugin update unavailable") from exc
-    code = ("from hermes_cli.plugins_cmd_update import cmd_update; "
-            f"cmd_update({_plugin_dir().name!r}, interactive=False)")
-    env = {**os.environ, "HERMES_HOME": str(_home()), "COLUMNS": "200"}
-    proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, code=code), env=env,
-                                                 stdin=_asyncio.subprocess.DEVNULL, stdout=_asyncio.subprocess.PIPE,
-                                                 stderr=_asyncio.subprocess.STDOUT)
-    try:
-        out, _ = await _asyncio.wait_for(proc.communicate(), timeout)
-    except _asyncio.TimeoutError:
-        proc.kill()
-        return -1, ["The update took too long and was stopped."]
-    return proc.returncode, out.decode("utf-8", errors="replace").splitlines()[-30:]
-
-
 # -- which Winglet release is the newest -------------------------------------------------------------------
 #
 # The server decides this itself, from the GitHub releases of ONE hard-coded repository. The phone never names a
@@ -963,6 +925,8 @@ def begin_update(release, from_version, *, plugin_dir=None, db_path=None, home=N
     except BaseException:
         remove_update_watch(job_id)
         updater.clear_marker(folder)
+        if backup.parent == folder:  # the backup made a moment ago for an update that will not happen; an earlier one is never touched
+            shutil.rmtree(backup, ignore_errors=True)
         raise
     return {"backup": str(backup), "job": job_id, "script": str(script), "from": from_version, "to": release["version"],
             "folder": str(folder), "root": str(root)}
@@ -1083,7 +1047,7 @@ async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 
     except Exception as exc:
         raise HermesUnavailable("plugin install unavailable") from exc
     args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable")
-    env = {**os.environ, "HERMES_HOME": str(_home()), "COLUMNS": "200"}
+    env = {**_install_environment(os.environ), "HERMES_HOME": str(_home()), "COLUMNS": "200"}
     proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, args), env=env, stdin=_asyncio.subprocess.DEVNULL,
                                                  stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT)
     try:
@@ -1091,7 +1055,34 @@ async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 
     except _asyncio.TimeoutError:
         proc.kill()
         return -1, ["The install took too long and was stopped."]
-    return proc.returncode, out.decode("utf-8", errors="replace").splitlines()[-30:]
+    return proc.returncode, clean_output(out.decode("utf-8", errors="replace"))
+
+
+# What the install child may inherit: where programs are, who is running them, the language, and what git and TLS need to reach
+# GitHub. Nothing else: the gateway's environment holds API keys and tokens that an install has no use for.
+_INSTALL_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+
+
+def _install_environment(environ) -> dict:
+    return {name: value for name, value in environ.items() if name in _INSTALL_ENV or name.startswith("LC_")}
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
+OUTPUT_LINES = 30
+OUTPUT_LINE_CHARS = 300
+
+
+def clean_output(text: str) -> list:
+    """The last lines a child printed as plain, bounded text for the phone: no colour codes, no control, zero-width or
+    direction-changing characters, no blank lines, no line longer than OUTPUT_LINE_CHARS."""
+    lines = []
+    for raw in text.splitlines():
+        line = _ANSI.sub("", raw).replace("\t", " ")
+        line = "".join(ch for ch in line if not unicodedata.category(ch).startswith("C")).strip()
+        if line:
+            lines.append(line if len(line) <= OUTPUT_LINE_CHARS else line[:OUTPUT_LINE_CHARS - 1] + "\u2026")
+    return lines[-OUTPUT_LINES:]
 
 
 def busy_bots(activity) -> dict:

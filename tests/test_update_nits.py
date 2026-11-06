@@ -60,6 +60,47 @@ async def test_a_retry_of_the_same_kind_still_gets_its_own_job(client, hub, owne
     assert (await (await post_signed(client, owner, "/api/system/restart", {"idempotency_key": "r-same"})).json())["job"]["id"] == restart["id"]
 
 
+# -- 5. no backup folder left by a failed set-up -----------------------------------------------------------------------------
+
+
+def backups(w):
+    return sorted(p.name for p in w.folder.iterdir() if p.is_dir()) if w.folder.exists() else []
+
+
+def test_when_the_watch_job_cannot_be_made_the_new_backup_folder_is_removed_again(world):
+    world.cron.fail_create = True
+    with pytest.raises(Exception):
+        begin(world)
+    assert backups(world) == []
+
+
+def test_when_the_record_cannot_be_written_the_new_backup_folder_is_removed_again(world, monkeypatch):
+    monkeypatch.setattr(ur, "write_marker", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        begin(world)
+    assert backups(world) == [] and world.cron.removed == ["job1"]
+
+
+def test_an_earlier_backup_is_never_removed_by_a_failed_set_up(world):
+    first = api.begin_update({**__import__("test_plugin_update_install").RELEASE, "version": "0.10.5"}, "0.10.4", plugin_dir=world.plugin,
+                             db_path=world.db, home=world.root, now=NOW - 5000)
+    ur.clear_marker(world.folder)
+    older = backups(world)
+    assert len(older) == 1
+    world.cron.fail_create = True
+    with pytest.raises(Exception):
+        begin(world)
+    assert backups(world) == older
+
+
+# -- 6. the unused Hermes-driven update functions are gone ---------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["check_winglet_update", "update_winglet"])
+def test_functions_nothing_calls_are_removed(name):
+    assert not hasattr(api, name)
+
+
 # -- 7. a kept folder is never reused -------------------------------------------------------------------------------------------
 
 
@@ -94,3 +135,61 @@ def test_the_first_kept_folder_keeps_its_plain_name(rollback_world):
     pretend_the_update_ran(w)
     report = ur.restore(w.root, backup, NOW + 10, with_database=False)
     assert report["kept"].name == "failed-" + __import__("time").strftime("%Y%m%d-%H%M%S", __import__("time").gmtime(NOW + 10))
+
+
+# -- 8. the install child ------------------------------------------------------------------------------------------------------------
+
+
+async def test_the_install_child_gets_only_the_environment_it_needs(monkeypatch, spawned):
+    for name, value in {"OPENAI_API_KEY": "sk-secret", "TELEGRAM_BOT_TOKEN": "t0ken", "WINGLET_SECRET": "s", "AWS_SECRET_ACCESS_KEY": "a",
+                        "ANTHROPIC_API_KEY": "k", "GITHUB_TOKEN": "g"}.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("LANG", "en_GB.UTF-8")
+    monkeypatch.setenv("LC_ALL", "en_GB.UTF-8")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
+    await api.install_release(SHA)
+    env = spawned[0]["env"]
+    assert env["HERMES_HOME"] and env["PATH"] and env["HOME"] and env["LANG"] == "en_GB.UTF-8" and env["LC_ALL"] == "en_GB.UTF-8"
+    assert env["HTTPS_PROXY"] == "http://proxy.example:3128"                      # git must still be able to reach GitHub
+    leaked = [name for name in env if any(word in name.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD"))]
+    assert leaked == [], leaked
+    assert not {"OPENAI_API_KEY", "TELEGRAM_BOT_TOKEN", "WINGLET_SECRET", "AWS_SECRET_ACCESS_KEY", "ANTHROPIC_API_KEY", "GITHUB_TOKEN"} & set(env)
+
+
+async def test_the_install_still_runs_with_a_bare_environment(monkeypatch, spawned):
+    for name in list(os.environ):
+        monkeypatch.delenv(name, raising=False)
+    code, lines = await api.install_release(SHA)
+    assert code == 0 and spawned[0]["env"]["HERMES_HOME"]
+
+
+async def test_what_the_install_prints_is_cleaned_before_it_reaches_the_phone(monkeypatch, spawned):
+    noisy = (b"\x1b[31mfatal:\x1b[0m could not read from remote\n"
+             b"bell\x07 and nul\x00 and tab\there\n"
+             b"\xe2\x80\xae reversed \xe2\x80\x8b zero-width\n"
+             + b"x" * 5000 + b"\n"
+             + b"\n".join(b"line %d" % i for i in range(100)))
+
+    async def fake_exec(*argv, **kw):
+        return FakeProc(1, noisy)
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    code, lines = await api.install_release(SHA)
+    assert code == 1 and len(lines) <= 30
+    text = "\n".join(lines)
+    assert "\x1b" not in text and "\x07" not in text and "\x00" not in text and "\u202e" not in text and "\u200b" not in text
+    assert all(len(line) <= 300 for line in lines)
+
+    async def fake_exec_two(*argv, **kw):
+        return FakeProc(1, noisy.split(b"line 0")[0])
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec_two)
+    code, lines = await api.install_release(SHA)
+    assert lines[0] == "fatal: could not read from remote"
+    assert lines[1] == "bell and nul and tab here"
+    assert any(len(line) <= 300 and line.startswith("xxxx") and line.endswith("…") for line in lines)
+
+
+async def test_clean_output_keeps_ordinary_lines_unchanged(monkeypatch, spawned):
+    async def fake_exec(*argv, **kw):
+        return FakeProc(0, b"Cloning into 'winglet'...\nInstalled winglet 0.10.5 \xe2\x9c\x93\n")
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    assert (await api.install_release(SHA)) == (0, ["Cloning into 'winglet'...", "Installed winglet 0.10.5 ✓"])
