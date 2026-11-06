@@ -37,7 +37,7 @@ DEADLINE_SECONDS = 180
 
 _VERSION = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\Z")
 _BACKUP_NAME = re.compile(r"plugin-[0-9.]{5,14}-pre-[0-9.]{5,14}-[0-9]{8}-[0-9]{6}\Z")
-_STATES = ("pending", "rolled_back", "rollback_failed")
+_STATES = ("pending", "rolling_back", "rolled_back", "rollback_failed")
 
 
 class RollbackError(RuntimeError):
@@ -334,12 +334,33 @@ NOT_RESTARTED = ("The gateway has NOT been restarted. Please restart the gateway
                  "Winglet comes back on the version that was restored.")
 
 
-def _rolled_back_message(marker: dict, report: dict, backup: Path) -> str:
+def _rolled_back_message(marker: dict, report: dict, backup: Path, started: bool = True) -> str:
+    if not started:
+        return (f"Winglet update {marker['from']} -> {marker['to']} did not take effect, so I put the {marker['from']} files back.\n\n"
+                f"The new version never started, as far as I can tell (it left no start record), so the gateway is most likely still "
+                f"running the old one. I left the database exactly as it is: nothing in it was overwritten.\n"
+                f"Restored from the backup: {', '.join(report['done'])}.\n"
+                f"The files of the failed version are kept in {report['kept']}.\n\n"
+                f"The gateway has NOT been restarted by me. It keeps running whatever it has loaded now; when you next restart it, "
+                f"it loads the restored version.\nBackup used: {backup}")
     return (f"Winglet update {marker['from']} -> {marker['to']} failed, so I put {marker['from']} back.\n\n"
             f"Restored from the backup: {', '.join(report['done'])}.\n"
             f"The failed version, and the database as it was when I put the backup back, are kept in {report['kept']}. "
             f"Anything sent to Winglet during the update is in that copy, not in the restored database.\n\n"
             f"{NOT_RESTARTED}\nBackup used: {backup}")
+
+
+def _not_recorded_message(marker: dict) -> str:
+    return (f"Winglet update {_clean(marker.get('from'))} -> {_clean(marker.get('to'))} did not take effect in time, and I could not write "
+            f"my own record that I was putting the old version back (the disk may be full or read-only), so nothing was changed. "
+            f"I will try again in a minute.\n\n{NOT_RESTARTED}")
+
+
+def _unfinished_message(marker: dict, backup: Optional[Path]) -> str:
+    return (f"An earlier check started putting Winglet {_clean(marker.get('from'))} back (update {_clean(marker.get('from'))} -> "
+            f"{_clean(marker.get('to'))}) and I have no record of it finishing. I did not repeat it: doing it twice could overwrite "
+            f"newer data with the backup.\n\nPlease look at the plugin folder and the database yourself."
+            + (f"\nThe backup is kept at {backup}." if backup else "") + f"\n\n{NOT_RESTARTED}")
 
 
 def _failed_message(marker: dict, reason: str, done: list, backup: Optional[Path]) -> str:
@@ -370,6 +391,12 @@ def _say_note_once(folder: Path, marker: dict, out) -> None:
     out.write(text + "\n")
 
 
+def _has_started(marker: dict) -> bool:
+    """The new version recorded that it started (it does so just before it first opens the database)."""
+    value = marker.get("started")
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
 def watch(home, now: float, out) -> int:
     """One cron tick. Silent unless an update is pending past its deadline (or its record cannot be read)."""
     root = hermes_root(Path(home))
@@ -385,7 +412,20 @@ def watch(home, now: float, out) -> int:
                   "Nothing was changed. The record was kept as pending-update.unreadable.json next to the backups.\n"
                   + NOT_RESTARTED + "\n")
         return 0
-    if marker is None or marker.get("state") != "pending":
+    if marker is None:
+        return 0
+    if marker.get("state") == "rolling_back":
+        # A rollback was begun and its result never recorded. Doing it again could overwrite newer data with the backup.
+        name = marker.get("backup")
+        backup = folder / name if isinstance(name, str) and _BACKUP_NAME.match(name) else None
+        marker.update(state="rollback_failed", finished_at=now, error="an earlier rollback did not record that it finished")
+        try:
+            write_marker(folder, marker)
+        except OSError:
+            pass
+        out.write(_unfinished_message(marker, backup) + "\n")
+        return 0
+    if marker.get("state") != "pending":
         return 0
     _say_note_once(folder, marker, out)
     deadline = marker.get("deadline")
@@ -396,16 +436,22 @@ def watch(home, now: float, out) -> int:
     try:
         if backup is None or not backup.is_dir() or backup.is_symlink():
             raise RollbackError("the update record does not name a backup I can use")
-        report = restore(root, backup, now)
-        marker.update(state="rolled_back", finished_at=now, kept=str(report["kept"]))
-        message = _rolled_back_message(marker, report, backup)
+        started = _has_started(marker)  # only code that ran can have changed the database; otherwise it holds newer chats than the backup
+        try:
+            write_marker(folder, {**marker, "state": "rolling_back", "rollback_began": now})  # first: a second run must never restore again
+        except OSError:
+            out.write(_not_recorded_message(marker) + "\n")  # nothing has been touched; the next tick may try again
+            return 0
+        report = restore(root, backup, now, with_database=started)
+        marker.update(state="rolled_back", finished_at=now, kept=str(report["kept"]), database_restored=started)
+        message = _rolled_back_message(marker, report, backup, started)
     except RollbackError as exc:
         marker.update(state="rollback_failed", finished_at=now, error=str(exc)[:300])
         message = _failed_message(marker, str(exc), exc.done, backup)
     try:
         write_marker(folder, marker)  # so the next minute stays quiet, and Winglet can say how it went
     except OSError:
-        pass
+        pass  # the record still says rolling_back, so the next tick reports instead of repeating
     out.write(message + "\n")
     return 0
 

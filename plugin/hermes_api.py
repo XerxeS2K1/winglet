@@ -995,6 +995,24 @@ def hold_lease(prepared: dict, note: Optional[str] = None, *, now=None) -> bool:
     return True
 
 
+def mark_started(current_version, *, home=None, now=None) -> bool:
+    """The new version records, just before it first opens its database, that it started. The rollback watch puts the
+    database back only if it finds this mark: if the new code never ran, the database holds only what the old version
+    wrote, which is newer than the backup. Never raises: a start-up must not depend on this record."""
+    try:
+        updater = _updater()
+        folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
+        marker = updater.read_marker(folder)
+        if not marker or marker.get("state") != "pending" or marker.get("to") != current_version or updater._has_started(marker):
+            return False
+        marker["started"] = time.time() if now is None else now
+        updater.write_marker(folder, marker)
+        return True
+    except Exception as exc:
+        logger.info("[winglet] could not record that the new version started: %s", exc)
+        return False
+
+
 def snapshot_database(prepared: dict) -> None:
     """A fresh copy of the database in this update's backup (see update_rollback.refresh_database)."""
     _updater().refresh_database(Path(prepared["backup"]))

@@ -88,9 +88,10 @@ def pretend_the_update_ran(w, extra_message="posted during the update"):
     w.meta.write_text(json.dumps(data))
 
 
-def write_marker(w, backup, *, deadline=NOW + 180, state="pending", frm="0.10.4", to="0.10.5"):
+def write_marker(w, backup, *, deadline=NOW + 180, state="pending", frm="0.10.4", to="0.10.5", started=True):
+    """A pending update. By default the new version has started (it recorded that before opening the database)."""
     ur.write_marker(w.folder, {"from": frm, "to": to, "backup": backup.name, "deadline": deadline, "state": state,
-                               "cron_job": "job123", "created": NOW})
+                               "cron_job": "job123", "created": NOW, **({"started": NOW - 30} if started else {})})
 
 
 # -- the backup --------------------------------------------------------------------------------------------------
@@ -277,7 +278,7 @@ def test_a_marker_cannot_point_the_restore_at_another_folder(world, capsys, name
     backup = back_up(world)
     pretend_the_update_ran(world)
     current = tree(world.plugin)
-    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": name, "deadline": NOW, "state": "pending"})
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": name, "deadline": NOW, "state": "pending", "started": NOW - 30})
     ur.watch(world.root, NOW + 200, sys.stdout)
     assert tree(world.plugin) == current
     assert backup.is_dir()
@@ -489,7 +490,7 @@ def test_a_note_never_hides_a_rollback_that_is_due(world, capsys):
     backup = back_up(world)
     pretend_the_update_ran(world)
     ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW + 10, "state": "pending",
-                                   "created": NOW, "note": "waiting"})
+                                   "created": NOW, "note": "waiting", "started": NOW - 30})
     ur.watch(world.root, NOW + 100, sys.stdout)
     said = capsys.readouterr().out
     assert "waiting" in said and "put 0.10.4 back" in said and read_db(world.db) == ["hello", "world"]
@@ -512,7 +513,7 @@ def test_the_lease_keeps_a_waiting_update_safe_for_as_long_as_the_hub_vouches_an
     for minute in range(0, 120):                                          # two hours of waiting, renewed every 30 seconds
         now = NOW + minute * 60
         ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "state": "pending", "created": NOW,
-                                       "deadline": now + 30 + ur.DEADLINE_SECONDS})
+                                       "started": NOW - 30, "deadline": now + 30 + ur.DEADLINE_SECONDS})
         ur.watch(world.root, now + 30, sys.stdout)
         assert capsys.readouterr().out == "", minute
     assert (world.plugin / "hub.py").read_text().startswith("raise ImportError")
@@ -536,7 +537,7 @@ def test_a_refreshed_copy_brings_back_the_chats_written_while_the_update_waited(
     report = ur.verify_backup(backup, world.root)
     assert report["db_sha256"] == ur._sha256_file(backup / "data.db")
     pretend_the_update_ran(world)
-    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW, "state": "pending"})
+    ur.write_marker(world.folder, {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW, "state": "pending", "started": NOW - 30})
     ur.watch(world.root, NOW + 100, sys.stdout)
     assert read_db(world.db) == ["hello", "world", "written while waiting"]       # nothing the owner wrote is lost
 
@@ -578,3 +579,164 @@ def test_a_refresh_never_runs_unless_the_backup_verifies(world):
     (backup / "plugin" / "hub.py").write_text("tampered")
     with pytest.raises(ur.RollbackError):
         ur.refresh_database(backup)
+
+
+# -- the database is put back only if the new version ever ran ----------------------------------------------------------------
+
+
+def pending_record(w, backup, **extra):
+    record = {"from": "0.10.4", "to": "0.10.5", "backup": backup.name, "deadline": NOW, "state": "pending", "created": NOW - 60, **extra}
+    ur.write_marker(w.folder, record)
+    return record
+
+
+def test_a_new_version_that_never_started_leaves_the_database_alone(world, capsys):
+    """The restart silently failed and the OLD gateway kept writing to data.db. The watch must not overwrite it."""
+    backup = back_up(world)
+    db = sqlite3.connect(world.db)
+    db.execute("INSERT INTO messages (text) VALUES ('written by the old version after the install')")
+    db.commit()
+    db.close()
+    pretend_the_update_ran(world, extra_message="posted while still on the old gateway")
+    pending_record(world, backup)                                   # no "started": the new code never opened the database
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert read_db(world.db) == ["hello", "world", "written by the old version after the install", "posted while still on the old gateway"]
+    assert (world.plugin / "plugin.yaml").read_text().endswith("0.10.4\n") and not (world.plugin / "added.py").exists()   # files are restored
+    said = capsys.readouterr().out
+    assert "database" in said and ("left" in said or "not touched" in said or "untouched" in said)
+    assert "the database" not in said.split("Restored from the backup:")[-1].split("\n")[0]       # it does not claim to have restored it
+    assert ur.read_marker(world.folder)["state"] == "rolled_back"
+
+
+def test_a_new_version_that_did_start_gets_its_database_restored(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, started=NOW - 30)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert read_db(world.db) == ["hello", "world"]
+    said = capsys.readouterr().out
+    assert "the database" in said.split("Restored from the backup:")[-1].split("\n")[0]
+
+
+@pytest.mark.parametrize("started", [None, "", 0, False, True, -5, "yes", [], {}])
+def test_only_a_real_start_time_counts_as_having_started(world, started):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, **({} if started is None else {"started": started}))
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert read_db(world.db) == ["hello", "world", "posted during the update"]
+
+
+def test_the_message_does_not_claim_the_gateway_comes_back_on_the_restored_version_when_it_never_left_it(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    said = capsys.readouterr().out
+    assert "comes back on the version that was restored" not in said
+    assert "never started" in said or "did not start" in said or "not start" in said
+    assert "NOT been restarted" in said or "not been restarted" in said
+
+
+def test_the_lease_renewals_keep_the_started_mark(world):
+    backup = back_up(world)
+    pending_record(world, backup, started=NOW - 30)
+    marker = ur.read_marker(world.folder)
+    ur.write_marker(world.folder, {**marker, "deadline": NOW + 500})
+    assert ur.read_marker(world.folder)["started"] == NOW - 30
+
+
+# -- a rollback happens once -------------------------------------------------------------------------------------------------
+
+
+def test_running_the_watch_twice_restores_once(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, started=NOW - 30)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    capsys.readouterr()
+    db = sqlite3.connect(world.db)
+    db.execute("INSERT INTO messages (text) VALUES ('written after the rollback')")
+    db.commit()
+    db.close()
+    ur.watch(world.root, NOW + 160, sys.stdout)
+    assert capsys.readouterr().out == "" and read_db(world.db) == ["hello", "world", "written after the rollback"]
+
+
+def test_a_record_that_cannot_be_written_stops_the_rollback_before_it_touches_anything(world, capsys, monkeypatch):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, started=NOW - 30)
+    files, live = tree(world.plugin), read_db(world.db)
+    monkeypatch.setattr(ur, "write_marker", lambda *a, **k: (_ for _ in ()).throw(OSError("read-only file system")))
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert tree(world.plugin) == files and read_db(world.db) == live                     # nothing was changed
+    said = capsys.readouterr().out
+    assert "nothing was changed" in said.lower() and "NOT been restarted" in said.replace("not been restarted", "NOT been restarted")
+
+
+def test_a_rollback_whose_result_could_not_be_recorded_is_never_repeated(world, capsys, monkeypatch):
+    """Writing 'rolling back' works, the restore works, but recording the result fails. The next minute must not restore again."""
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, started=NOW - 30)
+    real = ur.write_marker
+    calls = []
+
+    def flaky(folder, data):
+        calls.append(data.get("state"))
+        if data.get("state") in ("rolled_back", "rollback_failed"):
+            raise OSError("disk full")
+        return real(folder, data)
+    monkeypatch.setattr(ur, "write_marker", flaky)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert calls == ["rolling_back", "rolled_back"]
+    capsys.readouterr()
+    monkeypatch.setattr(ur, "write_marker", real)
+    db = sqlite3.connect(world.db)
+    db.execute("INSERT INTO messages (text) VALUES ('written after the rollback')")
+    db.commit()
+    db.close()
+    ur.watch(world.root, NOW + 160, sys.stdout)
+    assert read_db(world.db) == ["hello", "world", "written after the rollback"]         # not overwritten with the backup again
+    said = capsys.readouterr().out
+    assert "did not repeat" in said or "not repeated" in said or "have not repeated" in said
+    assert ur.read_marker(world.folder)["state"] == "rollback_failed"
+    ur.watch(world.root, NOW + 220, sys.stdout)
+    assert capsys.readouterr().out == ""                                                 # said once
+
+
+def test_a_rollback_that_stopped_halfway_is_reported_not_repeated(world, capsys):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, state="rolling_back", started=NOW - 30, started_rollback_at=NOW)
+    files, live = tree(world.plugin), read_db(world.db)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert tree(world.plugin) == files and read_db(world.db) == live
+    said = capsys.readouterr().out
+    assert "did not repeat" in said or "not repeated" in said or "have not repeated" in said
+    assert str(backup) in said and "NOT been restarted" in said.replace("not been restarted", "NOT been restarted")
+    assert ur.read_marker(world.folder)["state"] == "rollback_failed"
+
+
+def test_the_record_says_rolling_back_before_the_first_file_moves(world, monkeypatch):
+    backup = back_up(world)
+    pretend_the_update_ran(world)
+    pending_record(world, backup, started=NOW - 30)
+    seen = []
+    real_restore = ur.restore
+
+    def spy(*a, **k):
+        seen.append(ur.read_marker(world.folder)["state"])
+        return real_restore(*a, **k)
+    monkeypatch.setattr(ur, "restore", spy)
+    ur.watch(world.root, NOW + 100, sys.stdout)
+    assert seen == ["rolling_back"]
+
+
+def test_rolling_back_is_a_state_the_server_understands_as_a_failed_rollback(world):
+    """If a rollback is cut short and nobody has run the watch again, the server must not read the record as 'pending'."""
+    from plugin import hermes_api as api
+    backup = back_up(world)
+    pending_record(world, backup, state="rolling_back")
+    assert ur.read_marker(world.folder)["state"] == "rolling_back"
