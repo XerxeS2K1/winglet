@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { AppState, Platform } from 'react-native';
 import { ApiError } from '../../lib/api';
+import { stepError } from './voiceErrors';
 import { claimVoiceAudio } from '../../lib/audioMode';
 import { useLock } from '../../lib/appLock';
 import { usePrefs } from '../../lib/prefs';
@@ -133,10 +134,10 @@ export function useLiveVoice(server: Server, chatId: string) {
       const message = (error as Error).message;
       if (error instanceof ApiError && (error.status === 404 || error.status === 401 || error.status === 403)) {
         disposeRecording(); session.current = null; process(engine.sessionLost(message));
-      } else if (effect.type === 'openSession') process(engine.sessionFailed(message));
+      } else if (effect.type === 'openSession') process(engine.sessionFailed(stepError('openSession', message)));
       else if (effect.type === 'listen') process(engine.captureFailed(message, /permission|denied|not.allowed/i.test(message) ? 'permission' : 'capture'));
-      else if (effect.type === 'transcribe') process(engine.transcriptionFailed({ ...effect, message }));
-      else if (effect.type === 'speak') process(engine.speechFailed(effect.turnId, message));
+      else if (effect.type === 'transcribe') process(engine.transcriptionFailed({ ...effect, message: stepError('transcribe', message) }));
+      else if (effect.type === 'speak') process(engine.speechFailed(effect.turnId, stepError('speak', message)));
       else if (effect.type === 'send') process(engine.captureFailed('Delivery was not confirmed. Check the chat before speaking again.', 'send'));
     }
   };
