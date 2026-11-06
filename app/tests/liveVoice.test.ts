@@ -190,3 +190,27 @@ test('stop phrases may address the selected bot by its own name', () => {
   assert.equal(isVoiceStopCommand('Hey Winglet, stop!', 'Winglet'), true);
   assert.equal(isVoiceStopCommand('Hey Winglet, stop the container', 'Winglet'), false);
 });
+
+test('a recording kept on the phone is uploaded with XHR, because Expo fetch cannot send file parts', async () => {
+  const sent: any[] = []; let fetchCalls = 0;
+  class ErrorType extends Error { status: number; data: any; constructor(m: string, status: number, data: any = null) { super(m); this.status = status; this.data = data; } }
+  class FakeXhr {
+    status = 0; responseText = ''; timeout = 0; headers: Record<string, string> = {};
+    onload: any; onerror: any; ontimeout: any; onabort: any; method = ''; url = ''; body: any;
+    open(m: string, u: string) { this.method = m; this.url = u; }
+    setRequestHeader(k: string, v: string) { this.headers[k] = v; }
+    abort() { this.onabort?.(); }
+    send(body: any) { this.body = body; sent.push(this); this.status = 200; this.responseText = JSON.stringify({ transcript: 'hello', no_speech: false, seq: 1 }); queueMicrotask(() => this.onload()); }
+  }
+  const formUpload: any = {}; const source = readFileSync(new URL('../src/lib/formUpload.ts', import.meta.url), 'utf8');
+  vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText,
+    { exports: formUpload, require: () => ({ ApiError: ErrorType }), XMLHttpRequest: FakeXhr, Promise, JSON, queueMicrotask });
+  // Expo's fetch throws on `uri` form parts; the old code went through api() -> fetch and always failed here.
+  const api = async () => { fetchCalls++; throw new ErrorType("Can't reach your Hermes server.", 0); };
+  const { VoiceClient } = load('client', { '../../lib/api': { api, ApiError: ErrorType, botPath: (_s: any, p: string) => p }, '../../lib/formUpload': formUpload });
+  const client = new VoiceClient({ url: 'https://box.test', token: 'tok' }, 'chat');
+  const out = await client.transcribe({ id: 'vs', token: 'vt' }, 't1', 'u1',
+    { uri: 'file:///cache/rec.m4a', mime: 'audio/mp4', durationMs: 1500, hasSpeech: true, dispose() {} }, new AbortController().signal);
+  assert.equal(out.transcript, 'hello'); assert.equal(fetchCalls, 0);
+  assert.equal(sent[0].url, 'https://box.test/api/voice/transcribe'); assert.equal(sent[0].headers.Authorization, 'Bearer tok');
+});
