@@ -259,8 +259,15 @@ export type Picker = {
 /** The model new chats use, and the one a chat really uses when Hermes knows. */
 export type AgentInfo = {
   configured: { model: string; provider: string; reasoning_effort: string; label: string };
-  chat: { model: string; provider: string; source: 'chat' | 'last_turn' } | null;
+  chat: { model: string; provider: string; source: 'chat' | 'last_turn'; fallback?: FallbackInfo } | null;
 };
+
+/**
+ * Present only while the agent is on a fallback model (Hermes switched away from the one chosen). `reason` is
+ * Hermes's own words and may be empty; `retry_in_s` is the seconds until the main model is tried again, or null
+ * when there is no cooldown (it is tried on the next message). An older server never sends the key.
+ */
+export type FallbackInfo = { active: boolean; reason?: string; retry_in_s?: number | null; from_model?: string; from_provider?: string };
 
 /** New work is on hold (Hermes's /pause). Members get no reason. */
 export type PauseState = { reason: string | null; engaged_at: string | null } | null;

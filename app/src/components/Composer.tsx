@@ -20,6 +20,7 @@ import { makeStyles, useTheme } from '../lib/themeContext';
 import { plainText } from '../lib/text';
 import type { DraftFile, Server } from '../lib/types';
 import { useVoiceNote } from '../lib/voiceNote';
+import { FallbackStrip } from './FallbackStrip';
 import { Glass } from './Glass';
 import { ModelButton } from './ModelSheet';
 import { AudioLines, ArrowUp, Camera, FileText, ImagePlus, Mic, Plus, RotateCcw, X } from './icons';
@@ -237,6 +238,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
       {!online ? <Text style={s.offlineNote}>Offline. Messages you send are queued and go out when {server.bot.title} is back.</Text> : null}
       <View onLayout={(e) => setBoxY(e.nativeEvent.layout.y)}>
       <Glass target={target} style={s.box} intensity={50}>
+        <FallbackStrip server={server} chatId={chatId} />
         {replyTo ? (
           <View style={s.reply}>
             <View style={s.replyBar} />

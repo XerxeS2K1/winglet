@@ -3,6 +3,8 @@ import { Keyboard, Text, View, useWindowDimensions } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 import { sendHidden } from '../lib/actions';
 import { api } from '../lib/api';
+import { isFallbackActive, monotonicNow } from '../lib/fallbackNotice';
+import { registerModelSheetOpener, useFallback } from '../lib/fallbackStore';
 import { haptic } from '../lib/haptics';
 import { activeModel, modelName } from '../lib/modelOptions';
 import { useModelSheet } from '../lib/modelSheet';
@@ -55,23 +57,40 @@ export function ModelButton({ server, chatId, variant = 'compact', prepareChat }
   useEffect(() => {
     if (!ready || !owner) return;
     let alive = true;
-    api<AgentInfo>(server, prepareChat ? '/api/agent' : `/api/agent?chat=${encodeURIComponent(chatId)}`).then((i) => alive && setSnapshot({ key, info: i })).catch(() => undefined);
+    api<AgentInfo>(server, prepareChat ? '/api/agent' : `/api/agent?chat=${encodeURIComponent(chatId)}`).then((i) => {
+      if (!alive) return;
+      setSnapshot({ key, info: i });
+      // The strip above the message box reads this same answer instead of asking again.
+      if (variant === 'composer') useFallback.getState().publish(key, { model: activeModel(i).model, fallback: i.chat?.fallback }, monotonicNow());
+    }).catch(() => undefined);
     return () => { alive = false; };
-  }, [server, chatId, key, ready, owner, picked, revision, prepareChat, lastReply]);
+  }, [server, chatId, key, ready, owner, picked, revision, prepareChat, lastReply, variant]);
+
+  const show = () => { Keyboard.dismiss(); setMountedKey(key); setOpenKey(key); refresh((n) => n + 1); };
+  const press = prepareChat ? async () => {
+    Keyboard.dismiss();
+    const destination = await prepareChat();
+    if (destination) { const next = `${server.id}:${destination}`; setMountedKey(next); setOpenKey(next); }
+  } : show;
+  // Tapping the fallback strip does what tapping this chip does; the strip only knows the chat's key.
+  const pressNow = useRef(press);
+  pressNow.current = press;
+  useEffect(() => {
+    if (variant !== 'composer') return undefined;
+    const unregister = registerModelSheetOpener(key, () => { void pressNow.current(); });
+    return () => { unregister(); useFallback.getState().clear(key); };
+  }, [key, variant]);
 
   if (!ready || !owner) return null;
   const model = activeModel(info).model;
-  const show = () => { Keyboard.dismiss(); setMountedKey(key); setOpenKey(key); refresh((n) => n + 1); };
+  const fallbackOn = variant === 'composer' && isFallbackActive(info?.chat?.fallback);
   return (
     <>
-      <Tap feedback="selection" scaleTo={0.98} onPress={prepareChat ? async () => {
-        Keyboard.dismiss();
-        const destination = await prepareChat();
-        if (destination) { const next = `${server.id}:${destination}`; setMountedKey(next); setOpenKey(next); }
-      } : show}
+      <Tap feedback="selection" scaleTo={0.98} onPress={press}
         style={({ pressed }) => [s.button, variant === 'header' && s.headerButton, variant === 'composer' && s.composerButton, pressed && { backgroundColor: t.colors.pressed }]}
-        accessibilityLabel={`${model ? `Model: ${modelName(model)}` : 'Choose a model'}. Change the model or reasoning`}
+        accessibilityLabel={`${fallbackOn ? 'Fallback model in use. ' : ''}${model ? `Model: ${modelName(model)}` : 'Choose a model'}. Change the model or reasoning`}
         accessibilityState={{ expanded: open }} hitSlop={variant === 'header' ? 6 : undefined}>
+        {fallbackOn ? <View style={s.fallbackDot} /> : null}
         <Text style={[s.buttonText, variant === 'header' && s.headerButtonText, variant === 'composer' && s.composerButtonText]} numberOfLines={1}>{model ? modelName(model) : 'Model'}</Text>
         <ChevronDown size={14} color={t.colors.textSecondary} />
       </Tap>
@@ -227,6 +246,8 @@ const useStyles = makeStyles((t) => ({
   headerButtonText: { ...t.type.caption, fontFamily: t.fonts.medium, color: t.colors.textSecondary },
   composerButton: { backgroundColor: 'transparent', paddingHorizontal: 10, minHeight: 36, maxWidth: '65%', flexShrink: 1 },
   composerButtonText: { ...t.type.footnote, fontSize: 13.5, fontFamily: t.fonts.medium, color: t.colors.textSecondary },
+  /** Amber, from the theme's warning colour (dark and light): this chat is on a fallback model right now. */
+  fallbackDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: t.colors.warning },
   scroll: { flexShrink: 1 },
   body: { gap: t.space.md, paddingHorizontal: 2, paddingBottom: t.space.xs },
   controls: { flexDirection: 'row', alignItems: 'center', gap: t.space.sm, minHeight: 44 },

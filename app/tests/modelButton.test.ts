@@ -13,7 +13,7 @@ function harness() {
   const modules: Record<string, any> = {
     react: {
       useState: (value: any) => { const i = cursor++; if (!(i in states)) states[i] = value; return [states[i], (next: any) => { states[i] = typeof next === 'function' ? next(states[i]) : next; }]; },
-      useEffect: () => undefined, useCallback: (fn: any) => fn,
+      useEffect: () => undefined, useCallback: (fn: any) => fn, useRef: (value: any) => ({ current: value }),
     },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { Keyboard: { dismiss: () => undefined }, Text: 'Text' },
