@@ -57,7 +57,11 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
 - **A fallback notice.** While Hermes has switched to a fallback model, a strip above the message box shows the reason
   (for example rate limit), the model in use and a countdown to when the main model is tried again, or "next message"
   when there is no cooldown. It disappears on its own, and tapping it opens the model sheet. Needs a server plugin
-  that matches the app.
+  that matches the app. The server keeps explicit fallback evidence for that chat after Hermes releases its cached agent;
+  it does not infer fallback from a different model name. A pre-agent provider notice reports "provider unavailable"
+  without inventing a rate-limit reason or reset time. A countdown, when supplied by Hermes, keeps decreasing after the
+  reply finishes. A live primary recovery, a changed chat `/model` override or a new session clears the saved detail;
+  it is isolated per profile and chat and is not replayed after a gateway restart.
 - **Persona, memory and usage.** Persona edits apply to new chats, not to hand-offs already running. Edit who it is, see and fix what it remembers, and track tokens and cost.
 - **A pet.** Give your agent an animated face from the [petdex](https://petdex.dev) or [Codex Pets](https://codex-pets.net) gallery
   (a switch on the Pet screen; Codex Pets are downloaded by the server from that one host only). It waves when

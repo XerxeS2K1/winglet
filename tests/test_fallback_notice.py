@@ -63,7 +63,7 @@ def adapter_cls():
 
 
 def fake_adapter(cls, ag):
-    me = SimpleNamespace(_fallback_reasons={}, name="winglet", _session_key=lambda chat: "key",
+    me = SimpleNamespace(_fallback_reasons={}, name="winglet", _session_key=lambda chat: "key:" + chat,
                          gateway_runner=SimpleNamespace(_cached_agent_for=lambda key: ag))
     return me
 

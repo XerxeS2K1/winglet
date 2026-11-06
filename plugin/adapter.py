@@ -28,7 +28,7 @@ from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_e
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from . import bridge, checkpoints, cli, execution, hermes_api, teamwork
+from . import bridge, checkpoints, cli, execution, fallback, hermes_api, teamwork
 from .dependencies import missing_dependencies
 from .store import Store
 
@@ -816,10 +816,15 @@ class WingletAdapter(BasePlatformAdapter):
         try:
             key = self._session_key(chat_id)
             found = hermes_api.chat_model(self.gateway_runner, key) if key else None
+            # Status notes arrive at the profile adapter; the shared hub reads through the primary one.
+            bot_of, bot_adapter = getattr(self, "_bot_of", None), getattr(self, "_bot_adapter", None)
+            owner = (bot_adapter(bot_of(chat_id) or "") if callable(bot_of) and callable(bot_adapter) else None) or self
             if found and found.get("fallback") is not None:
-                found["fallback"]["reason"] = self._fallback_reasons.get(str(chat_id), "")
-            elif found is None or "fallback" not in found:
-                self._fallback_reasons.pop(str(chat_id), None)  # back on the primary: forget the old reason
+                found["fallback"]["reason"] = owner._fallback_reasons.get(str(chat_id), "")
+            if key:
+                found = fallback.history_for(owner).read(self.gateway_runner, key, found)
+            if found is None or "fallback" not in found:
+                owner._fallback_reasons.pop(str(chat_id), None)
             return found
         except Exception:
             logger.debug("[%s] chat model unavailable", self.name, exc_info=True)
@@ -844,6 +849,10 @@ class WingletAdapter(BasePlatformAdapter):
         reason = hermes_api.fallback_reason(text)
         if reason:
             self._fallback_reasons[str(chat_id)] = reason
+        try:
+            fallback.history_for(self).notice(self.gateway_runner, self._session_key(chat_id), text)
+        except Exception:
+            logger.debug("[%s] fallback notice context unavailable", self.name, exc_info=True)
         key = (str(chat_id), str(status_key))
         cached = self._status_ids.get(key)
         if cached and hub.store.get_message(cached) is not None:
