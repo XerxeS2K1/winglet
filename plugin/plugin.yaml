@@ -2,6 +2,9 @@ name: winglet
 label: Winglet
 kind: platform
 version: 0.10.3
+# Checked against Hermes 0.22.7 and 0.23.0. Hermes refuses to load (and auto-update refuses to
+# install) a plugin whose range does not cover the running version.
+requires_hermes: ">=0.22.7"
 description: >
   Winglet: your Hermes agents on your phone. Adds the Winglet mobile app as a
   messaging platform, with QR pairing, push notifications, and one-tap

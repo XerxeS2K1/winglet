@@ -57,12 +57,15 @@ def two_bots(tmp_path, monkeypatch):
 
         def finish():
             time.sleep(0.2)
+            # Write the terminal receipt the way the teammate's gateway does. Hermes 0.23 removed
+            # door.complete_delivery (the gateway writes the receipt itself), so write the same
+            # immutable fields through the storage helpers that exist in both versions.
             with door._locked(home) as root:
                 record = door._read(root / f"{params['id']}.json")
-                record["status"] = "claimed"
+                record.update(status=seen.status,
+                              reply=seen.reply if seen.status == "settled" else "",
+                              error=seen.error, reason="", completed_at=time.time_ns())
                 door._write(root / f"{params['id']}.json", record)
-            door.complete_delivery(home, params["id"], status=seen.status,
-                                   reply=seen.reply if seen.status == "settled" else "", error=seen.error)
         threading.Thread(target=finish, daemon=True).start()
         return {"admitted": True}
     monkeypatch.setattr(door, "authority_delivery", authority)
