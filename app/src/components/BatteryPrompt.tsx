@@ -1,3 +1,4 @@
+import { usePathname } from 'expo-router';
 import { useEffect, useRef } from 'react';
 import { Alert, AppState, Platform } from 'react-native';
 import { pushNative } from '../features/encrypted-push/native';
@@ -13,10 +14,14 @@ import { useApp } from '../lib/store';
 export function BatteryPrompt() {
   const paired = useApp((s) => s.servers.length > 0);
   const locked = useLock((s) => s.locked);
+  const foreground = useApp((s) => s.foreground);
+  const pathname = usePathname();
+  // Never over the pairing flow, where "paired" turns true a moment before its last step is done.
+  const pairing = pathname === '/pair' || pathname === '/scan';
   const started = useRef(false);
 
   useEffect(() => {
-    if (Platform.OS !== 'android' || !paired || locked || started.current) return;
+    if (Platform.OS !== 'android' || !paired || locked || !foreground || pairing || started.current) return;
     const timer = setTimeout(() => {
       if (started.current || AppState.currentState !== 'active' || useLock.getState().locked) return;
       started.current = true;
@@ -34,7 +39,7 @@ export function BatteryPrompt() {
       });
     }, 5000);
     return () => clearTimeout(timer);
-  }, [paired, locked]);
+  }, [paired, locked, foreground, pairing]);
 
   return null;
 }

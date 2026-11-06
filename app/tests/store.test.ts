@@ -1136,3 +1136,21 @@ test('while Signed out and still rejected, reopening does not open sockets or fl
   assert.equal(h.sockets.length, sockets);
   assert.equal(status(h), 'unauthorized');
 });
+
+test('a socket still CONNECTING during the sign-out checks cancels it, and the connection can retry later', async () => {
+  const h = harness();
+  await h.connect();
+  h.setRequest(async (_s: any, path: string) => {
+    if (path === '/api/me') { h.retry(); h.socket().readyState = 0; throw rejected(); } // retry timer opened a socket that has not connected yet
+    return {};
+  });
+  await closeRejected(h);
+  assert.notEqual(status(h), 'unauthorized');
+  h.setRequest(async () => ({}));
+  h.socket().readyState = 1;
+  h.socket().onopen?.();
+  await h.hello();
+  h.timers.length = 0;
+  h.disconnect(); // an ordinary drop afterwards must still schedule a reconnect
+  assert.ok(h.timers.length > 0);
+});

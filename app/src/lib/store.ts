@@ -1248,6 +1248,7 @@ class Connection {
     this.ws = ws;
     ws.onopen = () => {
       this.attempt = 0;
+      this.signedOut = false; // a socket that opens proves the pairing works
       if (this.server.wsAuth) this.send({ type: 'auth', token: this.server.token });
       this.presence(this.visible);
       clearInterval(this.pingTimer);
@@ -1355,7 +1356,8 @@ class Connection {
     if (this.checking || this.signedOut) return;
     this.checking = true;
     const before = this.server;
-    const stillWanted = () => !this.closed && this.server === before && this.ws?.readyState !== 1;
+    // Any socket at all (even one still connecting) means a normal reconnect is under way: not signed out.
+    const stillWanted = () => !this.closed && this.server === before && !this.ws;
     try {
       const sure = await confirmRejected(() => this.askMe(before), AUTH_RECHECK_DELAYS_MS, pause, stillWanted);
       if (!sure) return;
