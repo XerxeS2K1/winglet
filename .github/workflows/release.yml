@@ -20,8 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # A tag push needs the history to prove its commit is on main; other runs only need the tip.
-          fetch-depth: ${{ github.ref_type == 'tag' && 0 || 1 }}
+          # The ancestry check requires complete history. Use literal zero (numeric zero is falsy in expressions).
+          fetch-depth: 0
       # Releases are cut from main (docs/RELEASING.md): a tag on any other commit publishes nothing.
       - name: Tag is on main
         if: github.ref_type == 'tag'

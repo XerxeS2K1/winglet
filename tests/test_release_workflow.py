@@ -219,4 +219,15 @@ def test_ancestry_check_is_tag_only_blocking_and_early(workflow):
 
 def test_checkout_provides_history_for_tag_ancestry(workflow):
     checkout = next(s for s in workflow["jobs"]["checks"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout"))
-    assert str(checkout.get("with", {}).get("fetch-depth")) in ("0", "${{ github.ref_type == 'tag' && 0 || 1 }}")
+    # Numeric zero is falsy in GitHub expressions: `tag && 0 || 1` silently selects depth 1.
+    assert checkout.get("with", {}).get("fetch-depth") == 0
+
+
+def test_failed_fetch_refuses_even_a_tag_on_stale_cached_main(workflow, repository):
+    _, runner, main, _ = repository
+    # Cached origin/main would accept the tag. A failed refresh must stop before trusting it.
+    assert git(runner, "rev-parse", "refs/remotes/origin/main") == main
+    git(runner, "remote", "set-url", "origin", str(runner / "missing-remote.git"))
+    result = check_ancestry(workflow, runner, main)
+    assert result.returncode != 0
+    assert "fatal:" in result.stderr
