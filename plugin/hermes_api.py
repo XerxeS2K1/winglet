@@ -857,6 +857,26 @@ def _newest_release(fetch) -> Optional[dict]:
     return value
 
 
+def busy_bots(activity) -> dict:
+    """Who a gateway restart would interrupt: {bots: [{bot, state, queued}], unknown}. ``activity`` is the bot activity
+    snapshot ({name: {state, queued}}) or None when nothing could look. Unknown stays unknown: it is never counted as
+    idle. Counts and states only, no queue previews."""
+    if not isinstance(activity, dict):
+        return {"bots": [], "unknown": True}
+    bots, unknown = [], False
+    for name in sorted(activity, key=str):
+        entry = activity[name]
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if state not in ("idle", "working"):
+            unknown = True
+            continue
+        queued = entry.get("queued")
+        queued = queued if isinstance(queued, int) and not isinstance(queued, bool) and queued > 0 else 0
+        if state == "working" or queued:
+            bots.append({"bot": str(name), "state": state, "queued": queued})
+    return {"bots": bots, "unknown": unknown}
+
+
 def hermes_supports(requirement, running) -> Optional[bool]:
     """Whether the running Hermes satisfies a release's ``requires_hermes`` range. None when it cannot be told."""
     if requirement is None or not str(requirement).strip():

@@ -3333,26 +3333,49 @@ class Hub:
         return _json({"job": job}) if job else _error(404, "no such job")
 
     async def h_system_updates(self, request: web.Request) -> web.Response:
-        """Is a newer Hermes or Winglet available? Checked at most every ten minutes unless forced."""
+        """Is a newer Hermes or Winglet available? The lookups are remembered ten minutes unless forced; who is busy,
+        and whether the running Hermes suits the newest release, are worked out fresh each time."""
         self._require(request)
         h = self._need_hermes()
         force = request.query.get("force") in ("1", "true")
         cached = self._update_check
         if cached and not force and time.monotonic() - cached["at"] < UPDATE_CHECK_SECONDS:
-            return _json(cached["data"])
+            data = cached["data"]
+        else:
+            try:
+                hermes = await h.check_hermes_update(force=force)
+            except Exception as exc:
+                logger.info("[winglet] hermes update check failed: %s", exc)
+                hermes = {"error": "Couldn't check for a Hermes update."}
+            data = {"hermes": hermes, "winglet": await self._winglet_release_status(h, force), "checked_at": time.time()}
+            self._update_check = {"at": time.monotonic(), "data": data}
+        winglet = dict(data["winglet"])
+        release = winglet.get("latest_release")
+        winglet["requires_hermes_ok"] = h.hermes_supports(release.get("requires_hermes"), self.hermes_version()) if release else None
+        winglet["busy"] = await self._update_busy(h)
+        return _json({**data, "winglet": winglet})
+
+    async def _winglet_release_status(self, h: Any, force: bool) -> Dict[str, Any]:
+        """Winglet's own answer from its GitHub releases. Hermes's run_checks is not asked: it reports "provenance
+        drift" for every sub-directory install, so it can never say whether something newer exists."""
+        status: Dict[str, Any] = {"version": VERSION, "current": VERSION, "latest": None, "latest_release": None}
         try:
-            hermes = await h.check_hermes_update(force=force)
-        except Exception as exc:
-            logger.info("[winglet] hermes update check failed: %s", exc)
-            hermes = {"error": "Couldn't check for a Hermes update."}
-        try:
-            winglet = await asyncio.to_thread(h.check_winglet_update)
+            release = await asyncio.to_thread(h.latest_release, force)
         except Exception as exc:
             logger.info("[winglet] winglet update check failed: %s", exc)
-            winglet = {"update_available": None, "reason": "Couldn't check for a Winglet update."}
-        data = {"hermes": hermes, "winglet": {**winglet, "version": VERSION}, "checked_at": time.time()}
-        self._update_check = {"at": time.monotonic(), "data": data}
-        return _json(data)
+            return {**status, "update_available": None, "reason": "Couldn't check for a Winglet update."}
+        if release:
+            status.update(latest=release["version"], latest_release=release)
+        return {**status, "update_available": h.is_newer(release["version"], VERSION) if release else False, "reason": ""}
+
+    async def _update_busy(self, h: Any) -> Dict[str, Any]:
+        """Which bots a restart would interrupt right now. The phone warns; the server does not block."""
+        try:
+            activity = await self.refresh_bot_activity(fresh=True) if self.activity_provider is not None else None
+            return h.busy_bots(activity)
+        except Exception:
+            logger.debug("[winglet] busy list unavailable", exc_info=True)
+            return {"bots": [], "unknown": True}
 
     async def h_logs(self, request: web.Request) -> web.Response:
         self._require(request)

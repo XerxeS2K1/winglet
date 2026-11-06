@@ -6,6 +6,7 @@ import time
 
 import pytest
 
+from plugin import hermes_api as api
 from plugin import hub as hub_module
 from plugin.hub import Hub
 from plugin.store import Store
@@ -32,6 +33,9 @@ class FakeHermes:
         self.update_status = {"running": True, "exit_code": None, "lines": ["pulling"]}
         self.winglet_result = (0, ["Updating winglet...", "Plugin winglet updated."])
         self.routines = {}
+        self.release_calls = []
+        self.release = {"version": "0.10.5", "tag": "v0.10.5", "sha": "a" * 40, "notes": "What is new",
+                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.5", "requires_hermes": ">=0.22.7"}
 
     def system_stats(self):
         return {"system": "Linux", "cpu_count": 4, "cpu_percent": 12.5,
@@ -58,10 +62,23 @@ class FakeHermes:
         return {"install_method": "git", "current_version": "0.9", "behind": 3, "update_available": True, "can_apply": True}
 
     def check_winglet_update(self):
-        return {"update_available": False, "current": "abc", "latest": "abc", "reason": ""}
+        # Hermes's own check says "provenance drift" for every sub-directory install; the app must not rely on it.
+        raise AssertionError("the Winglet update answer must not come from Hermes's run_checks")
 
     async def update_winglet(self):
         return self.winglet_result
+
+    # The release lookup is the only part that needs the network; the version rules are the real ones.
+    is_newer = staticmethod(api.is_newer)
+    hermes_supports = staticmethod(api.hermes_supports)
+    busy_bots = staticmethod(api.busy_bots)
+    ReleaseCheckFailed = api.ReleaseCheckFailed
+
+    def latest_release(self, force=False):
+        self.release_calls.append(force)
+        if isinstance(self.release, Exception):
+            raise self.release
+        return self.release
 
     def read_log(self, name, lines=300, level="", query=""):
         if name not in ("agent", "gateway", "errors"):
