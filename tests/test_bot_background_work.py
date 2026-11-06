@@ -316,3 +316,62 @@ def test_the_session_key_prefix_is_the_one_hermes_uses():
 def test_the_checkpoint_name_is_the_one_hermes_uses():
     registry = pytest.importorskip("tools.process_registry")
     assert registry.CHECKPOINT_PATH.name == hermes_api.BACKGROUND_FILE
+
+
+# -- review fixes -----------------------------------------------------------------------------------------------------------------
+
+
+def test_entries_of_other_bots_never_use_up_the_budget_of_this_one(activity, child):
+    """500 other-profile entries came first and the one live entry of this bot, last, was never looked at."""
+    home, _, _ = activity
+    others = [entry(child.pid, key="agent:other:winglet:chat", session=f"proc_other_{i}") for i in range(hermes_api.BACKGROUND_MAX_ENTRIES)]
+    write(home, others + [entry(child.pid, session="proc_mine")])
+    assert hermes_api.bot_activity(home, "chef")["background"] == 1
+    write(home, [entry(child.pid, session="proc_mine")])
+    assert hermes_api.bot_activity(home, "chef")["background"] == 1                     # the same entry alone, as the review compared
+
+
+def test_a_crowded_gateway_file_does_not_hide_this_bots_own_file(activity, child):
+    home, _, _ = activity
+    host = home / "host"
+    host.mkdir()
+    write(host, [entry(child.pid, key="agent:other:winglet:chat", session=f"proc_other_{i}") for i in range(hermes_api.BACKGROUND_MAX_ENTRIES + 50)])
+    write(home, [entry(child.pid, session="proc_mine")])
+    assert hermes_api.bot_activity(home, "chef")["background"] == 1
+
+
+def test_the_bound_applies_to_this_bots_own_entries(activity, child):
+    home, _, _ = activity
+    write(home, [entry(child.pid, key="agent:other:winglet:chat", session="proc_o")] +
+          [entry(child.pid, session=f"proc_{i}") for i in range(hermes_api.BACKGROUND_MAX_ENTRIES + 100)])
+    assert hermes_api.bot_activity(home, "chef")["background"] == hermes_api.BACKGROUND_MAX_ENTRIES
+
+
+def test_a_recorded_start_time_that_cannot_be_checked_without_proc_is_not_trusted(activity, child, monkeypatch, tmp_path):
+    """On a platform without /proc the recorded start cannot be compared, so the process is not proven to be the same one."""
+    home, _, _ = activity
+    monkeypatch.setattr(hermes_api, "_PROC_ROOT", tmp_path / "no-proc-here")
+    write(home, [entry(child.pid)])
+    assert hermes_api.bot_activity(home, "chef") == {"state": "idle", "queued": 0}
+
+
+def test_without_proc_an_entry_with_no_recorded_start_time_still_counts_while_alive(activity, child, monkeypatch, tmp_path):
+    home, _, _ = activity
+    monkeypatch.setattr(hermes_api, "_PROC_ROOT", tmp_path / "no-proc-here")
+    item = entry(child.pid)
+    del item["host_start_time"]
+    write(home, [item])
+    assert hermes_api.bot_activity(home, "chef")["background"] == 1
+
+
+def test_a_file_over_the_size_limit_is_not_read_even_when_it_is_still_valid_json(activity, child, monkeypatch):
+    """Valid JSON padded with whitespace past the limit: decoding would succeed, so only the size guard can refuse it."""
+    home, _, _ = activity
+    monkeypatch.setattr(hermes_api, "BACKGROUND_FILE_MAX_BYTES", 600)
+    body = json.dumps([entry(child.pid)])
+    assert len(body) < 600
+    (home / "processes.json").write_text(body)
+    assert hermes_api.bot_activity(home, "chef")["background"] == 1                      # under the limit: read
+    (home / "processes.json").write_text(body + " " * 700)
+    assert json.loads((home / "processes.json").read_text())[0]["pid"] == child.pid      # still perfectly valid JSON
+    assert hermes_api.bot_activity(home, "chef") == {"state": "idle", "queued": 0}

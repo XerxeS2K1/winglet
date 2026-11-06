@@ -2166,6 +2166,7 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
 BACKGROUND_FILE = "processes.json"  # Hermes's crash-recovery checkpoint, written atomically
 BACKGROUND_FILE_MAX_BYTES = 2 * 1024 * 1024
 BACKGROUND_MAX_ENTRIES = 500
+_PROC_ROOT = Path("/proc")  # Linux process table; absent elsewhere, where a recorded start time cannot be verified
 
 
 def _background_prefix(profile) -> str:
@@ -2203,14 +2204,14 @@ def _background_count(home: Path, profile: str) -> int:
         except (OSError, ValueError, UnicodeError):
             continue
         for entry in entries:
-            if checked >= BACKGROUND_MAX_ENTRIES:
-                return len(seen)
-            checked += 1
             if not isinstance(entry, dict):
                 continue
             key, identity, pid = entry.get("session_key"), entry.get("session_id"), entry.get("pid")
             if not isinstance(key, str) or not key.startswith(prefix):
-                continue
+                continue  # another bot's: it must not use up this bot's budget
+            if checked >= BACKGROUND_MAX_ENTRIES:
+                return len(seen)
+            checked += 1
             if not isinstance(identity, str) or not identity or identity in seen:
                 continue
             if type(pid) is not int or not 0 < pid <= 2**31 - 1 or entry.get("pid_scope", "host") != "host":
@@ -2220,8 +2221,8 @@ def _background_count(home: Path, profile: str) -> int:
                 continue
             try:
                 os.kill(pid, 0)  # liveness only; never signal, reap, or change the registry
-                if Path("/proc").is_dir():
-                    fields = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()
+                if _PROC_ROOT.is_dir():
+                    fields = (_PROC_ROOT / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
                     if fields[0] in ("Z", "X") or expected is not None and int(fields[19]) != expected:
                         continue
                 elif expected is not None:
