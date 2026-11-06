@@ -37,12 +37,12 @@ function PetsScreen() {
   const s = useStyles();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const current = useApp((st) => (server ? st.runtime[server.id]?.pet : undefined));
+  const [source, setSource] = useState<PetSource>('petdex');
   // An older server only has petdex, and would answer a Codex Pets request with petdex pets: no switch then.
   const hasSources = useApp((st) => !!(server && st.runtime[server.id]?.info?.features?.pet_sources));
   const where = SOURCES.find((x) => x.id === (hasSources ? source : 'petdex')) ?? SOURCES[0];
   const [mine, setMine] = useState<PetList | null>(null);
   const [gallery, setGallery] = useState<{ total: number; pets: CatalogPet[]; next?: number } | null>(null);
-  const [source, setSource] = useState<PetSource>('petdex');
   const [galleryError, setGalleryError] = useState('');
   const [query, setQuery] = useState('');
   const [more, setMore] = useState(false);
