@@ -32,6 +32,8 @@ jobs:
           PY
       - run: pytest -q
       - run: python scripts/check_web_bundle.py
+      - name: Committed web app matches the app source
+        run: python scripts/check_web_bundle.py --fresh
       - uses: actions/setup-node@v4
         with:
           node-version: 22

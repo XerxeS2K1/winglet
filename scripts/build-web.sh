@@ -10,4 +10,5 @@ rm -rf dist
 npx expo export --platform web --clear
 rm -rf "$ROOT/plugin/web"
 cp -r dist "$ROOT/plugin/web"
+python3 "$ROOT/scripts/check_web_bundle.py" --stamp
 echo "Bundled web app into plugin/web ($(du -sh "$ROOT/plugin/web" | cut -f1))"
