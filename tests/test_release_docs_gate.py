@@ -284,3 +284,32 @@ def test_a_stray_comment_end_marker_is_just_text(tmp_path):
 
 def test_a_banner_in_the_visible_text_still_passes_with_comments_elsewhere(tmp_path):
     assert verdict(tmp_path, "<!-- badges -->\n" + RIGHT + "\n```bash\nrun\n```\n")[0] == 0
+
+
+@pytest.mark.parametrize("prefix", ["> ", "> > "])
+def test_quoted_fenced_example_cannot_mask_stale_visible_banner(tmp_path, prefix):
+    example = prefix + "```markdown\n" + prefix + RIGHT + prefix + "```\n\n"
+    code, out = verdict(tmp_path, example + STALE)
+    assert code == 1 and "v1.2.2" in out, out
+
+
+@pytest.mark.parametrize("indent", ["    ", "\t"])
+def test_indented_code_example_cannot_mask_stale_visible_banner(tmp_path, indent):
+    code, out = verdict(tmp_path, indent + RIGHT + "\n" + STALE)
+    assert code == 1 and "v1.2.2" in out, out
+
+
+@pytest.mark.parametrize("literal", ["`<!--`", "`` literal ` <!-- ``"])
+def test_comment_opener_in_inline_code_does_not_hide_visible_banner(tmp_path, literal):
+    code, out = verdict(tmp_path, literal + "\n\n" + RIGHT)
+    assert code == 0, out
+
+
+def test_real_comment_after_inline_code_still_hides_its_contents(tmp_path):
+    code, out = verdict(tmp_path, "`<!--` <!--\n" + RIGHT + "-->\n" + STALE)
+    assert code == 1 and "v1.2.2" in out, out
+
+
+def test_quoted_fence_ends_when_blockquote_ends(tmp_path):
+    code, out = verdict(tmp_path, "> ```\n> example\n\n" + RIGHT)
+    assert code == 0, out

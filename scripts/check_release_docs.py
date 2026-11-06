@@ -34,15 +34,25 @@ def visible_markdown(text: str) -> str:
     comment or fence hides the rest of the file, as it does on GitHub."""
     kept, fence, in_comment = [], None, False
     for line in text.splitlines():
+        # Recognise code inside quotes too; stripping a quote prefix does not hide normal quoted text.
+        depth = 0
+        while quote := re.match(r" {0,3}>[ \t]?", line):
+            depth += 1
+            line = line[quote.end():]
+        if fence and depth < fence[1]:
+            fence = None  # leaving the quote also leaves its fenced example
         if fence:
-            closing = re.fullmatch(r" {0,3}(" + re.escape(fence[0]) + "{" + str(len(fence)) + r",})\s*", line)
-            if closing:
+            marker = fence[0]
+            closing = re.fullmatch(r" {0,3}(" + re.escape(marker[0]) + "{" + str(len(marker)) + r",})\s*", line)
+            if closing and depth == fence[1]:
                 fence = None
             continue
         if not in_comment:
+            if line.startswith(("    ", "\t")):
+                continue  # indented code is an example, not a release announcement
             opening = _FENCE.match(line)
             if opening and not (opening.group(1)[0] == "`" and "`" in line[opening.end():]):
-                fence = opening.group(1)
+                fence = (opening.group(1), depth)
                 continue
         out, rest = "", line
         while rest:
@@ -54,11 +64,14 @@ def visible_markdown(text: str) -> str:
                     in_comment, rest = False, rest[end + 3:]
             else:
                 start = rest.find("<!--")
-                if start < 0:
+                code = _INLINE_CODE.search(rest)
+                if code and (start < 0 or code.start() < start):
+                    out, rest = out + rest[:code.start()] + " ", rest[code.end():]
+                elif start < 0:
                     out, rest = out + rest, ""
                 else:
                     out, in_comment, rest = out + rest[:start], True, rest[start + 4:]
-        kept.append(_INLINE_CODE.sub(" ", out))
+        kept.append(out)
     return "\n".join(kept)
 
 
