@@ -219,3 +219,68 @@ def test_the_tag_that_is_the_version_passes_when_documented(tmp_path):
     root = make_tree(tmp_path, notes=None, banner="> placeholder\n")
     (root / "README.md").write_text("# Winglet\n\n" + documented(root, "v1.2.3-beta.1"))
     assert run(root, "--tag", "v1.2.3-beta.1")[0] == 0
+
+
+# -- only what a reader can see counts as the banner ----------------------------------------------------------------------------
+
+STALE = "> **New in [v1.2.2](docs/releases/v1.2.2.md):** old news.\n"
+RIGHT = "> **New in [v1.2.3](docs/releases/v1.2.3.md):** new news.\n"
+
+
+def readme(root, body):
+    (root / "README.md").write_text("# Winglet\n\n" + body)
+    return root
+
+
+def verdict(tmp_path, body):
+    return run(readme(make_tree(tmp_path), body))
+
+
+@pytest.mark.parametrize("hidden", [
+    "<!--\n" + RIGHT + "-->\n",                                      # a comment over several lines
+    "<!-- " + RIGHT.strip() + " -->\n",                               # a comment on one line
+    "<!-- note -->\n<!-- " + RIGHT.strip() + " -->\n",
+    "<!--\n\n\n" + RIGHT + "\n-->\n",
+    "```\n" + RIGHT + "```\n",                                       # a code block
+    "```markdown\n" + RIGHT + "```\n",
+    "~~~\n" + RIGHT + "~~~\n",
+    "  ```\n" + RIGHT + "  ```\n",
+    "````\n```\n" + RIGHT + "```\n````\n",                          # a longer fence is not closed by a shorter one
+    "`" + RIGHT.strip() + "`\n",                                      # inline code
+])
+def test_a_banner_that_cannot_be_seen_does_not_hide_a_stale_one_that_can(tmp_path, hidden):
+    code, out = verdict(tmp_path, hidden + "\n" + STALE)
+    assert code == 1, out
+    assert "README.md" in out and "v1.2.2" in out and "v1.2.3" in out
+
+
+@pytest.mark.parametrize("hidden", [
+    "<!--\n" + RIGHT + "-->\n", "<!-- " + RIGHT.strip() + " -->\n", "```\n" + RIGHT + "```\n", "~~~\n" + RIGHT + "~~~\n",
+    "`" + RIGHT.strip() + "`\n", "<!-- never closed\n" + RIGHT, "```\n" + RIGHT,                       # an unclosed comment or fence hides the rest
+])
+def test_a_banner_only_in_a_comment_or_code_is_no_banner_at_all(tmp_path, hidden):
+    code, out = verdict(tmp_path, hidden)
+    assert code == 1 and "has no 'New in [v1.2.3]' banner" in out
+
+
+def test_a_visible_banner_after_a_comment_or_code_counts(tmp_path):
+    for body in ("<!-- " + STALE.strip() + " -->\n\n" + RIGHT, "```\n" + STALE + "```\n\n" + RIGHT, "<!--\n" + STALE + "-->\n" + RIGHT,
+                 "`" + STALE.strip() + "`\n" + RIGHT, "<!-- one --> <!-- two -->\n" + RIGHT):
+        assert verdict(tmp_path, body)[0] == 0, body
+
+
+def test_a_comment_marker_inside_a_code_block_does_not_hide_the_banner_after_it(tmp_path):
+    assert verdict(tmp_path, "```html\n<!-- just an example\n```\n\n" + RIGHT)[0] == 0
+
+
+def test_text_on_the_same_line_before_and_after_a_comment_is_still_seen(tmp_path):
+    assert verdict(tmp_path, "Intro <!-- hidden --> " + RIGHT)[0] == 0
+    assert verdict(tmp_path, "<!-- hidden --> " + STALE + "\n" + RIGHT)[0] == 1
+
+
+def test_a_stray_comment_end_marker_is_just_text(tmp_path):
+    assert verdict(tmp_path, "--> " + RIGHT)[0] == 0
+
+
+def test_a_banner_in_the_visible_text_still_passes_with_comments_elsewhere(tmp_path):
+    assert verdict(tmp_path, "<!-- badges -->\n" + RIGHT + "\n```bash\nrun\n```\n")[0] == 0

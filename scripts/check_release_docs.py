@@ -23,6 +23,43 @@ VERSION = re.compile(r"\d+\.\d+\.\d+")
 TAG = re.compile(r"v(\d+\.\d+\.\d+)(-(?:beta|rc)\.\d+)?")
 BANNER = re.compile(r"\*\*New in \[(v[^\]\s]*)\]\(([^)\s]*)\)")
 MIN_NOTES_CHARS = 200  # a heading and a sentence are not release notes
+_FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+_INLINE_CODE = re.compile(r"(`+)(?!`).+?(?<!`)\1(?!`)")
+
+
+def visible_markdown(text: str) -> str:
+    """The README as a reader sees it: without HTML comments, fenced code blocks and inline code.
+
+    A banner that is only inside one of those is not on the page, so it must not stand in for the real one. An unclosed
+    comment or fence hides the rest of the file, as it does on GitHub."""
+    kept, fence, in_comment = [], None, False
+    for line in text.splitlines():
+        if fence:
+            closing = re.fullmatch(r" {0,3}(" + re.escape(fence[0]) + "{" + str(len(fence)) + r",})\s*", line)
+            if closing:
+                fence = None
+            continue
+        if not in_comment:
+            opening = _FENCE.match(line)
+            if opening and not (opening.group(1)[0] == "`" and "`" in line[opening.end():]):
+                fence = opening.group(1)
+                continue
+        out, rest = "", line
+        while rest:
+            if in_comment:
+                end = rest.find("-->")
+                if end < 0:
+                    rest = ""
+                else:
+                    in_comment, rest = False, rest[end + 3:]
+            else:
+                start = rest.find("<!--")
+                if start < 0:
+                    out, rest = out + rest, ""
+                else:
+                    out, in_comment, rest = out + rest[:start], True, rest[start + 4:]
+        kept.append(_INLINE_CODE.sub(" ", out))
+    return "\n".join(kept)
 
 
 def _read_versions(root: Path, problems: list):
@@ -83,7 +120,7 @@ def check(root: Path, tag=None) -> tuple:
     except OSError:
         problems.append("README.md cannot be read. It needs the banner '> **New in [%s](docs/releases/%s.md):** ...'." % (label, label))
         return problems, label
-    banner = BANNER.search(readme)
+    banner = BANNER.search(visible_markdown(readme))
     if not banner:
         problems.append(f"README.md has no 'New in [{label}]' banner. Add '> **New in [{label}](docs/releases/{label}.md):** ...' "
                         f"near the top, in place of the previous one.")
