@@ -71,7 +71,8 @@ def fake_adapter(cls, ag):
 def test_adapter_adds_the_reason_it_saw_in_the_notice():
     cls = adapter_cls()
     me = fake_adapter(cls, agent(_rate_limited_until=10**12))
-    me._fallback_reasons["chat-1"] = "rate limit"
+    from plugin.fallback import history_for
+    history_for(me).notice(me.gateway_runner, "key:chat-1", NOTICE)
     assert cls._chat_model(me, "chat-1")["fallback"]["reason"] == "rate limit"
     assert cls._chat_model(me, "chat-2")["fallback"]["reason"] == ""  # no notice seen for this chat
 
@@ -79,6 +80,7 @@ def test_adapter_adds_the_reason_it_saw_in_the_notice():
 def test_adapter_forgets_the_reason_once_back_on_the_primary():
     cls = adapter_cls()
     me = fake_adapter(cls, agent(_provider_fallback_active=False))
-    me._fallback_reasons["chat-1"] = "rate limit"
+    from plugin.fallback import history_for
+    history_for(me).notice(me.gateway_runner, "key:chat-1", NOTICE)
     assert "fallback" not in cls._chat_model(me, "chat-1")
-    assert me._fallback_reasons == {}
+    assert history_for(me)._records == {}

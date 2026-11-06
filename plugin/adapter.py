@@ -244,7 +244,7 @@ class WingletAdapter(BasePlatformAdapter):
         self._unwatch_routines = lambda: None
         # (chat_id, status_key) -> message id, so a repeated status edits one line in place.
         self._status_ids: Dict[tuple, str] = {}
-        self._fallback_reasons: Dict[str, str] = {}  # chat id -> why Hermes left the primary model
+        self._fallback_history = fallback.FallbackHistory()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         # Broadcasts started by hook callbacks; kept referenced until they finish.
         self._execution_tasks: set = set()
@@ -819,12 +819,8 @@ class WingletAdapter(BasePlatformAdapter):
             # Status notes arrive at the profile adapter; the shared hub reads through the primary one.
             bot_of, bot_adapter = getattr(self, "_bot_of", None), getattr(self, "_bot_adapter", None)
             owner = (bot_adapter(bot_of(chat_id) or "") if callable(bot_of) and callable(bot_adapter) else None) or self
-            if found and found.get("fallback") is not None:
-                found["fallback"]["reason"] = owner._fallback_reasons.get(str(chat_id), "")
             if key:
                 found = fallback.history_for(owner).read(self.gateway_runner, key, found)
-            if found is None or "fallback" not in found:
-                owner._fallback_reasons.pop(str(chat_id), None)
             return found
         except Exception:
             logger.debug("[%s] chat model unavailable", self.name, exc_info=True)
@@ -846,9 +842,6 @@ class WingletAdapter(BasePlatformAdapter):
         if hub is None:
             return SendResult(success=False, error="Winglet is not running")
         text = _strip_cursor(content or "")
-        reason = hermes_api.fallback_reason(text)
-        if reason:
-            self._fallback_reasons[str(chat_id)] = reason
         try:
             fallback.history_for(self).notice(self.gateway_runner, self._session_key(chat_id), text)
         except Exception:

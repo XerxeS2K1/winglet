@@ -161,6 +161,18 @@ async def test_returned_state_is_a_copy_not_mutable_history(setup):
 
 
 @pytest.mark.asyncio
+async def test_new_session_does_not_reuse_old_reason_for_a_new_flag_only_fallback(setup):
+    a, _, cached, ids = setup
+    await a.send_or_update_status("one", "lifecycle", MID)
+    assert a._chat_model("one")["fallback"]["reason"] == "rate limit"
+    ids["key:one"] = "fresh-session"
+    cached["key:one"] = live(fallback=True)
+    # This session has an explicit active flag, but no reason notice yet. The old session's reason is not evidence.
+    assert a._chat_model("one")["fallback"]["reason"] == ""
+    assert a._chat_model("one")["fallback"]["reason"] == ""
+
+
+@pytest.mark.asyncio
 async def test_no_http_poll_is_needed_before_success_evicts_agent(setup):
     a, runner, cached, _ = setup
     cached["key:one"] = live(fallback=True)
