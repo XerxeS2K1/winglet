@@ -7,14 +7,13 @@ Hermes versions this fork is checked against and what stops working on an older 
 
 | Hermes | How it is checked | Result |
 | --- | --- | --- |
-| **v0.23.0** (checked by hand) | On 6 Nov 2026 the plugin test suite for v0.10.4 was run against a Hermes v0.23.0 install: 976 passed, 2 failed, 1 skipped. The two that failed are rooms tests that start a real Hermes session; they did not pass in this setup. Not run in CI yet. | Runs live on the maintainer's server |
-| **v0.22.7** (pinned) | The `CI` workflow installs this exact release and runs the whole test suite on every push to `integration/dev-all`. | Green |
+| **v0.23.0** (pinned) | The `CI` workflow installs this exact release and runs the whole test suite on every push to `integration/dev-all`. A run by hand on 6 Nov 2026 gave 976 passed, 2 failed, 1 skipped; the two that failed are rooms tests that start a real Hermes session. | Runs live on the maintainer's server |
+| v0.22.7 | Was the `CI` pin until 6 Nov 2026. | Worked |
 | **`main`** (latest) | The `Hermes main check` workflow runs the same suite every Monday, and by hand. | Green when last run |
 | v0.22.5 | Ran live on the maintainer's server until the move to v0.22.7 (and then v0.23.0). | Worked |
 | Older than v0.22.5 | Not tested. | See below |
 
-The pinned version moves forward when a newer release has been tried. CI is still pinned to v0.22.7; v0.23.0 has
-been tried by hand but not yet moved into CI. Look at `.github/workflows/ci.yml` for the commit it is on now.
+The pinned version moves forward when a newer release has been tried. Look at `.github/workflows/ci.yml` for the commit it is on now.
 The plugin declares `requires_hermes: ">=0.22.7"`.
 
 ## What needs v0.22.5 or later
