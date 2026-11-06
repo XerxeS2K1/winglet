@@ -46,19 +46,31 @@ and the key proves the APK came from you. CI refuses to publish a release withou
 
 ## Cutting a release
 
-Before tagging, set the same version in `plugin/plugin.yaml`, `plugin/hub.py` (`VERSION`), `app/app.json` and
-`app/package.json`, and write `docs/releases/v<version>.md`. The release build refuses a tag whose version differs from
-`plugin/plugin.yaml`.
+Releases are cut from `main`. Day-to-day work lands on `integration/dev-all`; a release is a pull request from there to
+`main`, and the version tag goes on `main`. Every feature pull request already updates the docs it affects (the
+pull request template has the checklist), so at release time only the release notes and the README banner are left to write.
 
-Promotion PRs to `main` run the Release workflow as validation checks, building
-the APKs and plugin without publishing. Internal PRs require the production
-signing key; fork PRs can build with a debug key. Merge only after these checks
-and CI pass. The tag below performs the final build and publication.
+1. **Prepare on `integration/dev-all`.** Set the same version in `plugin/plugin.yaml`, `plugin/hub.py` (`VERSION`),
+   `app/app.json` and `app/package.json`. Write `docs/releases/v<version>.md`; its first line must be `# Winglet v<version>`.
+   Point the README "New in" banner at it: `> **New in [v<version>](docs/releases/v<version>.md):** ...`.
+   Run `python scripts/check_release_docs.py`; it names every file that is still wrong, and the release workflow runs the same
+   check, so a tag without its notes and banner is refused.
+2. **Rebuild the web app.** Run `./scripts/build-web.sh` after the bump (the bump changes what the bundle is built from),
+   then commit `plugin/web`. Do it once, after the last feature has merged: the bundle's file names change
+   with every build, so two branches that each rebuild always conflict.
+3. **Open a pull request from `integration/dev-all` to `main`.** The Release workflow runs on it as a validation: it checks the
+   release documents and builds the APKs and the plugin without publishing. Internal PRs require the production
+   signing key; fork PRs can build with a debug key. Merge only after these checks and CI pass.
+4. **Merge it, then tag `main`.**
 
-```bash
-git tag v0.1.1
-git push origin v0.1.1
-```
+   ```bash
+   git switch main && git pull
+   git tag v0.1.1
+   git push origin v0.1.1
+   ```
+
+5. **The tag publishes.** The Release workflow checks the tag against `plugin/plugin.yaml` and the release documents, builds
+   both APKs and the plugin bundle, and publishes the GitHub Release. Nothing is published from any other branch.
 
 ### Betas
 
@@ -68,8 +80,9 @@ and GitHub keeps "Latest release" on the last full release. A beta shares its re
 
 ### Release notes
 
-If `docs/releases/<tag>.md` exists (for example `docs/releases/v0.2.0-beta.1.md`), it becomes the top of
-the release page, above GitHub's list of merged pull requests.
+`docs/releases/<tag>.md` (for example `docs/releases/v0.2.0-beta.1.md`) is required: the release check refuses a tag without
+it, and the README banner must name the same tag. It becomes the top of the release page, above GitHub's list of merged
+pull requests.
 
 Manual runs from the Actions tab build test artifacts only. Without the key secrets those APKs are
 signed with the public debug key and named `…-debugkey.apk`: fine for trying things out, not for
