@@ -52,7 +52,8 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   Star models for quick access in the chat picker, or choose from the last eight successful choices.
   Stars do not change the active model; saved choices only appear for providers offered by that server.
 - **Persona, memory and usage.** Edit who it is, see and fix what it remembers, and track tokens and cost.
-- **A pet.** Give your agent an animated face from the [petdex](https://petdex.dev) gallery. It waves when
+- **A pet.** Give your agent an animated face from the [petdex](https://petdex.dev) or [Codex Pets](https://codex-pets.net) gallery
+  (a switch on the Pet screen; Codex Pets are downloaded by the server from that one host only). It waves when
   a reply lands, runs while it works and waits when it needs you, on every phone paired with the bot.
   Its pet and color follow it through Home, chats, the bot switcher and the Inbox; small list avatars stay still.
   Poke it and it waves (three quick pokes and it jumps), hold it and it thinks, drag it and it leans. It takes

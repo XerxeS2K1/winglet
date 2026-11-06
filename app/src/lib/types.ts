@@ -465,9 +465,12 @@ export type PetSheet = {
 
 export type PetPalette = { base: string; soft: string; deep: string };
 
-export type InstalledPet = { slug: string; name: string; description: string; generated: boolean; thumb_url: string };
+export type InstalledPet = { slug: string; name: string; description: string; generated: boolean; thumb_url: string; /** Who made it, for pets that came with a creator's name. */ by?: string };
 
 export type PetList = { enabled: boolean; active: string; pets: InstalledPet[] };
 
-/** A pet in the petdex gallery. */
-export type CatalogPet = { slug: string; name: string; kind: string; by: string; curated: boolean; installed: boolean; thumb_url: string };
+/** Where the pet gallery's pets come from. */
+export type PetSource = 'petdex' | 'codex';
+
+/** A pet in a gallery. Petdex's have no description. */
+export type CatalogPet = { slug: string; name: string; kind: string; by: string; curated: boolean; installed: boolean; thumb_url: string; description?: string };

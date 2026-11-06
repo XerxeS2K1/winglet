@@ -17,13 +17,19 @@ import { spring, useReducedMotion } from '../lib/motion';
 import { PET_STATES, type PetState } from '../lib/pets';
 import { useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
-import type { CatalogPet, InstalledPet, Job, PetList, Server } from '../lib/types';
+import type { CatalogPet, InstalledPet, Job, PetList, PetSource, Server } from '../lib/types';
 
 const TILE_GAP = 12;
 
+/** The galleries a server can show, with the address each one's credit line and footnote name. */
+const SOURCES: { id: PetSource; label: string; site: string }[] = [
+  { id: 'petdex', label: 'Petdex', site: 'petdex.dev' },
+  { id: 'codex', label: 'Codex Pets', site: 'codex-pets.net' },
+];
+
 type Picked = { pet: InstalledPet | CatalogPet; installed: boolean };
 
-/** The agent's pet: its animated face on every phone, picked from the petdex gallery. */
+/** The agent's pet: its animated face on every phone, picked from the petdex or Codex Pets gallery. */
 export default withSelectedServer(PetsScreen);
 
 function PetsScreen() {
@@ -31,8 +37,12 @@ function PetsScreen() {
   const s = useStyles();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const current = useApp((st) => (server ? st.runtime[server.id]?.pet : undefined));
+  // An older server only has petdex, and would answer a Codex Pets request with petdex pets: no switch then.
+  const hasSources = useApp((st) => !!(server && st.runtime[server.id]?.info?.features?.pet_sources));
+  const where = SOURCES.find((x) => x.id === (hasSources ? source : 'petdex')) ?? SOURCES[0];
   const [mine, setMine] = useState<PetList | null>(null);
-  const [gallery, setGallery] = useState<{ total: number; pets: CatalogPet[] } | null>(null);
+  const [gallery, setGallery] = useState<{ total: number; pets: CatalogPet[]; next?: number } | null>(null);
+  const [source, setSource] = useState<PetSource>('petdex');
   const [galleryError, setGalleryError] = useState('');
   const [query, setQuery] = useState('');
   const [more, setMore] = useState(false);
@@ -51,16 +61,17 @@ function PetsScreen() {
   useEffect(loadMine, [loadMine]);
 
   const search = useRef(0);
-  /** Resolves true while the server is still fetching the gallery from petdex. */
+  /** Resolves true while the server is still fetching the gallery from its source. */
   const loadGallery = useCallback(async (q: string, offset: number): Promise<boolean> => {
     if (!server) return false;
     const mine = offset ? search.current : ++search.current;
     try {
-      const d = await api<{ total: number; pets: CatalogPet[]; loading?: boolean }>(server,
-        `/api/pets/catalog?q=${encodeURIComponent(q)}&offset=${offset}`);
+      const d = await api<{ total: number; pets: CatalogPet[]; next_offset?: number; loading?: boolean }>(server,
+        `/api/pets/catalog?q=${encodeURIComponent(q)}&offset=${offset}${where.id === 'petdex' ? '' : `&source=${where.id}`}`);
       if (mine !== search.current) return false; // a newer search answered, or will
       if (d.loading) return true;
-      setGallery((g) => (offset && g ? { total: d.total, pets: [...g.pets, ...d.pets] } : d));
+      // Codex Pets counts from its own list, where a skipped pet still takes a place, so it says where the next page starts.
+      setGallery((g) => (offset && g ? { total: d.total, pets: [...g.pets, ...d.pets], next: d.next_offset } : { total: d.total, pets: d.pets, next: d.next_offset }));
       setGalleryError('');
     } catch (e) {
       if (mine !== search.current) return false;
@@ -68,7 +79,7 @@ function PetsScreen() {
       setGalleryError((e as Error).message);
     }
     return false;
-  }, [server]);
+  }, [server, where.id]);
   useEffect(() => {
     let live = true;
     let id: ReturnType<typeof setTimeout>;
@@ -76,11 +87,11 @@ function PetsScreen() {
       const loading = await loadGallery(query.trim(), 0);
       if (!live || !loading) return;
       if (left > 0) id = setTimeout(() => attempt(left - 1), 2000);
-      else { setGallery({ total: 0, pets: [] }); setGalleryError("The gallery at petdex.dev is taking too long. Try again in a minute."); }
+      else { setGallery({ total: 0, pets: [] }); setGalleryError(`The gallery at ${where.site} is taking too long. Try again in a minute.`); }
     };
     id = setTimeout(() => attempt(15), query ? 300 : 0);
     return () => { live = false; clearTimeout(id); };
-  }, [query, loadGallery]);
+  }, [query, loadGallery, where.site]);
 
   if (!server) return null;
   const refresh = () => {
@@ -97,7 +108,7 @@ function PetsScreen() {
     setBusy(true);
     try {
       const r = await signedApi<{ pet?: { name: string }; job?: Job }>(server, 'POST', `/api/pets/${encodeURIComponent(slug)}/adopt`,
-        { idempotency_key: idempotencyKey() });
+        { idempotency_key: idempotencyKey(), ...(where.id === 'petdex' ? {} : { source: where.id }) });
       setPicked(null);
       if (r.job) setJob(r.job);
       else { haptic.success(); setPreview('wave'); refresh(); }
@@ -176,7 +187,15 @@ function PetsScreen() {
           </>
         ) : null}
 
-        <SectionHeader title="Gallery" right={<Text style={s.credit}>petdex.dev</Text>} />
+        <SectionHeader title="Gallery" right={<Text style={s.credit}>{where.site}</Text>} />
+        {hasSources ? (
+          <View style={s.sources}>
+            {SOURCES.map((x) => (
+              <Chip key={x.id} label={x.label} selected={where.id === x.id}
+                onPress={() => { if (x.id !== source) { setGallery(null); setGalleryError(''); setSource(x.id); } }} />
+            ))}
+          </View>
+        ) : null}
         <SearchField value={query} onChangeText={setQuery} placeholder="Search the pet gallery" />
         {galleryError ? <Text style={s.error}>{galleryError}</Text> : null}
         {!gallery ? (
@@ -192,9 +211,9 @@ function PetsScreen() {
                   active={!!mine?.enabled && mine.active === p.slug} onPress={() => setPicked({ pet: p, installed: p.installed })} />
               ))}
             </View>
-            {gallery.pets.length < gallery.total ? (
-              <Button title={`Show more (${gallery.total - gallery.pets.length} left)`} variant="secondary" loading={more} style={{ marginTop: 14 }}
-                onPress={async () => { setMore(true); await loadGallery(query.trim(), gallery.pets.length); setMore(false); }} />
+            {(gallery.next ?? gallery.pets.length) < gallery.total ? (
+              <Button title={`Show more (${gallery.total - (gallery.next ?? gallery.pets.length)} left)`} variant="secondary" loading={more} style={{ marginTop: 14 }}
+                onPress={async () => { setMore(true); await loadGallery(query.trim(), gallery.next ?? gallery.pets.length); setMore(false); }} />
             ) : null}
           </View>
         ) : !galleryError ? (
@@ -203,7 +222,7 @@ function PetsScreen() {
             <Text style={s.note}>{query ? `No pets match "${query}".` : 'The gallery is empty.'}</Text>
           </View>
         ) : null}
-        <Footnote>Community pets from petdex.dev download to your server.</Footnote>
+        <Footnote>{`Community pets from ${where.site} download to your server.`}</Footnote>
       </View>
 
       <PetSheet server={server} picked={picked} busy={busy} active={!!mine?.enabled && mine.active === picked?.pet.slug}
@@ -282,6 +301,7 @@ const useStyles = makeStyles((t) => ({
   note: { ...t.type.callout, color: t.colors.textSecondary, textAlign: 'center' },
   caption: { ...t.type.caption, color: t.colors.textSecondary, textAlign: 'center' },
   credit: { ...t.type.caption, color: t.colors.textTertiary },
+  sources: { flexDirection: 'row', gap: 8, marginBottom: 10 },
   error: { ...t.type.callout, color: t.colors.danger, marginTop: 10 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: TILE_GAP },
   thumb: { borderRadius: t.radius.xl, backgroundColor: t.colors.surface, alignItems: 'center', justifyContent: 'center', overflow: 'hidden',
