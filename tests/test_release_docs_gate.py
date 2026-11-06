@@ -172,3 +172,50 @@ def test_the_script_never_modifies_anything(tmp_path):
     before = {p: p.read_bytes() for p in root.rglob("*") if p.is_file()}
     run(root)
     assert {p: p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+# -- the checks fail for their own reason, not because something else is missing ----------------------------------------------
+
+
+def documented(root, label, *, banner_label=None):
+    """Notes and a banner for a release label, so that nothing but the check under test can fail."""
+    banner_label = banner_label or label
+    (root / "docs" / "releases").mkdir(parents=True, exist_ok=True)
+    (root / "docs" / "releases" / f"{label}.md").write_text(f"# Winglet {label}\n\nWhat changed, in plain words. " + "x" * 200 + "\n")
+    return f"> **New in [{banner_label}](docs/releases/{banner_label}.md):** something good.\n"
+
+
+@pytest.mark.parametrize("version", ["1.2.3.4", "1.2.3-beta.1", "1.2.3rc1", "1.2.3 beta", "1.2.", "1.2.3+build", "v1.2.3", "1.02.3x"])
+def test_a_version_that_is_not_exactly_x_y_z_is_refused_even_when_its_documents_exist(tmp_path, version):
+    """The notes and the banner exist for this very label, so only the version check can refuse it."""
+    root = make_tree(tmp_path, notes=None, banner="> placeholder\n")
+    (root / "plugin" / "plugin.yaml").write_text(f"name: winglet\nversion: '{version}'\n")
+    (root / "app" / "app.json").write_text(json.dumps({"expo": {"version": version}}))
+    label = f"v{version}"
+    (root / "README.md").write_text("# Winglet\n\n" + documented(root, label))
+    code, out = run(root)
+    assert code == 1, out
+    assert "not a plain x.y.z" in out and "plugin/plugin.yaml" in out and "app/app.json" in out
+
+
+def test_an_exact_version_with_its_documents_passes(tmp_path):
+    root = make_tree(tmp_path, notes=None, banner="> placeholder\n")
+    (root / "README.md").write_text("# Winglet\n\n" + documented(root, "v1.2.3"))
+    assert run(root)[0] == 0
+
+
+@pytest.mark.parametrize("tag", ["v1.2.4", "v1.3.0", "v2.0.0", "v1.2.4-beta.1", "v0.2.3"])
+def test_a_tag_that_is_not_the_version_is_refused_even_when_its_own_documents_exist(tmp_path, tag):
+    """Notes and banner exist for the tag AND for the version in the files, so only the explicit comparison can refuse."""
+    root = make_tree(tmp_path)                                         # complete documents for v1.2.3
+    (root / "README.md").write_text("# Winglet\n\n" + documented(root, tag))   # ...and for the tag, which the banner names
+    code, out = run(root, "--tag", tag)
+    assert code == 1, out
+    assert f"The tag {tag} does not match the version files" in out and "1.2.3" in out
+    assert out.count("FAIL") == 1                                      # nothing else is wrong: this is the only reason
+
+
+def test_the_tag_that_is_the_version_passes_when_documented(tmp_path):
+    root = make_tree(tmp_path, notes=None, banner="> placeholder\n")
+    (root / "README.md").write_text("# Winglet\n\n" + documented(root, "v1.2.3-beta.1"))
+    assert run(root, "--tag", "v1.2.3-beta.1")[0] == 0

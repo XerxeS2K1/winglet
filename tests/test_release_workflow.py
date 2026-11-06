@@ -5,6 +5,10 @@ catch missing release notes before the tag, so there the gate checks the version
 and publishes nothing, so it does not need them.
 """
 
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -73,3 +77,66 @@ def test_the_gate_needs_nothing_but_python(workflow):
     source = (WORKFLOW.parent.parent.parent / "scripts" / "check_release_docs.py").read_text()
     imports = {line.split()[1].split(".")[0] for line in source.splitlines() if line.startswith(("import ", "from "))}
     assert imports <= {"argparse", "json", "re", "sys", "pathlib"}, imports
+
+
+# -- a failed check stops the release -------------------------------------------------------------------------------------------
+
+
+def gate_steps(workflow):
+    return steps_running(workflow["jobs"]["checks"], "check_release_docs.py")
+
+
+def test_the_gates_are_exactly_the_commands_and_nothing_softens_them(workflow):
+    expected = {"github.ref_type == 'tag'": 'python scripts/check_release_docs.py --tag "$GITHUB_REF_NAME"',
+                "github.event_name == 'pull_request'": "python scripts/check_release_docs.py"}
+    steps = gate_steps(workflow)
+    assert {s["if"]: s["run"].strip() for s in steps} == expected         # no '|| true', no pipe, no extra commands
+    for step in steps:
+        assert "continue-on-error" not in step and "shell" not in step and "timeout-minutes" not in step
+        assert not set(step) - {"name", "if", "run"}, set(step)
+
+
+def test_nothing_in_the_chain_that_publishes_may_continue_after_a_failure(workflow):
+    jobs = workflow["jobs"]
+    assert "continue-on-error" not in jobs["checks"] and "continue-on-error" not in jobs["release"]
+    assert all("continue-on-error" not in step for step in jobs["checks"]["steps"])
+    assert set(jobs["release"]["needs"]) >= {"checks", "android", "plugin"}
+    assert "always()" not in str(jobs["release"].get("if")) and "failure()" not in str(jobs["release"].get("if"))
+
+
+def run_step(step, cwd, env):
+    """Run a step the way GitHub does for bash: bash -e -o pipefail."""
+    return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=cwd, env=env,
+                          capture_output=True, text=True)
+
+
+@pytest.fixture
+def checkout(tmp_path):
+    """A repository root holding the real gate script, and a python on the PATH like the runner's."""
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(WORKFLOW.parent.parent.parent / "scripts" / "check_release_docs.py", tmp_path / "scripts")
+    (tmp_path / "plugin").mkdir()
+    (tmp_path / "app").mkdir()
+    (tmp_path / "docs" / "releases").mkdir(parents=True)
+    (tmp_path / "plugin" / "plugin.yaml").write_text("name: winglet\nversion: 1.2.3\n")
+    (tmp_path / "app" / "app.json").write_text('{"expo": {"version": "1.2.3"}}')
+    (tmp_path / "README.md").write_text("> **New in [v1.2.3](docs/releases/v1.2.3.md):** x\n")
+    (tmp_path / "docs" / "releases" / "v1.2.3.md").write_text("# Winglet v1.2.3\n\n" + "words " * 60)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python").symlink_to(sys.executable)
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"}
+    return tmp_path, env
+
+
+def test_a_failing_gate_fails_the_step_when_run_the_way_github_runs_it(workflow, checkout):
+    root, env = checkout
+    tag_step = next(s for s in gate_steps(workflow) if "--tag" in s["run"])
+    assert run_step(tag_step, root, {**env, "GITHUB_REF_NAME": "v1.2.3"}).returncode == 0
+    broken = run_step(tag_step, root, {**env, "GITHUB_REF_NAME": "v1.2.4"})
+    assert broken.returncode != 0 and "does not match the version files" in broken.stdout
+    pr_step = next(s for s in gate_steps(workflow) if "--tag" not in s["run"])
+    assert run_step(pr_step, root, env).returncode == 0
+    (root / "docs" / "releases" / "v1.2.3.md").unlink()
+    missing = run_step(pr_step, root, env)
+    assert missing.returncode != 0 and "docs/releases/v1.2.3.md does not exist" in missing.stdout
