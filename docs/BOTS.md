@@ -28,6 +28,17 @@ brings back the answer, the way Hermes Desktop's Bot Mode does (the message land
 Ask your bot to make a new one ("make me a bot that plans meals") and it does, after you approve it like a
 risky command. Both tools are in the "bots" toolset under Tools.
 
+### The hand-off queue and its titles
+
+When a bot is busy, the hand-offs waiting for it are listed (owner only) in the queue sheet opened from the bot
+picker. Each row shows a short title, with the sender and position underneath. Titles are the sender's own words,
+shown as plain text:
+
+- A bot that asks another with the `ask_bot` tool passes a short `title` (about 50 characters; longer is cut).
+- A hand-off sent some other way, for example with Hermes's own `message_agent`, can start its message with a line
+  such as `TITLE: Plan dinner for six`. The words after `TITLE:` become the title.
+- With neither, the row shows the first line of the request, cut at about 60 characters at a word boundary.
+
 ## On another server
 
 Pair it as usual; it stacks up in the sidebar with the others. A profile can also keep its own gateway

@@ -26,11 +26,25 @@ def clean_title(raw) -> str:
     return _plain(raw)[:TITLE_MAX].rstrip() if isinstance(raw, str) else ""
 
 
+_TITLE_LABEL = re.compile(r"title\s*:\s*(.*)", re.IGNORECASE)
+
+
 def first_line_title(text) -> str:
-    """The first non-empty line of a request, cut at FALLBACK_MAX characters at a word boundary, with an ellipsis."""
+    """What a request with no title argument is called: a leading "TITLE: ..." line (the convention for hand-offs sent
+    with Hermes's own message_agent), else its first non-empty line cut at FALLBACK_MAX characters at a word boundary,
+    with an ellipsis. A label with nothing after it is skipped."""
     if not isinstance(text, str):
         return ""
-    line = next((plain for plain in (_plain(part) for part in text.splitlines()) if plain), "")
+    line = ""
+    for plain in (_plain(part) for part in text.splitlines()):
+        if not plain:
+            continue
+        labelled = _TITLE_LABEL.fullmatch(plain)
+        if labelled is None:
+            line = plain
+            break
+        if clean_title(labelled.group(1)):
+            return clean_title(labelled.group(1))
     if len(line) <= FALLBACK_MAX:
         return line
     cut = line[:FALLBACK_MAX]
