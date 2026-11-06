@@ -13,6 +13,8 @@ import functools
 import hashlib
 import json
 import logging
+import math
+import re
 import time
 from pathlib import Path
 from typing import List, Optional
@@ -341,6 +343,37 @@ def provider_label(slug: str) -> str:
         return slug
 
 
+_FALLBACK_NOTICE = re.compile(r"Model fallback:.*?unavailable \((?P<reason>[^()]+)\); using", re.S)
+
+
+def fallback_reason(notice: str) -> str:
+    """The reason Hermes gave in its "Model fallback: X unavailable (<reason>); using Y" notice, or
+    "" when the wording is not recognised (the strip then just says "Fallback")."""
+    found = _FALLBACK_NOTICE.search(notice or "")
+    return found.group("reason").strip()[:80] if found else ""
+
+
+def fallback_state(agent, now: Optional[float] = None) -> Optional[dict]:
+    """Whether this agent is on a fallback model, and when Hermes will try the primary again.
+
+    Hermes only retries the primary at the start of a turn. Rate-limit and billing failures set a
+    cooldown (``_rate_limited_until``, monotonic); other failures set none, so the next message
+    retries. ``retry_in_s`` is the seconds left on a cooldown (0 once it has passed) and None when
+    there is no cooldown. The reason text is not kept on the agent; the adapter adds it."""
+    try:
+        if not getattr(agent, "_provider_fallback_active", False):
+            return None
+        primary = getattr(agent, "_primary_runtime", None) or {}
+        until = getattr(agent, "_rate_limited_until", 0) or 0
+        clock = time.monotonic() if now is None else now
+        retry = max(0, math.ceil(until - clock)) if until else None
+        return {"active": True, "reason": "", "retry_in_s": retry,
+                "from_model": str(primary.get("model") or ""), "from_provider": str(primary.get("provider") or "")}
+    except Exception:
+        logger.debug("[winglet] fallback state unavailable", exc_info=True)
+        return None
+
+
 def chat_model(runner, session_key: str) -> Optional[dict]:
     """The model a chat is really using, when Hermes knows: a /model switch for this chat, or the
     model its last turn resolved to (a fallback can change it). None means "the configured one"."""
@@ -348,7 +381,11 @@ def chat_model(runner, session_key: str) -> Optional[dict]:
         cached = getattr(runner, "_cached_agent_for", None)
         agent = cached(session_key) if callable(cached) else None
         if agent is not None and isinstance(getattr(agent, "model", None), str) and agent.model:
-            return {"model": agent.model, "provider": str(getattr(agent, "provider", "") or ""), "source": "last_turn"}
+            found = {"model": agent.model, "provider": str(getattr(agent, "provider", "") or ""), "source": "last_turn"}
+            fallback = fallback_state(agent)
+            if fallback is not None:
+                found["fallback"] = fallback
+            return found
         override = (getattr(runner, "_session_model_overrides", None) or {}).get(session_key)
         if isinstance(override, dict) and override.get("model"):
             return {"model": str(override["model"]), "provider": str(override.get("provider") or ""), "source": "chat"}
