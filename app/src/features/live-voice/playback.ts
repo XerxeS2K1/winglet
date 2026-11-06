@@ -1,12 +1,13 @@
 import { createAudioPlayer, setAudioModeAsync } from 'expo-audio';
 import { Platform } from 'react-native';
+import { throwIfAborted } from '../../lib/abort';
 /** Each play owns its player. Abort detaches callbacks and releases the native/browser source immediately. */
 export async function playSpeech(url: string, signal: AbortSignal): Promise<void> {
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   if (Platform.OS === 'web') return playBrowserSpeech(url, signal);
   await setAudioModeAsync({ playsInSilentMode: true, allowsRecording: false,
     interruptionMode: 'doNotMix', shouldPlayInBackground: false, allowsBackgroundRecording: false });
-  signal.throwIfAborted();
+  throwIfAborted(signal);
   return new Promise((resolve, reject) => {
     let done = false; let started = false; let paused: ReturnType<typeof setTimeout> | undefined;
     const player = createAudioPlayer({ uri: url }, { updateInterval: 100 });

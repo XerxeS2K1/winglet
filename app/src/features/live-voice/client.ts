@@ -1,3 +1,4 @@
+import { throwIfAborted } from '../../lib/abort';
 import { api, ApiError, botPath } from '../../lib/api';
 import type { Server } from '../../lib/types';
 import type { VoiceSession } from './engine';
@@ -39,7 +40,7 @@ export class VoiceClient {
 /** Retry only explicit backpressure, while this exact turn remains active. Never retry a lost request. */
 export async function backpressure<T>(operation: () => Promise<T>, signal: AbortSignal): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    signal.throwIfAborted();
+    throwIfAborted(signal);
     try { return await operation(); } catch (e) {
       if (!(e instanceof ApiError && e.status === 429) || attempt >= 3) throw e;
       const delay = Math.max(250, Math.min(3000, Number(e.data?.retry_after_ms) || 800));

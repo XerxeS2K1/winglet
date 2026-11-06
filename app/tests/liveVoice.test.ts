@@ -4,11 +4,16 @@ import vm from 'node:vm';
 import { test } from 'node:test';
 import ts from 'typescript';
 
+// The real abort helper, so the tests run the same signal check as the phone (not an empty stub).
+const abortHelper: any = (() => { const exports: any = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/lib/abort.ts', import.meta.url), 'utf8'),
+    { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, { exports, Error });
+  return exports; })();
 function load(name: string, mocks: Record<string, any> = {}): any {
   const exports: any = {};
   const source = readFileSync(new URL('../src/features/live-voice/' + name + '.ts', import.meta.url), 'utf8');
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 } }).outputText, {
-    exports, require: (id: string) => mocks[id] ?? (id.startsWith('./') ? load(id.slice(2), mocks) : {}),
+    exports, require: (id: string) => mocks[id] ?? (id === '../../lib/abort' ? abortHelper : id.startsWith('./') ? load(id.slice(2), mocks) : {}),
     Date, Math, Set, Map, AbortController, FormData, Blob, setTimeout, clearTimeout, globalThis,
   });
   return exports;
@@ -165,6 +170,15 @@ test('server 429 retries are bounded and interrupted backpressure never retries'
   const pending = backpressure(async () => { calls++; throw new ErrorType('busy', 429, { retry_after_ms: 250 }); }, controller.signal);
   controller.abort();
   await assert.rejects(pending); assert.equal(calls, 1);
+});
+
+test('backpressure works with the React Native AbortSignal, which has no throwIfAborted', async () => {
+  const { backpressure } = load('client', { '../../lib/api': { ApiError: class extends Error {} } });
+  const polyfill: any = { aborted: false, addEventListener() {}, removeEventListener() {} };
+  assert.equal(polyfill.throwIfAborted, undefined);
+  assert.equal(await backpressure(async () => 'ok', polyfill), 'ok');
+  polyfill.aborted = true;
+  await assert.rejects(backpressure(async () => 'never', polyfill), /Cancelled/);
 });
 
 test('an interrupted spoken reply still asks the server to settle generation', () => {
