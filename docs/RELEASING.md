@@ -18,9 +18,22 @@ and an intentional update to that check.
 ## Before tagging: rebuild the web app
 
 `hermes plugins install` and `hermes plugins update` take `plugin/` from git, so the web app they serve is the
-one committed in `plugin/web`, not the one the release workflow builds. Run `./scripts/build-web.sh` after the
-last app change, commit `plugin/web`, then tag. The release workflow runs `python scripts/check_web_bundle.py --fresh`
-and stops if the app source has changed since the bundle was built.
+one committed in `plugin/web`, not the one the release workflow builds. The order matters:
+
+1. Bump the version files (see "Cutting a release" below). `app/app.json` and `app/package.json` are part of what the
+   bundle is built from, so a bump makes the bundle stale.
+2. Run `./scripts/build-web.sh`. It rebuilds `plugin/web` and writes `plugin/web/source-stamp.txt`.
+3. Commit `plugin/web`.
+4. Check it: `python scripts/check_web_bundle.py --fresh` must print "plugin/web matches the app source".
+5. Tag.
+
+The release workflow runs the same `--fresh` check on the tag push and stops the release if the app source has changed
+since the bundle was built. That is late (the tag already exists, and has to be deleted and pushed again), so do step 4
+yourself first. Pull requests and manual runs do not run it.
+
+Rebuild once, after the final merge into the release line, not on every feature branch: the bundle's file names change
+with every build, so two branches that each rebuild always conflict. A feature branch that changes `app/` leaves the
+bundle stale, and that is expected until the release is prepared.
 
 ## One-time setup: your signing key
 

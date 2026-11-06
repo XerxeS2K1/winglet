@@ -12,8 +12,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 ROOT = REPO / "plugin" / "web"
 STAMP = ROOT / "source-stamp.txt"
-# Everything the web build is made from. A change here means plugin/web must be rebuilt.
-SOURCES = ("app/src", "app/assets", "app/app.json", "app/package.json", "app/package-lock.json")
+# Everything the web build is made from. A change here means plugin/web must be rebuilt. app/public is copied into
+# the bundle as it is (service worker, push guard, manifest); app.config.js, tsconfig.json, vendor/ and modules/ are
+# read while it is built. app/plugins (Android prebuild only), tests and docs are not inputs; tests/test_web_bundle_gate.py
+# fails when a new top-level entry in app/ is on neither list. A listed path that does not exist is skipped.
+SOURCES = ("app/src", "app/assets", "app/public", "app/modules", "app/vendor", "app/app.json", "app/app.config.js",
+           "app/package.json", "app/package-lock.json", "app/tsconfig.json")
 
 
 def source_hash() -> str:
@@ -26,6 +30,8 @@ def source_hash() -> str:
                 digest.update(path.relative_to(REPO).as_posix().encode())
                 digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
 REF = re.compile(r"""["'(](/(?:assets|_expo/static|icons)/[^"'()\s?#]+)""")
 
 
