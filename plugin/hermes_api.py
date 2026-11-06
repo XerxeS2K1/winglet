@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import time
+from pathlib import Path
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)
@@ -2056,6 +2057,91 @@ def _bot_row(name: str, home) -> dict:
     meta = read_profile_meta(home)
     title = meta.get("bot_title") or meta.get("display_name") or name.replace("-", " ").replace("_", " ").title()
     return {"name": name, "title": title, "description": meta.get("description") or ""}
+
+
+def _bot_queue_entry(sequence, identity, status, raw) -> dict:
+    import re
+    sender, preview = "Unknown sender", "Details unavailable"
+    try:
+        payload = json.loads(raw)
+        descriptor = payload.get("local_automation_v1") or (payload.get("native_text_v1") or {}).get("automation") or {}
+        author = descriptor.get("turn_author") or {}
+        if isinstance(author.get("name"), str):
+            sender = " ".join(author["name"].split())[:60] or sender
+        text = payload.get("text")
+        if isinstance(text, str) and descriptor:
+            text = text.split("\n\n(Answer in your reply", 1)[0]
+            text = re.sub(r'^Message from 🤖 .*?\(@[^)]+\)(?:, sent from the chat ".*?")?:\s*', '', text, count=1)
+            preview = " ".join(text.split())[:120] or "Details unavailable"
+    except (ValueError, TypeError, AttributeError):
+        pass
+    return {"id": identity, "sequence": sequence, "from": sender, "preview": preview, "status": status}
+
+
+def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = False) -> dict:
+    """Read-only activity: live gateway work plus the canonical hand-off FIFO, never receipt mtimes.
+
+    Run off the gateway loop: the control verb schedules its own loop callback. Missing Hermes
+    APIs/schema mean unknown, not idle. Queue previews are optional, bounded, owner-only display
+    data; raw admission envelopes, replies and credentials are never returned to the app.
+    """
+    import sqlite3
+    queued = None
+    queue = None
+    truncated = False
+    started = 0
+    try:
+        with contextlib.closing(sqlite3.connect((Path(home) / "state.db").resolve().as_uri() + "?mode=ro", uri=True,
+                                               timeout=0.2)) as db:
+            db.execute("BEGIN")  # counts and displayed entries share one read-only snapshot
+            counts = dict(db.execute("SELECT status, COUNT(*) FROM session_admissions "
+                                     "WHERE request_id LIKE 'bot:%' AND status IN ('queued', 'started') GROUP BY status"))
+            queued = counts.get("queued", 0)
+            started = counts.get("started", 0)
+            if include_queue:
+                try:
+                    rows = list(db.execute("SELECT seq, request_id, status, substr(payload_json, 1, 65536) "
+                                           "FROM session_admissions WHERE request_id LIKE 'bot:%' "
+                                           "AND status IN ('queued', 'started') ORDER BY seq LIMIT 51"))
+                    queue = [_bot_queue_entry(*row) for row in rows[:50]]
+                    truncated = len(rows) > 50
+                except sqlite3.Error:
+                    pass  # Old schema: retain counts but do not invent queue details.
+    except (OSError, sqlite3.Error):
+        pass
+    try:
+        from gateway.control_socket import query_gateway_control
+        work = query_gateway_control(home, "active-work", params={"profile": profile}, timeout=1.0)
+        count = (work or {}).get("active_agents")
+        known = type(count) is int and count >= 0
+    except Exception:
+        known, count = False, None
+    # The profile-scoped control verb intentionally excludes delegations. This plugin runs in
+    # the gateway process, so its thread-safe live registry supplies their origin session keys.
+    delegating = False
+    delegation_known = True
+    try:
+        from tools.async_delegation import list_async_delegations, _LIVE_STATES
+        from gateway.session import _session_key_namespace
+        prefix = _session_key_namespace(profile) + ":"
+        for record in list_async_delegations():
+            if record.get("status") not in _LIVE_STATES:
+                continue
+            key = str(record.get("session_key") or "")
+            if key.startswith(prefix):
+                delegating = True
+            elif not key.startswith("agent:"):
+                delegation_known = False  # no trustworthy profile attribution
+    except Exception:
+        delegation_known = False
+    state = ("working" if known and (count or started or delegating) else
+             "idle" if known and queued is not None and delegation_known else "unknown")
+    return {"state": state, "queued": queued, **({"queue": queue, "queue_truncated": truncated} if include_queue else {})}
+
+
+def bot_activities() -> dict:
+    from hermes_cli.profiles import profiles_to_serve
+    return {name: bot_activity(home, name, include_queue=True) for name, home in profiles_to_serve(multiplex=True)}
 
 
 def list_bots() -> List[dict]:

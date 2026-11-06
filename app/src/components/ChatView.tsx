@@ -16,6 +16,7 @@ import { useBranching } from '../features/branching/useBranching';
 import { routineHref } from '../features/routine-history/model';
 import { mediaUrl } from '../lib/api';
 import { projectOf } from '../features/projects/logic';
+import { handoffAnswerLabel } from '../lib/bots';
 import { connectionView } from '../lib/connection';
 import { chatKey } from '../lib/chatOrganization';
 import { clearFocus, requestFocus, useFocusRequest } from '../lib/focus';
@@ -350,7 +351,7 @@ function AskedLine({ asked, label }: { asked: NonNullable<Message['meta']['asked
     {open ? <View style={s.askedBody}>
       <Text selectable style={s.askedLabel}>Asked</Text>
       <Text selectable style={s.askedText}>{asked.question}</Text>
-      <Text selectable style={s.askedLabel}>{asked.failed ? 'No answer' : `${asked.bot} answered`}</Text>
+      <Text selectable style={s.askedLabel}>{handoffAnswerLabel(asked)}</Text>
       <Text selectable style={s.askedText}>{asked.answer}</Text>
     </View> : null}
   </View>;
@@ -654,6 +655,8 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
     </Pressable>
   </Animated.View>;
 
+  if (message.meta?.asked) return <AskedLine asked={message.meta.asked} label={message.text} />;
+
   if (message.role === 'system') {
     if (message.meta?.inbox_id && inboxItem) {
       return <Animated.View entering={entering} style={[s.lane, s.systemCard]}>
@@ -661,7 +664,6 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
           : <View style={s.botRow}><View style={s.botBody}><InboxCard serverId={server.id} item={inboxItem} embedded /></View></View>}
       </Animated.View>;
     }
-    if (message.meta?.asked) return <AskedLine asked={message.meta.asked} label={message.text} />;
     return <View style={s.systemLine}><Text style={s.systemText}>{message.text}</Text></View>;
   }
 

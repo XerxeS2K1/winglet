@@ -37,7 +37,57 @@ test('the main bot leads, the others keep their order', () => {
   assert.equal(mainFirst([]).length, 0);
 });
 
+test('the bot picker uses activity labels and a distinct accessible working dot', () => {
+  const screen = readFileSync(new URL('../src/components/BotSwitcher.tsx', import.meta.url), 'utf8');
+  assert.match(screen, /botActivityLabel\(rt\?\.botActivity\?\.\[x\.profile \?\? 'default'\]\)/);
+  assert.match(screen, /accessibilityLabel="Working"/);
+});
+
+test('pending hand-offs do not claim that the teammate already answered', () => {
+  const label = exports.handoffAnswerLabel ?? (() => 'answered');
+  assert.equal(label({ bot: 'Chef', state: 'queued' }), 'Queued; the answer will appear here');
+  assert.equal(label({ bot: 'Chef', state: 'answered' }), 'Chef answered');
+  assert.equal(label({ bot: 'Chef', state: 'failed', failed: true }), 'No answer');
+  assert.equal(label({ bot: 'Chef', failed: false }), 'Chef answered'); // older server
+});
+
+test('queue rows use canonical sequence without mutating the snapshot and distinguish unknown from empty', () => {
+  const rows = exports.botQueueRows ?? (() => undefined);
+  const queue = [
+    { id: 'two', sequence: 20, from: 'Research', preview: 'Compare sources', status: 'queued' },
+    { id: 'one', sequence: 10, from: 'Hermes', preview: 'Plan dinner', status: 'started' },
+  ];
+  const result = rows({ state: 'working', queued: 1, queue });
+  assert.equal(result?.[0]?.title, '1. Hermes');
+  assert.equal(result?.[0]?.value, 'Running');
+  assert.equal(result?.[1]?.title, '2. Research');
+  assert.equal(queue[0].id, 'two');
+  assert.equal(rows(undefined), undefined);
+  assert.equal(rows({ state: 'idle', queued: 0, queue: null }), undefined);
+  assert.equal(rows({ state: 'idle', queued: 0, queue: [] }).length, 0);
+  assert.equal(rows({ state: 'unknown', queued: 1, queue })[0].value, 'Started (unconfirmed)');
+});
+
+test('bot picker opens a read-only queue sheet that hides stale offline details', () => {
+  const picker = readFileSync(new URL('../src/components/BotSwitcher.tsx', import.meta.url), 'utf8');
+  assert.ok(picker.includes('<QueueSheet'), 'the queue sheet must be mounted in the picker');
+  const sheet = readFileSync(new URL('../src/components/QueueSheet.tsx', import.meta.url), 'utf8');
+  assert.ok(sheet.includes("rt?.status === 'online'"), 'offline snapshots must not be presented as live queues');
+  assert.ok(sheet.includes('Read-only') && sheet.includes('Queue details unavailable'));
+  assert.ok(!sheet.includes('signedApi'), 'the queue sheet has no scheduling mutations');
+});
+
 const { notRunning, teamworkOff } = exports;
+
+test('activity labels keep queued work separate from approvals and unknown data', () => {
+  const label = exports.botActivityLabel ?? (() => 'Online');
+  assert.equal(label({ state: 'working', queued: 2 }), 'Working, 2 queued');
+  assert.equal(label({ state: 'working', queued: 0 }), 'Working');
+  assert.equal(label({ state: 'idle', queued: 0 }), 'Online');
+  assert.equal(label({ state: 'idle', queued: 1 }), '1 queued');
+  assert.equal(label({ state: 'unknown', queued: null }), 'Activity unavailable');
+  assert.equal(label(undefined), 'Online'); // older servers are unchanged
+});
 
 test("a bot Hermes isn't running says so, and one whose state is unknown says nothing", () => {
   assert.equal(notRunning({ served: false }), 'Not running');

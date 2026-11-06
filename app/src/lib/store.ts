@@ -49,6 +49,8 @@ export type SendOptions = { clientId?: string; liveOnly?: boolean; retryClientId
 
 export type ServerState = {
   status: ConnStatus;
+  /** Ephemeral owner-only activity for every profile; never persisted with message history. */
+  botActivity?: Record<string, import('./types').BotActivity>;
   conn: ConnDetail;
   info?: ServerInfo;
   compat?: 'update-app' | 'update-server';
@@ -376,6 +378,7 @@ export const useApp = create<AppState>((set, get) => {
         patch(serverId, () => ({ status: 'online', chats, typing, pending: ev.pending ?? 0, loaded: {}, info, compat,
           me: ev.me as Me | undefined, paused: (ev.paused ?? null) as PauseState, projects,
           // A fresh connection may be a restarted server: drop old task snapshots and refetch when visible.
+          botActivity: ev.bot_activity ?? undefined,
           tasks: {}, taskCaps: { subagent_stop: info.features.subagent_stop === true } }));
         // From now on, send the token in the socket's first frame rather than the URL.
         if (server && info.features.ws_auth && !server.wsAuth) get().updateServer(serverId, { wsAuth: true });
@@ -474,6 +477,9 @@ export const useApp = create<AppState>((set, get) => {
         break;
       case 'pet.update':
         get().loadPet(serverId);
+        break;
+      case 'bot.activity':
+        if (!replayed) patch(serverId, () => ({ botActivity: ev.activities ?? undefined }));
         break;
       case 'system.bots':
         if (Array.isArray(ev.bots) && server && !server.parent) get().syncBots(serverId, ev.bots as BotRow[]);
