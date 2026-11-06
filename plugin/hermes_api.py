@@ -16,6 +16,8 @@ import logging
 import math
 import re
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import List, Optional
 
@@ -711,6 +713,163 @@ async def update_winglet(timeout: float = 300) -> tuple:
         proc.kill()
         return -1, ["The update took too long and was stopped."]
     return proc.returncode, out.decode("utf-8", errors="replace").splitlines()[-30:]
+
+
+# -- which Winglet release is the newest -------------------------------------------------------------------
+#
+# The server decides this itself, from the GitHub releases of ONE hard-coded repository. The phone never names a
+# repository, a branch or a commit. Hermes's own update check (run_checks) is not used for this answer: it reports
+# "provenance drift" for every sub-directory install, which is how Winglet is installed.
+
+RELEASE_REPO = "XerxeS2K1/winglet"
+RELEASE_CACHE_SECONDS = 600
+_API_PREFIX = f"https://api.github.com/repos/{RELEASE_REPO}/"
+_RAW_PREFIX = f"https://raw.githubusercontent.com/{RELEASE_REPO}/"
+_MAX_GITHUB_BYTES = 1_000_000
+_VERSION = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\Z")
+_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_RELEASE_CACHE: dict = {}
+
+
+class ReleaseCheckFailed(RuntimeError):
+    """GitHub could not be asked, or its answer was not something a release can be built from."""
+
+
+def parse_version(text) -> Optional[tuple]:
+    """(major, minor, patch) for a plain ``1.2.3``; None for anything else (pre-releases, ``v`` prefixes, junk)."""
+    if not isinstance(text, str):
+        return None
+    match = _VERSION.match(text)
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def parse_tag(tag) -> Optional[tuple]:
+    """The version of a release tag ``v1.2.3``; None for beta/rc tags, branches and everything else."""
+    return parse_version(tag[1:]) if isinstance(tag, str) and tag.startswith("v") else None
+
+
+def is_newer(candidate, current) -> bool:
+    """A real, numeric 'newer than'. A version that cannot be read is never newer (unknown is not an upgrade)."""
+    a, b = parse_version(candidate), parse_version(current)
+    return a is not None and b is not None and a > b
+
+
+def _url_allowed(url) -> bool:
+    return (isinstance(url, str) and url.startswith((_API_PREFIX, _RAW_PREFIX)) and ".." not in url
+            and not any(c.isspace() or c == "\\" or ord(c) < 32 for c in url))
+
+
+class _SameRepoRedirect(urllib.request.HTTPRedirectHandler):
+    """GitHub may move an address; it may not send us to a different repository or host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_allowed(newurl):
+            raise urllib.error.URLError(f"redirect outside {RELEASE_REPO} refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _github_get(url: str, *, text: bool = False):
+    """One bounded GET to the Winglet repository on GitHub: parsed JSON, or text with ``text=True``."""
+    if not _url_allowed(url):
+        raise ReleaseCheckFailed("that address is not part of the Winglet repository")
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "winglet-plugin",
+                                                   "X-GitHub-Api-Version": "2022-11-28"})
+    try:
+        with urllib.request.build_opener(_SameRepoRedirect()).open(request, timeout=10) as response:
+            data = response.read(_MAX_GITHUB_BYTES + 1)
+        if len(data) > _MAX_GITHUB_BYTES:
+            raise ReleaseCheckFailed("GitHub's answer was unexpectedly large")
+        return data.decode("utf-8") if text else json.loads(data)
+    except ReleaseCheckFailed:
+        raise
+    except (OSError, ValueError) as exc:  # URLError and HTTPError are OSErrors; bad JSON and bad UTF-8 are ValueErrors
+        raise ReleaseCheckFailed(f"GitHub could not be read: {exc}") from exc
+
+
+def _tag_commit(tag: str, fetch) -> str:
+    """The commit id a release tag points at (an annotated tag is followed once). Tags only, never a branch."""
+    ref = fetch(f"{_API_PREFIX}git/ref/tags/{tag}")
+    target = ref.get("object") if isinstance(ref, dict) else None
+    if isinstance(target, dict) and target.get("type") == "tag" and isinstance(target.get("sha"), str) and _SHA.match(target["sha"]):
+        annotated = fetch(f"{_API_PREFIX}git/tags/{target['sha']}")
+        target = annotated.get("object") if isinstance(annotated, dict) else None
+    sha = target.get("sha") if isinstance(target, dict) and target.get("type") == "commit" else None
+    if not isinstance(sha, str) or not _SHA.match(sha):
+        raise ReleaseCheckFailed(f"{tag} does not point at a commit")
+    return sha
+
+
+def _manifest_field(text: str, name: str) -> Optional[str]:
+    match = re.search(rf"(?m)^{name}:[ \t]*(.*)$", text)
+    if not match:
+        return None
+    value = re.sub(r"\s#.*$", "", match.group(1)).strip().strip("\"'").strip()
+    return value or None
+
+
+def latest_release(force: bool = False, *, fetch=None, clock=None) -> Optional[dict]:
+    """The newest stable Winglet release: {version, tag, sha, notes, url, requires_hermes}, or None when none exists.
+
+    Drafts, pre-releases and tags that are not exactly ``vX.Y.Z`` are ignored, and the highest version wins (not the
+    most recently published: a backport must not hide the real latest). The tag is resolved to its commit, and the
+    plugin manifest at that commit must carry the same version. Remembered for ten minutes."""
+    fetch = fetch or _github_get
+    now = (clock or time.monotonic)()
+    cached = _RELEASE_CACHE.get("entry")
+    if cached is not None and not force and now - cached["at"] < RELEASE_CACHE_SECONDS:
+        return cached["value"]
+    try:
+        value = _newest_release(fetch)
+    except ReleaseCheckFailed:
+        raise
+    except Exception as exc:  # whatever the fetch raised: the check failed, and a failure is not remembered
+        raise ReleaseCheckFailed(f"GitHub could not be read: {exc}") from exc
+    _RELEASE_CACHE["entry"] = {"at": now, "value": value}
+    return value
+
+
+def _newest_release(fetch) -> Optional[dict]:
+    listing = fetch(f"{_API_PREFIX}releases?per_page=30")
+    if not isinstance(listing, list):
+        raise ReleaseCheckFailed("GitHub's list of releases was not a list")
+    best = None
+    for entry in listing:
+        if not isinstance(entry, dict) or entry.get("draft") is not False or entry.get("prerelease") is not False:
+            continue
+        found = parse_tag(entry.get("tag_name"))
+        if found is not None and (best is None or found > best[0]):
+            best = (found, entry)
+    value = None
+    if best is not None:
+        numbers, entry = best
+        tag, version = entry["tag_name"], ".".join(str(n) for n in numbers)
+        sha = _tag_commit(tag, fetch)
+        manifest = fetch(f"{_RAW_PREFIX}{sha}/plugin/plugin.yaml", text=True)
+        if not isinstance(manifest, str):
+            raise ReleaseCheckFailed("the plugin manifest could not be read")
+        declared = _manifest_field(manifest, "version")
+        if declared != version:
+            raise ReleaseCheckFailed(f"{tag} contains Winglet {declared or 'with no version'}, not {version}")
+        notes = entry.get("body")
+        value = {"version": version, "tag": tag, "sha": sha, "notes": notes[:4000] if isinstance(notes, str) else "",
+                 "url": f"https://github.com/{RELEASE_REPO}/releases/tag/{tag}",
+                 "requires_hermes": _manifest_field(manifest, "requires_hermes")}
+    return value
+
+
+def hermes_supports(requirement, running) -> Optional[bool]:
+    """Whether the running Hermes satisfies a release's ``requires_hermes`` range. None when it cannot be told."""
+    if requirement is None or not str(requirement).strip():
+        return True
+    match = re.match(r"\s*v?([0-9]+(?:\.[0-9]+){0,3})", running) if isinstance(running, str) else None
+    if not match:
+        return None
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        return bool(SpecifierSet(str(requirement)).contains(Version(match.group(1)), prereleases=True))
+    except Exception:  # no packaging, or a range it cannot read
+        return None
 
 
 _LOG_FILES = {"agent": "agent.log", "gateway": "gateway.log", "errors": "errors.log"}
