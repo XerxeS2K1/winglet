@@ -13,7 +13,7 @@ import {
   ScrollText, ShieldCheck, Sparkles, SquareTerminal, Star, UserRoundPen,
 } from '../../components/icons';
 import { moodOf } from '../../lib/agent';
-import { modelName } from '../../lib/modelOptions';
+import { activeModel, modelName } from '../../lib/modelOptions';
 import { api } from '../../lib/api';
 import { useTabBarSpace } from '../../components/TabBar';
 import { Button, Footnote, ListGroup, ListRow, SectionHeader } from '../../components/ui';
@@ -52,8 +52,8 @@ function AgentHub({ server }: { server: Server }) {
   const owner = isOwner(rt);
   const control = rt?.info?.features?.control && owner;
   const brain = !!rt?.info?.features?.agent && owner;
-  const info = useAgentInfo(server, brain);
-  const model = info?.configured.model ? modelName(info.configured.model) : undefined;
+  const info = useAgentInfo(server, brain, rt ? homeChat(rt) : 'general');
+  const model = activeModel(info).model ? modelName(activeModel(info).model) : undefined;
 
   const online = view.kind === 'online';
   const status = !online ? view.title : mood === 'waiting' ? 'Needs you' : mood === 'working' ? 'Working' : 'Online';
@@ -134,13 +134,14 @@ function AgentHub({ server }: { server: Server }) {
 }
 
 /** The agent's configuration (owners only), refreshed when you come back from the model picker. */
-function useAgentInfo(server: Server, enabled: boolean): AgentInfo | null {
+function useAgentInfo(server: Server, enabled: boolean, chatId?: string): AgentInfo | null {
   const [loaded, setLoaded] = useState<{ id: string; info: AgentInfo } | null>(null);
   const online = useApp((st) => st.runtime[server.id]?.status === 'online');
   useFocusEffect(useCallback(() => {
     if (!enabled || !online) return;
-    api<AgentInfo>(server, '/api/agent').then((info) => setLoaded({ id: server.id, info })).catch(() => undefined);
-  }, [server, online, enabled]));
+    const url = chatId ? `/api/agent?chat=${encodeURIComponent(chatId)}` : '/api/agent';
+    api<AgentInfo>(server, url).then((info) => setLoaded({ id: server.id, info })).catch(() => undefined);
+  }, [server, online, enabled, chatId]));
   return enabled && loaded?.id === server.id ? loaded.info : null;
 }
 
