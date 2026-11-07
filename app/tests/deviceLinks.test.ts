@@ -55,6 +55,14 @@ test('unknown server, wrong pin, member and unverified owner refuse without any 
     [[parent], { server: { me: { role: 'member', verified: true } } }], [[parent], { server: { me: { role: 'owner', verified: false } } }],
   ]) { const h = harness(); await assert.rejects(h.lib.previewDeviceLink(`${base}/#link=${id}&fp=${fp}`, servers, runtime, 1000000), /verified owner/); assert.equal(h.calls.length, 0); }
 });
+test('a cold load with no socket view yet still asks the server to prove authority', async () => {
+  // Opening the approval link fresh (runtime empty) must not refuse: the signed request decides.
+  const h = harness();
+  const preview = await h.lib.previewDeviceLink(`${base}/#link=${id}&fp=${fp}`, [parent], {}, 1000000);
+  assert.equal(preview.id, id);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].method, 'GET');
+});
 test('expiry and denial stop polling; hidden/unmounted session sends no further claim', async () => {
   const h = harness(), s = h.make(); await s.start(); const before = h.calls.length; s.pause(); await s.poll(); assert.equal(h.calls.length, before); assert.equal(h.timers.size, 0);
   h.now(1180001); s.resume(); await s.poll(); assert.equal(s.state.phase, 'expired'); assert.equal(h.calls.length, before); assert.equal(h.timers.size, 0);

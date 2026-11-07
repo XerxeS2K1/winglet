@@ -129,7 +129,12 @@ function trustedOwner(link: DeviceLink, servers: Server[], runtime: OwnerRuntime
   // A QR cannot choose where we send a saved credential. Match an existing parent pairing exactly.
   const server = servers.find((s) => !s.parent && safeBase(s.url) === link.url && s.fingerprint === link.fp);
   const me = server && runtime[server.id]?.me;
-  if (!server || me?.role !== 'owner' || me.verified !== true) throw new Error('Use a verified owner device already paired with this server. To connect this phone first, use a pairing link.');
+  if (!server) throw new Error('Use a verified owner device already paired with this server. To connect this phone first, use a pairing link.');
+  // A cold load may not have the socket's view of this device yet (isOwner treats unknown as owner):
+  // only refuse what we know is not a verified owner, and let the signed request prove the rest.
+  if (me && (me.role !== 'owner' || me.verified !== true)) {
+    throw new Error('This device is not a verified owner on this server.');
+  }
   return { ...server, profile: undefined };
 }
 export async function previewDeviceLink(text: string, servers: Server[], runtime: OwnerRuntime, now = Date.now()): Promise<LinkPreview> {
