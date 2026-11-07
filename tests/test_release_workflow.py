@@ -19,7 +19,8 @@ WORKFLOW = Path(__file__).resolve().parent.parent / ".github" / "workflows" / "r
 
 @pytest.fixture(scope="module")
 def workflow():
-    return yaml.safe_load(WORKFLOW.read_text())
+    # The workflow has UTF-8 characters; Windows defaults to cp1252 and cannot decode them.
+    return yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
 
 
 def steps_running(job, text):
@@ -74,7 +75,7 @@ def test_publishing_waits_for_the_checks(workflow):
 
 def test_the_gate_needs_nothing_but_python(workflow):
     """It must run before pip install, so it cannot import a third-party package."""
-    source = (WORKFLOW.parent.parent.parent / "scripts" / "check_release_docs.py").read_text()
+    source = (WORKFLOW.parent.parent.parent / "scripts" / "check_release_docs.py").read_text(encoding="utf-8")
     imports = {line.split()[1].split(".")[0] for line in source.splitlines() if line.startswith(("import ", "from "))}
     assert imports <= {"argparse", "json", "re", "sys", "pathlib"}, imports
 
@@ -106,8 +107,8 @@ def test_nothing_in_the_chain_that_publishes_may_continue_after_a_failure(workfl
 
 def run_step(step, cwd, env):
     """Run a step the way GitHub does for bash: bash -e -o pipefail."""
-    return subprocess.run(["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=cwd, env=env,
-                          capture_output=True, text=True)
+    return subprocess.run([bash_executable(), "--noprofile", "--norc", "-eo", "pipefail", "-c", step["run"]], cwd=cwd, env=env,
+                          capture_output=True, text=True, encoding="utf-8")
 
 
 @pytest.fixture
@@ -150,7 +151,19 @@ def ancestry_step(workflow):
 
 def git(cwd, *args):
     return subprocess.run(["git", "-c", "user.name=Test", "-c", "user.email=test@example.com", *args],
-                          cwd=cwd, check=True, capture_output=True, text=True).stdout.strip()
+                          cwd=cwd, check=True, capture_output=True, text=True, encoding="utf-8").stdout.strip()
+
+
+def bash_executable():
+    """Git Bash on Windows: the bare `bash` in System32 is the WSL launcher, which has no distro here."""
+    if sys.platform == "win32":
+        git = shutil.which("git")
+        if git:
+            root = Path(git).resolve().parent.parent
+            for candidate in (root / "bin" / "bash.exe", root / "usr" / "bin" / "bash.exe"):
+                if candidate.exists():
+                    return str(candidate)
+    return "bash"
 
 
 @pytest.fixture
