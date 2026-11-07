@@ -61,6 +61,8 @@ function action(tree: any, label: string) { const node = children(tree).find((n)
 
 test('battery explanation is deferred, themed, scrollable and has wrapping action rows for long copy', async () => {
   const h = harness(); const initial = h.render(); assert.ok(!initial || !initial.props.visible);
+  await flush(); assert.equal(h.inspect().asked, false, 'storage is not marked before the five-second defer');
+  assert.ok(!h.render()?.props.visible, 'no explanation before the timer');
   await h.fire(); const tree = h.render(); assert.equal(tree.type, 'Sheet'); assert.equal(tree.props.visible, true);
   assert.equal(tree.props.scrollable, true); assert.equal(tree.props.title, BATTERY_PROMPT_COPY.title);
   assert.equal(children(tree).find((n) => n?.type === 'Text')?.props.children, BATTERY_PROMPT_COPY.message);
@@ -80,7 +82,7 @@ test('battery explanation tracks all six accents and every resolved light/dark t
 
 for (const reason of ['later', 'back', 'dismiss', 'lock', 'background', 'foreground', 'pair', 'scan', 'navigation', 'unpaired', 'unmount']) {
   test(`battery prompt settles once and rejects stale Continue after ${reason}`, async () => {
-    const h = harness(); h.render(); await h.fire(); const tree = h.render(); const go = action(tree, BATTERY_PROMPT_COPY.go); console.error('GO type', typeof go); try { go(); console.error('GO called OK'); } catch(e) { console.error('GO threw', e); } console.error('GO src', go.toString());
+    const h = harness(); h.render(); await h.fire(); const tree = h.render(); const go = action(tree, BATTERY_PROMPT_COPY.go);
     if (reason === 'later') action(tree, BATTERY_PROMPT_COPY.later)();
     else if (reason === 'back') tree.props.onClose();
     else if (reason === 'dismiss') tree.props.onDismiss();
@@ -91,7 +93,7 @@ for (const reason of ['later', 'back', 'dismiss', 'lock', 'background', 'foregro
     else if (reason === 'navigation') h.change({ path: '/settings' });
     else if (reason === 'unpaired') h.change({ paired: false });
     else h.unmount();
-    go(); go(); await flush(); console.error('DBG requests', h.inspect().requests, 'outcomes', h.inspect().outcomes, 'path', (global as any).__dbg); assert.equal(h.inspect().requests, 0); assert.deepEqual(h.inspect().outcomes, ['declined']);
+    go(); go(); await flush(); assert.equal(h.inspect().requests, 0); assert.deepEqual(h.inspect().outcomes, ['declined']);
   });
 }
 for (const change of [{ os: 'web' }, { os: 'ios' }, { locked: true }, { paired: false }, { foreground: false }, { path: '/pair' }, { path: '/scan' }]) {
