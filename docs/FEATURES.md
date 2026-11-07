@@ -36,9 +36,11 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   whether this phone's notifications are getting through. Moved the server to Tailscale or a new domain?
   Point the Android app at the new address; it only moves once your server has signed that address as
   its own.
-- **A one-time battery question (Android).** About 5 seconds after Winglet opens, once paired and unlocked, it explains
-  in a sentence and, if you continue, opens Android's own dialog to leave Winglet out of battery optimisation. The web
-  app never shows it.
+- **A one-time battery question (Android).** About 5 seconds after Winglet opens, once paired, unlocked and in the
+  foreground outside pairing/scanning, a themed, scrollable sheet explains why it needs to stay connected. Continue
+  opens Android's own battery-exemption dialog; that system dialog does not use Winglet's palette. Not now, dismissal,
+  Back, lock, backgrounding, navigation or unmount safely cancel the explanation. It is remembered once; the web app
+  never shows it.
 
 ## It asks, you answer
 
@@ -110,6 +112,11 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
 - A flat, quiet look: light or dark, with dark mode in charcoal (the default), graphite or true black for OLED
   screens, six accent colors including a neutral Mono, short motion and haptics, soft sounds you can turn off,
   and a sidebar layout on tablets and desktop.
+- Winglet-owned sheets and input text, placeholder, selection and supported cursor/keyboard props follow the selected
+  app theme, not the system scheme unless System is chosen. Android cursor/selection handles and iOS keyboard scheme
+  have explicit defaults; caller overrides remain available. Native Share, permission/settings prompts and Android's
+  battery exemption remain OS-owned. Camera/photo viewing, QR codes and artwork keep their intentional contrast colours.
+  See the [source theme audit](THEME_AUDIT.md) for coverage and untested rendered/device states.
 - With more than one bot, chips under the landing's greeting switch between them in one tap.
 - Compact chat layout uses smaller text and tighter spacing. Approval cards follow the conversation's text column,
   with a short command preview and the full command available to expand and scroll.

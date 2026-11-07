@@ -10,5 +10,7 @@ Rollback preserves the database unless the newly installed plugin actually start
 restoring anything. These paths have automated coverage, not a live update/rollback trial in this rehearsal.
 
 Version stays at 0.10.4 for this local test. The generated artifact is the bundled WEB app in `plugin/web`, not an
-Android APK. Theme audit/fixes are unfinished and excluded. Nothing here claims phone or Android testing, a release,
-an installation, or a live gateway change. This rehearsal does not push or create a tag.
+Android APK. This descendant includes the selected-theme battery explanation, shared input defaults and safe Devices
+empty state, plus the source audit in [THEME_AUDIT.md](THEME_AUDIT.md). Theme work is included in the web source/bundle;
+that does not certify rendered route states or Android keyboard/permission behaviour. Nothing here claims phone or
+Android testing, a release, an installation, or a live gateway change. This rehearsal does not push or create a tag.

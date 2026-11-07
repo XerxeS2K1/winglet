@@ -61,6 +61,26 @@ restraint, never from effects. The pets are the one place with colour and motion
 Primary buttons and the send button are a flat `ink` fill. Your message bubble is a neutral `bubble` with a 6dp corner on
 its tail. No gradients or glows outside the pets.
 
+## Selected-theme surfaces
+
+Winglet-owned screens, explanations, sheets and controls use the selected Appearance choice: light, dark or
+system, charcoal/graphite/black dark tone, and any of the six accents. Only system mode follows the device
+scheme; explicit light/dark must not silently fall back to it. Existing tokens are the palette—do not redesign it
+or recolour pet art, bot identity colours, branding, QR codes, camera/photo contrast surfaces or user media.
+
+All native text input sites use `components/ThemedTextInput`: selected-theme text, placeholder and selection,
+Android cursor/selection handles, and iOS keyboard appearance where supported. Refs, input behaviour and explicit
+caller overrides take precedence. Android does not offer this iOS keyboard appearance prop; keyboards and native
+selection rendering still need device checks. An omitted platform prop is a source gap, not a reproduced phone defect.
+
+The one-time battery explanation and its actions are a themed, scrollable Sheet. Its Continue action hands over to
+Android's own battery-exemption dialog. Native Share, permissions, biometric prompts and settings UI remain OS-owned
+and cannot be styled with Winglet tokens. Root/status/navigation/browser chrome follow ThemeProvider where supported;
+startup and install assets retain their branding colours.
+
+See [theme audit](THEME_AUDIT.md) for the source route/input/overlay inventory, component fixtures, exceptions and
+explicitly untested visual/device states. Source and harness checks are not an all-screen visual certification.
+
 ## Chat
 
 - Assistant replies are flat (no bubble) under a small identity line (face, name, time) shown once per group.
