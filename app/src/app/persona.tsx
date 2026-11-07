@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { Platform, Text, TextInput, View } from 'react-native';
+import { Platform, Text, View } from 'react-native';
+import { TextInput } from '../components/ThemedTextInput';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { Screen } from '../components/Screen';
 import { withSelectedServer } from '../components/ServerScreen';

@@ -1,7 +1,8 @@
 import { FlashList, type FlashListRef } from '@shopify/flash-list';
 import { router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, ScrollView, Text, TextInput, useWindowDimensions, View } from 'react-native';
+import { ActivityIndicator, ScrollView, Text, useWindowDimensions, View } from 'react-native';
+import { TextInput } from '../../components/ThemedTextInput';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AgentFace } from '../../components/AgentFace';
 import { BotAvatar } from '../../components/BotAvatar';

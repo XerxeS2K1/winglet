@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { TextInput } from './ThemedTextInput';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { signedApi, ApiError } from '../lib/api';
 import { haptic } from '../lib/haptics';

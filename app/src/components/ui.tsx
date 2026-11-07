@@ -1,8 +1,9 @@
 import { cloneElement, isValidElement, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react';
 import {
-  ActivityIndicator, Platform, Pressable, StyleSheet, Switch, Text, TextInput, View,
+  ActivityIndicator, Platform, Pressable, StyleSheet, Switch, Text, View,
   type AccessibilityRole, type PressableProps, type StyleProp, type TextInputProps, type ViewStyle,
 } from 'react-native';
+import { TextInput } from './ThemedTextInput';
 import Animated, {
   cancelAnimation, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withSpring, withTiming,
 } from 'react-native-reanimated';

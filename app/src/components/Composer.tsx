@@ -1,7 +1,8 @@
 import { VoicePanel } from '../features/live-voice/VoicePanel';
 import { Image } from 'expo-image';
 import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { TextInput } from './ThemedTextInput';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   cancelAnimation, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming, ZoomIn,

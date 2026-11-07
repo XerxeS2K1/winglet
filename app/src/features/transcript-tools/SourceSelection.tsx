@@ -1,4 +1,5 @@
-import {TextInput} from 'react-native';
+
+import { TextInput } from '../../components/ThemedTextInput';
 import {useTheme} from '../../lib/themeContext';
 export type SourceSelectionProps = {text:string; onSelect:(start:number,end:number)=>void; colors:{text:string;surface:string;border:string}; fontFamily:string};
 export function SourceSelection({text,onSelect,colors,fontFamily}:SourceSelectionProps){

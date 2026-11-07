@@ -1,6 +1,7 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Text, TextInput, View } from 'react-native';
+import { Text, View } from 'react-native';
+import { TextInput } from '../components/ThemedTextInput';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { PairRows, useBotHost } from '../components/AddBot';
 import { BotAvatar } from '../components/BotAvatar';
