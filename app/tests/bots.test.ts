@@ -51,21 +51,70 @@ test('pending hand-offs do not claim that the teammate already answered', () => 
   assert.equal(label({ bot: 'Chef', failed: false }), 'Chef answered'); // older server
 });
 
-test('queue rows use canonical sequence without mutating the snapshot and distinguish unknown from empty', () => {
+test('queue rows put the title on top, sender and position underneath, in canonical order, without touching the snapshot', () => {
   const rows = exports.botQueueRows ?? (() => undefined);
   const queue = [
-    { id: 'two', sequence: 20, from: 'Research', preview: 'Compare sources', status: 'queued' },
-    { id: 'one', sequence: 10, from: 'Hermes', preview: 'Plan dinner', status: 'started' },
+    { id: 'two', sequence: 20, from: 'Research', title: 'Compare sources', preview: 'Compare the two sources and tell me', status: 'queued' },
+    { id: 'one', sequence: 10, from: 'Hermes', title: 'Plan dinner', preview: 'Plan dinner for six', status: 'started' },
   ];
   const result = rows({ state: 'working', queued: 1, queue });
-  assert.equal(result?.[0]?.title, '1. Hermes');
+  assert.equal(result?.[0]?.title, 'Plan dinner');
+  assert.equal(result?.[0]?.subtitle, '1. Hermes');
   assert.equal(result?.[0]?.value, 'Running');
-  assert.equal(result?.[1]?.title, '2. Research');
+  assert.equal(result?.[1]?.title, 'Compare sources');
+  assert.equal(result?.[1]?.subtitle, '2. Research');
   assert.equal(queue[0].id, 'two');
   assert.equal(rows(undefined), undefined);
   assert.equal(rows({ state: 'idle', queued: 0, queue: null }), undefined);
   assert.equal(rows({ state: 'idle', queued: 0, queue: [] }).length, 0);
   assert.equal(rows({ state: 'unknown', queued: 1, queue })[0].value, 'Started (unconfirmed)');
+});
+
+test('a server that sends no title still gets a short readable line from the preview', () => {
+  const rows = exports.botQueueRows;
+  const row = (extra: any) => rows({ state: 'idle', queued: 1, queue: [{ id: 'a', sequence: 1, from: 'Hermes', status: 'queued', ...extra }] })[0];
+  assert.equal(row({ preview: 'Plan dinner for six' }).title, 'Plan dinner for six');
+  assert.equal(row({ preview: 'Plan dinner', title: undefined }).title, 'Plan dinner');
+  const long = "Puppet Master here, with Kraig's yes. New small item, same rules as before: own branch and worktree, tests first";
+  assert.equal(row({ preview: long }).title, "Puppet Master here, with Kraig's yes. New small item, same\u2026");
+  assert.equal(row({ preview: 'x'.repeat(300) }).title, 'x'.repeat(60) + '\u2026');
+  assert.equal(row({ preview: 'a '.repeat(29) + 'bb' }).title, 'a '.repeat(29) + 'bb');   // exactly 60: whole
+  for (const empty of [{}, { preview: '' }, { preview: '   ' }, { preview: 5 }, { preview: null }, { title: '', preview: '' }, { title: '  ', preview: '' }]) {
+    assert.equal(row(empty).title, 'Hand-off', JSON.stringify(empty));        // never a blank line
+  }
+  assert.equal(row({ title: 5, preview: 'From the preview' }).title, 'From the preview');   // a title that is not text is ignored
+  assert.equal(row({ title: '   ', preview: 'From the preview' }).title, 'From the preview');
+});
+
+test('a title is the sender\'s own text: shown as plain single-line text and capped', () => {
+  const rows = exports.botQueueRows;
+  const title = (value: string) => rows({ state: 'idle', queued: 1, queue: [{ id: 'a', sequence: 1, from: 'Hermes', title: value, preview: 'p', status: 'queued' }] })[0].title;
+  assert.equal(title('  Plan \n\t dinner  '), 'Plan dinner');
+  assert.equal(title('one\ntwo'), 'one two');       // a bare line break between words is a space, not nothing
+  assert.equal(title('tab\tseparated'), 'tab separated');
+  assert.equal(title('Plan\u0007 dinner\u200b'), 'Plan dinner');
+  assert.equal(title('evil\u202egnp.exe'), 'evilgnp.exe');                      // no bidi override to reverse what is read
+  assert.equal(title('line one\u2028line two'), 'line one line two');
+  assert.equal(title('<b>bold</b> & [link](http://x)'), '<b>bold</b> & [link](http://x)');   // kept as text, never interpreted
+  assert.equal(title('x'.repeat(500)).length <= 64, true);
+  assert.equal(title('Pasta \u{1F35D} night'), 'Pasta \u{1F35D} night');
+});
+
+test('sender names are shown as plain text too', () => {
+  const rows = exports.botQueueRows;
+  const sub = (from: any) => rows({ state: 'idle', queued: 1, queue: [{ id: 'a', sequence: 1, from, title: 't', preview: 'p', status: 'queued' }] })[0].subtitle;
+  assert.equal(sub('Hermes'), '1. Hermes');
+  assert.equal(sub('Evil\u202e Bot\u0007'), '1. Evil Bot');
+  assert.equal(sub(''), '1. Unknown sender');
+  assert.equal(sub(undefined), '1. Unknown sender');
+  assert.equal(sub(5), '1. Unknown sender');
+});
+
+test('the queue sheet renders rows as plain text rows and has no way to act on the queue', () => {
+  const sheet = readFileSync(new URL('../src/components/QueueSheet.tsx', import.meta.url), 'utf8');
+  assert.ok(sheet.includes('<ListRow') && sheet.includes('title={row.title}') && sheet.includes('subtitle={row.subtitle}'));
+  assert.ok(!/dangerouslySetInnerHTML|<Markdown|WebView/.test(sheet), 'a title must never be interpreted as markup');
+  assert.ok(!sheet.includes('signedApi'));
 });
 
 test('bot picker opens a read-only queue sheet that hides stale offline details', () => {

@@ -2145,8 +2145,12 @@ def _bot_row(name: str, home) -> dict:
 
 
 def _bot_queue_entry(sequence, identity, status, raw) -> dict:
+    """One row of the owner's queue sheet from an admission. ``title`` is the first line of the request (the hub swaps in
+    the title its sender gave ask_bot, when it can match the delivery id); ``preview`` is the older, longer text that
+    apps without titles still show. Nothing else from the payload leaves this function."""
     import re
-    sender, preview = "Unknown sender", "Details unavailable"
+    from .handoffs import first_line_title
+    sender, preview, title = "Unknown sender", "Details unavailable", "Details unavailable"
     try:
         payload = json.loads(raw)
         descriptor = payload.get("local_automation_v1") or (payload.get("native_text_v1") or {}).get("automation") or {}
@@ -2158,9 +2162,10 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
             text = text.split("\n\n(Answer in your reply", 1)[0]
             text = re.sub(r'^Message from 🤖 .*?\(@[^)]+\)(?:, sent from the chat ".*?")?:\s*', '', text, count=1)
             preview = " ".join(text.split())[:120] or "Details unavailable"
+            title = first_line_title(text) or "Details unavailable"
     except (ValueError, TypeError, AttributeError):
         pass
-    return {"id": identity, "sequence": sequence, "from": sender, "preview": preview, "status": status}
+    return {"id": identity, "sequence": sequence, "from": sender, "title": title, "preview": preview, "status": status}
 
 
 def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = False) -> dict:

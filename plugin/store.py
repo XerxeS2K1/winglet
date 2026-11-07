@@ -87,7 +87,8 @@ CREATE INDEX IF NOT EXISTS jobs_created ON jobs (created_at);
 CREATE TABLE IF NOT EXISTS handoffs (
     delivery_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, from_bot TEXT NOT NULL DEFAULT '',
     to_bot TEXT NOT NULL, title TEXT NOT NULL, question TEXT NOT NULL,
-    state TEXT NOT NULL DEFAULT 'inline', inline_until REAL NOT NULL, created_at REAL NOT NULL
+    state TEXT NOT NULL DEFAULT 'inline', inline_until REAL NOT NULL, created_at REAL NOT NULL,
+    subject TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS handoffs_pending ON handoffs (state, inline_until);
 -- Opt-in phone tools (Assignment 11). Grants are per device and per tool; a scope of '' is the main bot,
@@ -125,6 +126,8 @@ CREATE INDEX IF NOT EXISTS branch_operations_chat ON branch_operations (chat_id)
 
 # Columns added after v0.3. Existing phones become owners, unverified until they scan a fresh code.
 _MIGRATIONS = [
+    # The short title the asking agent gave the hand-off (title above is the asked bot's name).
+    ("handoffs", "subject", "TEXT NOT NULL DEFAULT ''"),
     ("devices", "role", "TEXT NOT NULL DEFAULT 'owner'"),
     ("devices", "sign_key", "TEXT NOT NULL DEFAULT ''"),
     ("devices", "verified", "INTEGER NOT NULL DEFAULT 0"),
@@ -541,15 +544,32 @@ class Store:
     # -- durable bot hand-offs ----------------------------------------------------
 
     def register_handoff(self, delivery_id: str, chat_id: str, to_bot: str, title: str,
-                         question: str, wait_seconds: float) -> None:
+                         question: str, wait_seconds: float, *, subject: str = "") -> None:
+        from .handoffs import clean_title
+        subject = clean_title(subject)
         with self.transaction():
             chat = self.get_chat(chat_id)
             if chat is None:
                 raise ValueError("The asking chat no longer exists.")
             self._exec("INSERT INTO handoffs (delivery_id, chat_id, from_bot, to_bot, title, question, "
-                       "inline_until, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                       "inline_until, created_at, subject) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (delivery_id, chat_id, chat.get("bot") or "", to_bot, title, question[:2000],
-                        _now() + wait_seconds + 30, _now()))
+                        _now() + wait_seconds + 30, _now(), subject))
+
+    def handoff_subjects(self, delivery_ids) -> Dict[str, str]:
+        """{delivery id: the short title its sender gave it} for those that have one. Cleaned again on the way out: the
+        title is the sender's own text and the row could have been damaged or edited."""
+        from .handoffs import clean_title
+        ids = [i for i in delivery_ids if isinstance(i, str)]
+        found: Dict[str, str] = {}
+        for start in range(0, len(ids), 400):  # stay far below SQLite's limit on bound variables
+            chunk = ids[start:start + 400]
+            marks = ",".join("?" * len(chunk))
+            for row in self._all(f"SELECT delivery_id, subject FROM handoffs WHERE subject != '' AND delivery_id IN ({marks})", tuple(chunk)):
+                subject = clean_title(row["subject"])
+                if subject:
+                    found[row["delivery_id"]] = subject
+        return found
 
     def handoff_state(self, delivery_id: str, state: str) -> None:
         if state not in ("waiting", "done"):
