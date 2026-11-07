@@ -8,7 +8,7 @@ function harness(data: any = updates) {
   const useApp: any = (select: any) => select(state); useApp.getState = () => ({ ...state, toast: (v: any) => toasts.push(v) });
   const modules: any = {
     react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View' },
-    'react-native-reanimated': { default: { View: 'AnimatedView' }, FadeIn: anything }, 'expo-router': { router: anything, useFocusEffect: () => {}, usePathname: () => '/' },
+    'react-native-reanimated': { default: { View: 'AnimatedView' }, FadeIn: anything }, 'expo-router': { router: anything, useFocusEffect: host.useFocusEffect, usePathname: () => '/' },
     '../components/JobSheet': { JobSheet: 'JobSheet' }, '../components/icons': anything,
     '../components/Screen': { Screen: 'Screen' }, '../components/ServerScreen': { withSelectedServer: (c: any) => c }, '../components/Sheet': { Sheet: 'Sheet' },
     '../components/ui': { Button: 'Button', Card: 'Card', ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Skeleton: 'Skeleton', Toggle: 'Toggle' },
@@ -17,16 +17,21 @@ function harness(data: any = updates) {
     '../lib/motion': { spring: {}, useReducedMotion: () => true }, '../lib/store': { useApp, useServerState: () => state.runtime.s, isOwner: (rt: any) => (rt?.me?.role ?? 'owner') === 'owner' },
     '../lib/themeContext': { useTheme: () => anything, makeStyles: () => () => anything }, '../lib/serverUpdates': net.core,
   };
-  const exports = load('app/server.tsx', modules);
+  const exports = load('app/server.tsx', modules, { setInterval: () => 0, clearInterval: () => {} });
   const render = () => host.render(exports.default);
   const start = async () => { render(); await tick(); const row = nodes(render()).find((n) => n.props?.name === 'Winglet'); assert.ok(row); row.props.onUpdate();
     const confirm = nodes(render()).find((n) => n.props?.what === 'winglet'); assert.ok(confirm); return { run: confirm.props.onConfirm }; };
-  return { ...net, render, start, toasts, unmount: host.unmount };
+  return { ...net, render, start, toasts, focus: host.focus, blur: host.blur, unmount: host.unmount };
 }
 test('Server Winglet row awaits unlock then sends the release version and key', async () => {
-  const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick();
+  const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick(); h.focus();
   assert.equal(h.requests.length, 0); assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); await pending;
   assert.deepEqual(JSON.parse(JSON.stringify(h.requests[0][3])), { target: 'winglet', version: '0.10.6', idempotency_key: 'key' });
+});
+test('Server Winglet row sends nothing when the screen loses focus during unlock', async () => {
+  const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick(); h.focus();
+  assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); h.blur(); await pending;
+  assert.equal(h.requests.length, 0);
 });
 test('Server Winglet row sends nothing after unlock cancellation', async () => {
   const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick(); assert.equal(h.requests.length, 0); h.resolve(false); await pending; assert.equal(h.requests.length, 0);

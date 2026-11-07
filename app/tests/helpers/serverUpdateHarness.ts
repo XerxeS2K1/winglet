@@ -13,13 +13,17 @@ export const anything: any = new Proxy(function () {}, { get: (_t, key) => key =
 export const jsx = (type: any, props: any) => ({ type, props });
 export function hooks() {
   let cursor = 0; const slots: any[] = [], effects: any[] = [];
+  let focusCb: any = null, focusCleanup: any = null;
   const react = {
     useState: (v: any) => { const i = cursor++; if (!(i in slots)) slots[i] = typeof v === 'function' ? v() : v; return [slots[i], (next: any) => { slots[i] = typeof next === 'function' ? next(slots[i]) : next; }]; },
     useRef: (v: any) => { const i = cursor++; return slots[i] ??= { current: v }; }, useCallback: (f: any) => f,
     useEffect: (f: any, deps: any[]) => { const i = cursor++; const old = effects[i]; if (!old || deps.some((v, n) => v !== old.deps[n])) effects[i] = { deps, pending: f, cleanup: old?.cleanup }; },
   };
   return { react, render: (fn: any) => { cursor = 0; const tree = fn(); for (const effect of effects) if (effect?.pending) { effect.cleanup?.(); const f = effect.pending; effect.pending = null; effect.cleanup = f(); } return tree; },
-    unmount: () => { for (const e of effects) e?.cleanup?.(); } };
+    unmount: () => { for (const e of effects) e?.cleanup?.(); },
+    useFocusEffect: (cb: any) => { focusCb = cb; },
+    focus: () => { if (focusCb) focusCleanup = focusCb(); },
+    blur: () => { if (focusCleanup) { focusCleanup(); focusCleanup = null; } } };
 }
 export function nodes(n: any): any[] { return n && typeof n === 'object' ? [n, ...[n.props?.children, n.props?.right].flat(Infinity).flatMap(nodes)] : []; }
 export function text(n: any): string { return [n].flat(Infinity).map((v) => typeof v === 'string' || typeof v === 'number' ? String(v) : v && typeof v === 'object' ? text(v.props?.children) : '').join(' '); }

@@ -45,6 +45,7 @@ function ServerScreen() {
   const [job, setJob] = useState<Job | null>(null);
   const [pausing, setPausing] = useState(false);
   const active = useRef(true);
+  const focused = useRef(true);
   const updatingWinglet = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
@@ -61,9 +62,10 @@ function ServerScreen() {
 
   // Health is live: refresh while the screen is open, and again when the server comes back.
   useFocusEffect(useCallback(() => {
+    focused.current = true;
     load();
     const id = setInterval(load, 15000);
-    return () => clearInterval(id);
+    return () => { focused.current = false; clearInterval(id); };
   }, [load]));
   useEffect(() => { check(); }, [check]);
   const online = rt?.status === 'online';
@@ -95,7 +97,7 @@ function ServerScreen() {
       const eligible = () => {
         const state = useApp.getState();
         const current = state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0];
-        return active.current && !!current && current.id === server.id && current.deviceId === server.deviceId
+        return active.current && focused.current && !!current && current.id === server.id && current.deviceId === server.deviceId
           && current.url === server.url && isOwner(state.runtime[server.id]);
       };
       try {
