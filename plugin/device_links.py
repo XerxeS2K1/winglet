@@ -58,9 +58,12 @@ class DeviceLinks:
                                             "verification_code", "expires_at", "status")}
 
     def _owner(self, request):
-        # Middleware verified this request's signature; check current authority too.
+        # Middleware verified this request's signature; check current authority too, and that the key
+        # which signed it is still the device's verified key (it can change while a body is being read).
         me = self.hub.store.get_device(self.hub._require(request)["id"])
-        if not me or me["role"] != "owner" or not self.hub.store.device_sign_key(me["id"]):
+        current = self.hub.store.device_sign_key(me["id"]) if me else ""
+        if (not me or me["role"] != "owner" or not current
+                or request.get("verified_sign_key") != current):
             raise web.HTTPForbidden(text='{"error":"A verified owner must approve this browser."}',
                                     content_type="application/json")
         return me

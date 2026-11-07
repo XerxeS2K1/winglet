@@ -769,6 +769,9 @@ class Hub:
             return BAD_SIGNATURE
         if not self.store.use_nonce(nonce, keys.CLOCK_SKEW_SECONDS):
             return "This request was already used."
+        # Remember which key actually validated this request: the key was read before the body, so a
+        # rotation during that read must not let the revoked key's request be blessed by the new one.
+        request["verified_sign_key"] = sign_key
         return None
 
     # -- who sees what -------------------------------------------------------------------

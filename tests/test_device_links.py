@@ -1,5 +1,6 @@
 """Trusted-phone approval of a browser's own signing key (no live server/data)."""
 
+import asyncio
 import json
 import re
 import time
@@ -240,6 +241,41 @@ async def test_concurrent_claim_creates_exactly_one_device(client, hub):
     replies = await asyncio.gather(*(claim_link(client, hub, browser, link) for _ in range(3)))
     assert sorted(r.status for r in replies) == [200, 404, 404]
     assert len(hub.store.list_devices()) == 2
+
+
+async def test_signing_key_replaced_during_body_read_cannot_approve(client, hub, monkeypatch):
+    """The middleware reads the signing key before the body; a rotation in that window must not let the
+    revoked key's in-flight approval be blessed by the replacement key."""
+    from aiohttp.web_request import BaseRequest
+    phone = await pair_phone(client, hub)
+    browser, link = await start_link(client, hub)
+    path = f"/api/device-links/{link['id']}/approve"
+    original = BaseRequest.read
+    entered = asyncio.Event()
+    resume = asyncio.Event()
+    held = False
+
+    async def read(request):
+        nonlocal held
+        if request.path == path and request.method == "POST" and not held:
+            held = True
+            entered.set()
+            await resume.wait()
+        return await original(request)
+
+    monkeypatch.setattr(BaseRequest, "read", read)
+    task = asyncio.create_task(approve(client, phone, browser, link))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert hub.store.device_sign_key(phone.id) == phone.public
+        hub.store.set_device_key(phone.id, Phone("replacement signing key").public)
+    finally:
+        resume.set()
+    response = await task
+    assert response.status == 403
+    assert hub.device_links.pending[link["id"]]["status"] == "pending"
+    assert (await claim_link(client, hub, browser, link)).status == 200
+    assert len(hub.store.list_devices()) == 1
 
 
 async def test_preview_and_audit_never_expose_poll_credentials(client, hub):
