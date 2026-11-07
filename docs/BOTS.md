@@ -33,6 +33,13 @@ open a read-only queue sheet showing their order (nothing can be cancelled or re
 shows which Winglet chat asked, and a short "finished" note appears in that chat when it is done. The note does not
 wake the asking bot. These need a server plugin that matches the app.
 
+A bot also stays "Working" while it has a live tracked background task, such as a build or a test run,
+although it has already acknowledged the request. This does not add a hand-off or change the queue count.
+The server reports only the number of background tasks and a short reason, never command lines. Missing
+or unreadable process records leave the usual activity rule unchanged. Dead or recycled process IDs do
+not count. This reads Hermes 0.23's persisted process checkpoint, scoped to the bot's session namespace;
+processes inside a sandbox cannot be verified on the host and are not counted.
+
 ### The hand-off queue and its titles
 
 When a bot is busy, the hand-offs waiting for it are listed (owner only) in the queue sheet opened from the bot

@@ -2575,6 +2575,76 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
     return {"id": identity, "sequence": sequence, "from": sender, "title": title, "preview": preview, "status": status}
 
 
+BACKGROUND_FILE = "processes.json"  # Hermes's crash-recovery checkpoint, written atomically
+BACKGROUND_FILE_MAX_BYTES = 2 * 1024 * 1024
+BACKGROUND_MAX_ENTRIES = 500
+_PROC_ROOT = Path("/proc")  # Linux process table; absent elsewhere, where a recorded start time cannot be verified
+
+
+def _background_prefix(profile) -> str:
+    # gateway.session._session_key_namespace: default uses main; a profile literally named main uses main~.
+    name = "main" if not profile or profile == "default" else "main~" if profile == "main" else profile
+    return f"agent:{name}:"
+
+
+def _background_count(home: Path, profile: str) -> int:
+    """Read only Hermes's persisted checkpoint. Never import its live registry or expose commands.
+
+    The registry is process-global, so a checkpoint can contain several profiles. Read both this
+    profile's file and the gateway home's file, match session namespaces exactly, and deduplicate
+    session IDs. Unsupported or unreadable entries contribute nothing, not an unknown activity state.
+    """
+    import os
+    homes = {Path(home)}
+    try:
+        from hermes_cli.profiles import _get_default_hermes_home
+        homes.add(Path(_get_default_hermes_home()))
+    except Exception:
+        pass
+    seen = set()
+    checked = 0
+    prefix = _background_prefix(profile)
+    for folder in sorted(homes, key=str):
+        try:
+            with (folder / BACKGROUND_FILE).open("rb") as source:
+                raw = source.read(BACKGROUND_FILE_MAX_BYTES + 1)
+            if len(raw) > BACKGROUND_FILE_MAX_BYTES:
+                continue
+            entries = json.loads(raw.decode("utf-8-sig"))
+            if not isinstance(entries, list):
+                continue
+        except (OSError, ValueError, UnicodeError):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key, identity, pid = entry.get("session_key"), entry.get("session_id"), entry.get("pid")
+            if not isinstance(key, str) or not key.startswith(prefix):
+                continue  # another bot's: it must not use up this bot's budget
+            if checked >= BACKGROUND_MAX_ENTRIES:
+                return len(seen)
+            checked += 1
+            if not isinstance(identity, str) or not identity or identity in seen:
+                continue
+            if type(pid) is not int or not 0 < pid <= 2**31 - 1 or entry.get("pid_scope", "host") != "host":
+                continue
+            expected = entry.get("host_start_time")
+            if expected is not None and (type(expected) is not int or expected < 0):
+                continue
+            try:
+                os.kill(pid, 0)  # liveness only; never signal, reap, or change the registry
+                if _PROC_ROOT.is_dir():
+                    fields = (_PROC_ROOT / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
+                    if fields[0] in ("Z", "X") or expected is not None and int(fields[19]) != expected:
+                        continue
+                elif expected is not None:
+                    continue  # cannot prove this is still the recorded process on this platform
+            except (OSError, ValueError, IndexError, OverflowError):
+                continue
+            seen.add(identity)
+    return len(seen)
+
+
 def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = False) -> dict:
     """Read-only activity: live gateway work plus the canonical hand-off FIFO, never receipt mtimes.
 
@@ -2638,9 +2708,11 @@ def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = 
                 delegation_known = False  # no trustworthy profile attribution
     except Exception:
         delegation_known = False
-    state = ("working" if known and (count or started or delegating) else
+    background = _background_count(home, profile)
+    state = ("working" if background or known and (count or started or delegating) else
              "idle" if known and queued is not None and delegation_known else "unknown")
-    return {"state": state, "queued": queued, **({"queue": queue, "queue_truncated": truncated} if include_queue else {})}
+    extra = {"background": background, "reason": "Running a background task" if background == 1 else f"Running {background} background tasks"} if background else {}
+    return {"state": state, "queued": queued, **({"queue": queue, "queue_truncated": truncated} if include_queue else {}), **extra}
 
 
 def bot_activities() -> dict:
