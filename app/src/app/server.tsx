@@ -16,7 +16,8 @@ import { api, ApiError, signedApi } from '../lib/api';
 import { bytes, duration, idempotencyKey } from '../lib/control';
 import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
-import { useApp, useServerState } from '../lib/store';
+import { isOwner, useApp, useServerState } from '../lib/store';
+import { checkServerUpdates, updateServerWinglet } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Job, PauseState, SystemInfo, UpdatesInfo } from '../lib/types';
 
@@ -43,6 +44,10 @@ function ServerScreen() {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [job, setJob] = useState<Job | null>(null);
   const [pausing, setPausing] = useState(false);
+  const active = useRef(true);
+  const focused = useRef(true);
+  const updatingWinglet = useRef(false);
+  useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const load = useCallback(() => {
     if (!server) return;
@@ -51,15 +56,16 @@ function ServerScreen() {
   const check = useCallback((force = false) => {
     if (!server) return;
     setChecking(true);
-    api<UpdatesInfo>(server, `/api/system/updates${force ? '?force=1' : ''}`).then(setUpdates)
+    checkServerUpdates(server, force).then(setUpdates)
       .catch(() => undefined).finally(() => setChecking(false));
   }, [server]);
 
   // Health is live: refresh while the screen is open, and again when the server comes back.
   useFocusEffect(useCallback(() => {
+    focused.current = true;
     load();
     const id = setInterval(load, 15000);
-    return () => clearInterval(id);
+    return () => { focused.current = false; clearInterval(id); };
   }, [load]));
   useEffect(() => { check(); }, [check]);
   const online = rt?.status === 'online';
@@ -85,6 +91,27 @@ function ServerScreen() {
 
   const start = async (what: Confirm) => {
     setConfirm(null);
+    if (what === 'winglet') {
+      if (updatingWinglet.current || updates?.winglet.requires_hermes_ok === false) return;
+      updatingWinglet.current = true;
+      const eligible = () => {
+        const state = useApp.getState();
+        const current = state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0];
+        return active.current && focused.current && !!current && current.id === server.id && current.deviceId === server.deviceId
+          && current.url === server.url && isOwner(state.runtime[server.id]);
+      };
+      try {
+        const next = await updateServerWinglet(server, updates?.winglet.latest_release?.version ?? updates?.winglet.latest, eligible);
+        if (next && eligible()) setJob(next);
+      } catch (e) {
+        if (active.current) {
+          haptic.error();
+          useApp.getState().toast({ serverId: server.id, title: "Couldn't start", body: (e as Error).message });
+          if (e instanceof ApiError && e.status === 409 && e.data?.job) setJob(e.data.job as Job);
+        }
+      } finally { updatingWinglet.current = false; }
+      return;
+    }
     const path = what === 'restart' ? '/api/system/restart' : '/api/system/update';
     const body = { ...(what === 'restart' ? {} : { target: what }), idempotency_key: idempotencyKey() };
     const send = () => signedApi<{ job: Job }>(server, 'POST', path, body);
@@ -198,7 +225,8 @@ function hermesUpdate(u: UpdatesInfo | null): { status: string; available: boole
 function wingletUpdate(u: UpdatesInfo | null): { status: string; available: boolean } {
   const w = u?.winglet;
   if (!w) return { status: 'Checking…', available: false };
-  if (w.update_available) return { status: 'A new version is ready', available: true };
+  if (w.requires_hermes_ok === false) return { status: 'Hermes is too old for this release. Update Hermes first.', available: false };
+  if (w.update_available === true) return { status: 'A new version is ready', available: true };
   if (w.update_available === false) return { status: 'Up to date', available: false };
   if (/provenance|not installed from git/i.test(w.reason ?? '')) return { status: 'Installed from a copy, so update it on the server.', available: false };
   return { status: w.reason || "Couldn't tell", available: false };

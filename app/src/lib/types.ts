@@ -307,7 +307,11 @@ export type UpdatesInfo = {
   hermes: { install_method?: string; current_version?: string; behind?: number | null; update_available?: boolean;
     can_apply?: boolean; update_command?: string; message?: string | null; error?: string };
   winglet: { update_available: boolean | null; current?: string | null; latest?: string | null; reason?: string;
-    needs_fixing?: string | null; version: string };
+    needs_fixing?: string | null; version: string;
+    latest_release?: { version: string; tag: string; sha: string; notes: string; url: string; requires_hermes: string } | null;
+    requires_hermes_ok?: boolean;
+    busy?: { bots: { bot: string; state: string; queued: number }[]; unknown: boolean };
+  };
   checked_at: number;
 };
 

@@ -159,7 +159,7 @@ export const draftKey = (serverId: string, chatId: string) => `${serverId}:${cha
 export const homeChat = (rt?: ServerState) => rt?.me?.home_chat ?? 'general';
 
 /** Owners can approve commands and manage the server; members chat in their own chats. */
-export const isOwner = (rt?: ServerState) => (rt?.me?.role ?? 'owner') === 'owner';
+export const isOwner = (rt?: ServerState) => rt?.me?.role === 'owner';
 
 const connections = new Map<string, Connection>();
 const coordinator = new RecoveryCoordinator();
