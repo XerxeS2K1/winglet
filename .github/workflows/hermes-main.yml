@@ -3,7 +3,8 @@ name: Hermes main check (fork only)
 # Weekly: the plugin's tests against the newest Hermes `main`, so a removed or changed Hermes function shows
 # up here as a red run, not as a bug on the phone. CI proper stays pinned to a Hermes release (ci.yml).
 # GitHub only runs scheduled workflows from the repository's default branch, so this file has to be there;
-# it checks out and tests integration/dev-all explicitly. Do not send this file upstream.
+# it checks out and tests main explicitly (main is what users install; unreleased work is covered by CI on every push).
+# Do not send this file upstream.
 # The ref inputs can only be typed by someone who can already push to this repository (workflow_dispatch).
 
 on:
@@ -15,8 +16,8 @@ on:
         description: "Hermes ref to test against (default: main)"
         default: main
       plugin_ref:
-        description: "Winglet ref to test (default: integration/dev-all)"
-        default: integration/dev-all
+        description: "Winglet ref to test (default: main)"
+        default: main
 
 jobs:
   hermes-main:
@@ -26,7 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.plugin_ref || 'integration/dev-all' }}
+          ref: ${{ inputs.plugin_ref || 'main' }}
       - uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
