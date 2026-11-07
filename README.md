@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.4](docs/releases/v0.10.4.md):** no more false "No internet" after the phone sleeps, a one-time
+> **New in [v0.10.5](docs/releases/v0.10.5.md):** in-app server plugin update with fingerprint confirmation, queue titles, background activity indicator, fallback notice repair, theme consistency, and the main-based release flow.
 > battery question on Android, and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and
 > which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
