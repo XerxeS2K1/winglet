@@ -4,10 +4,13 @@ import { KeyboardAvoidingView, Linking, Platform, ScrollView, StyleSheet, Text, 
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { BotAvatar } from '../components/BotAvatar';
+import { BrowserSignIn } from '../components/BrowserSignIn';
 import { ArrowLeft, ExternalLink, KeyRound, QrCode, Share, SquarePlus } from '../components/icons';
 import { Logo } from '../components/Logo';
-import { Button, Field, IconButton } from '../components/ui';
-import { defaultDeviceName, fetchInfo, normalizeUrl, pair, parsePairLink } from '../lib/api';
+import { Button, Field, Footnote, IconButton } from '../components/ui';
+import { defaultDeviceName, fetchInfo, normalizeUrl } from '../lib/api';
+import { connectPairing, type PairingResult } from '../lib/pairing';
+import type { BrowserDeviceLink, BrowserLinkState } from '../lib/deviceLinks';
 import { useReducedMotion } from '../lib/motion';
 import { isIOS, isStandalone } from '../lib/push';
 import { useApp } from '../lib/store';
@@ -20,11 +23,18 @@ export default function PairScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ code?: string; url?: string; fp?: string }>();
   const hasServers = useApp((st) => st.servers.length > 0);
-  const addServer = useApp((st) => st.addServer);
+  const initialUnpaired = useRef(!hasServers);
+  const [link, setLink] = useState('');
+  const [result, setResult] = useState<PairingResult | null>(null);
+  const connecting = useRef(false);
+  const browserSession = useRef<BrowserDeviceLink | null>(null);
+  const [manualChosen, setManualChosen] = useState(false);
+  const [browserPhase, setBrowserPhase] = useState<BrowserLinkState['phase']>('idle');
+  const browserApproved = ['saving', 'save-error', 'paired'].includes(browserPhase);
   const [url, setUrl] = useState(params.url ?? '');
   const [code, setCode] = useState(params.code ?? '');
   const [deviceName, setDeviceName] = useState(defaultDeviceName());
-  const [manual, setManual] = useState(!!params.code || Platform.OS === 'web');
+  const [manual, setManual] = useState(!!params.code);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const autoTried = useRef(false);
@@ -40,23 +50,20 @@ export default function PairScreen() {
   }, [url]);
 
   const connect = async (u = url, c = code, fp = params.fp) => {
-    const link = parsePairLink(u);
-    const target = link ? link.url : normalizeUrl(u);
-    const theCode = link ? link.code : c;
-    const fingerprint = link ? link.fp : fp;
-    if (!target || !theCode) {
-      setError('Enter your server address and the code from `hermes winglet pair`.');
-      return;
-    }
+    if (connecting.current || browserApproved) return;
+    if (browserSession.current && !browserSession.current.beginManual()) { setError('The browser sign-in is finishing a check. Wait for it, or finish saving the approved browser.'); return; }
+    setManualChosen(true);
+    connecting.current = true;
+    const input = fp && !u.includes('#') ? `${normalizeUrl(u)}/#pair=${c}&fp=${fp}` : u;
     setBusy(true);
     setError(null);
     try {
-      const server = await pair(target, theCode, deviceName.trim() || defaultDeviceName(), fingerprint);
-      await addServer(server);
-      router.replace('/');
+      const next = await connectPairing(input, c, deviceName.trim() || defaultDeviceName(), useApp.getState());
+      setResult(next);
     } catch (e) {
       setError((e as Error).message);
     } finally {
+      connecting.current = false;
       setBusy(false);
     }
   };
@@ -96,11 +103,7 @@ export default function PairScreen() {
 
             <View style={s.hero}>
               <Text style={s.tagline} accessibilityRole="header">
-                {showInstall ? 'Install on your iPhone' : params.code ? 'Pairing…' : hasServers ? 'Add another bot' : 'Your agents, in your pocket'}
-              </Text>
-              <Text style={s.context}>
-                {showInstall ? 'Add Winglet to your Home Screen for notifications.'
-                  : <>Run <Text style={s.code}>hermes winglet pair</Text> on your server, then {Platform.OS === 'web' ? 'enter the code it shows' : 'scan the code it shows'}.</>}
+                {showInstall ? 'Install Winglet' : result ? 'Connection' : hasServers ? 'Link a device' : 'Connect Winglet'}
               </Text>
             </View>
 
@@ -115,21 +118,35 @@ export default function PairScreen() {
                 </View>
                 <Button size="lg" variant="secondary" title="Continue in Safari instead" onPress={() => setSkipInstall(true)} />
               </View>
+            ) : result ? (
+              <View style={s.panel}>
+                <Text style={s.bold}>{result.verified ? 'Verified connection' : 'Limited connection'}{result.role ? ` · ${result.role === 'owner' ? 'Owner' : 'Member'}` : ' · Access not checked yet'}</Text>
+                <Footnote>{!result.verified ? 'Complete verification with a fingerprint-bearing pairing link before using owner changes. The server key is not trusted from a network lookup alone.' : result.role === 'owner' ? 'Owners can approve commands, see all chats, change settings and manage devices.' : 'Members have their own chats, without approvals or settings. Memory and tools are shared.'}</Footnote>
+                {!result.verified ? <Button title="Complete verification" onPress={() => { setResult(null); setLink(''); setManual(false); }} /> : null}
+                <Button title="Continue" variant={result.verified ? 'primary' : 'secondary'} onPress={() => router.replace('/')} />
+              </View>
             ) : (
               <View style={s.actions}>
+                {Platform.OS === 'web' && initialUnpaired.current && !params.code && !manualChosen && globalThis.location?.origin ? <BrowserSignIn base={globalThis.location.origin} onPhase={setBrowserPhase} sessionRef={browserSession} /> : null}
                 {Platform.OS !== 'web' ? (
                   <Button size="lg" title="Scan QR code" icon={<QrCode size={19} color={t.colors.onInk} />} onPress={() => router.push('/scan')} />
                 ) : null}
+                <View style={s.panel}>
+                  <Field label="Paste pairing link" value={link} onChangeText={setLink} placeholder="https://…/#pair=…&fp=…" autoCapitalize="none" autoCorrect={false} />
+                  <Button title="Connect and verify" loading={busy} disabled={!link.trim() || browserApproved} onPress={() => connect(link, '', undefined)} variant="secondary" />
+                  <Footnote>Use the whole link from the server or Add a device on a trusted owner device.</Footnote>
+                </View>
                 {manual ? (
                   <View style={[s.panel, { gap: t.space.lg }]}>
+                    <Footnote>Run hermes winglet pair on the server. A code alone connects with limited access; paste its full link to verify in one step.</Footnote>
                     <Field label="Server address" value={url} onChangeText={setUrl} placeholder="192.168.1.20:8787 or https://box.ts.net" autoCapitalize="none" autoCorrect={false} keyboardType="url" />
                     <Field label="Pairing code" value={code} onChangeText={setCode} placeholder="ABCD-2345" autoCapitalize="characters" autoCorrect={false}
                       style={s.codeInput} onSubmitEditing={() => connect()} />
                     <Field label="This device's name" value={deviceName} onChangeText={setDeviceName} placeholder="My phone" />
-                    <Button size="lg" title="Connect" loading={busy} onPress={() => connect()} variant={Platform.OS === 'web' ? 'primary' : 'secondary'} />
+                    <Button size="lg" title="Connect" disabled={browserApproved} loading={busy} onPress={() => connect()} variant={Platform.OS === 'web' ? 'primary' : 'secondary'} />
                   </View>
                 ) : (
-                  <Button size="lg" variant="secondary" title="Enter a code instead" icon={<KeyRound size={17} color={t.colors.text} />} onPress={() => setManual(true)} />
+                  <Button size="lg" variant="secondary" title="Use address and code" icon={<KeyRound size={17} color={t.colors.text} />} onPress={() => setManual(true)} />
                 )}
                 {error ? <Text style={s.error} accessibilityRole="alert">{error}</Text> : null}
               </View>

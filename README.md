@@ -90,6 +90,13 @@ Setup gives you a free HTTPS address through Cloudflare. You don't need an accou
 **3. Say hello.** Your bot is on the landing screen, ready for a message.
 
 The QR code carries your server key's fingerprint, so the phone checks it's really your server before pairing.
+You can also choose **Paste pairing link** for the same one-step verification. A link for an existing connection
+verifies that device instead of creating another one. Address/code-only access stays visibly limited until verified.
+
+With the matching device-linking server API, an unpaired web browser can show a sign-in QR for an already-verified
+owner phone: **Devices → Link a device → Scan browser QR**, compare the check code, choose Member or Owner and
+explicitly approve. The browser receives its own keys and identity. Older servers keep the manual fallback.
+See [pairing and browser sign-in](docs/DEVICE_LINKING.md) for the trust checks, expiry, storage recovery and local-only test status.
 For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**. Which Hermes versions work, and what an older one loses: [compatibility](docs/HERMES_COMPATIBILITY.md).
 
 <a id="notifications"></a>

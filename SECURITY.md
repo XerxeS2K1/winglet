@@ -18,6 +18,30 @@ We'll acknowledge the report as soon as we can and keep you updated on the fix.
 
 Winglet is pre-alpha. Only the latest code on `main` is supported.
 
+## Pairing and browser approval
+
+A full pairing link carries an out-of-band server fingerprint. A manual code alone does not
+justify trusting a fingerprint fetched over that same network; code-only connections remain
+unpinned and cannot claim verified owner access. Existing pinned identities reject a conflicting link.
+
+The local browser-linking app flow requires the matching server API. A browser generates its own
+Ed25519 key in memory and shows only a public request id and fingerprint in the QR. A verified
+owner on that same, already-pinned server must compare the six-digit code, explicitly choose
+a role (Member by default), confirm and approve. Requester-supplied browser name/platform are
+not trusted identities. Never approve a QR for a browser you are not signing into. Scanning an
+unknown server's request sends no saved credential to it. Approval preview is signed and uses
+the parent pairing; the approval binds the exact preview key and code.
+
+Create/claim data is sealed using separate purposes. The claim signs
+`winglet-device-link-claim-v1\n<id>\n<poll_token>` with the browser's own key. The phone never
+receives the browser token or private key. An approved one-use claim is retained in memory on
+local storage failure so Retry saving cannot mint another device; reloading loses that recovery
+state. Do not start another identity while a save is unresolved. A lost one-use response is
+ambiguous; Devices can remove an orphan before a deliberate new sign-in.
+
+See [the flow and limitations](docs/DEVICE_LINKING.md). App tests use isolated fake HTTP, not a
+phone or live gateway. Backend enforcement and integrated browser testing are separate gates.
+
 ## Automatic remote access
 
 Automatic setup publishes the Winglet HTTP/WebSocket service through a Cloudflare Quick Tunnel.

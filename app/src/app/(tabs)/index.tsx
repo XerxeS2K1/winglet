@@ -9,6 +9,7 @@ import { ChatView } from '../../components/ChatView';
 import { focusComposer } from '../../components/Composer';
 import { Landing, type LandingMode } from '../../components/Landing';
 import { claimLaunch, launchPath } from '../../lib/launchLink';
+import { parseDeviceLink } from '../../lib/deviceLinks';
 import { NEW_CHAT_DRAFT, newChatTarget } from '../../lib/landingChat';
 import { useMainBot } from '../../lib/mainBot';
 import { mergeDraft } from '../../lib/share';
@@ -41,6 +42,12 @@ export default function Home() {
   useEffect(() => {
     if (!selection.serverId && main) useApp.getState().select(main.id, homeChat(useApp.getState().runtime[main.id]));
   }, [selection.serverId, main]);
+  const browserLink = Platform.OS === 'web' && parseDeviceLink(globalThis.location?.href ?? '');
+  if (browserLink) {
+    const link = globalThis.location.href;
+    globalThis.history?.replaceState(null, '', '/');
+    return <Redirect href={{ pathname: '/link-device', params: { link } }} />;
+  }
   if (hashLink) {
     globalThis.history?.replaceState(null, '', '/');
     return <Redirect href={{ pathname: '/pair', params: { ...hashLink, url: globalThis.location.origin } }} />;
