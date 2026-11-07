@@ -10,6 +10,8 @@ from pathlib import Path
 
 import pytest
 
+pytest.importorskip('gateway.session_context')  # needs Hermes's gateway package
+
 from plugin import adapter, hermes_api as api, update_rollback as ur
 from plugin.hub import VERSION
 

@@ -4,6 +4,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+pytest.importorskip('gateway.session_context')  # needs Hermes's gateway package
+
 from plugin import hermes_api
 from plugin.adapter import WingletAdapter
 
