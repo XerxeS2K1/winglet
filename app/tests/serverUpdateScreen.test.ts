@@ -14,7 +14,7 @@ function harness(data: any = updates) {
     '../components/ui': { Button: 'Button', Card: 'Card', ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Skeleton: 'Skeleton', Toggle: 'Toggle' },
     '../components/VerifyPhone': { VerifyNotice: 'VerifyNotice' }, '../lib/agent': { agoText: () => '' }, '../lib/api': net.api,
     '../lib/control': { bytes: () => '', duration: () => '', idempotencyKey: () => 'key' }, '../lib/haptics': { haptic: { error: () => {}, success: () => {} } },
-    '../lib/motion': { spring: {}, useReducedMotion: () => true }, '../lib/store': { useApp, useServerState: () => state.runtime.s, isOwner: (rt: any) => (rt?.me?.role ?? 'owner') === 'owner' },
+    '../lib/motion': { spring: {}, useReducedMotion: () => true }, '../lib/store': { useApp, useServerState: () => state.runtime.s, isOwner: (rt: any) => rt?.me?.role === 'owner' },
     '../lib/themeContext': { useTheme: () => anything, makeStyles: () => () => anything }, '../lib/serverUpdates': net.core,
   };
   const exports = load('app/server.tsx', modules, { setInterval: () => 0, clearInterval: () => {} });
