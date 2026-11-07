@@ -23,7 +23,7 @@ function DevicesScreen() {
   const servers = useApp((st) => st.servers);
   const selection = useApp((st) => st.selection);
   const server = servers.find((x) => x.id === selection.serverId) ?? servers[0];
-  if (!server) return <Screen title="Devices"><Text>No bots paired yet.</Text></Screen>;
+  if (!server) return <Screen title="Devices"><Footnote>No bots paired yet.</Footnote></Screen>;
   return <Devices server={server} />;
 }
 
