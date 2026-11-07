@@ -50,7 +50,22 @@ VERSION = "0.10.4"
 PROTOCOL = 2
 MIN_APP_PROTOCOL = 1
 HOME_CHAT_ID = "home"
+def _key_in_use() -> web.Response:
+    """A retry key finds only a job of the same kind; one that belongs to something else is refused, not answered with."""
+    return _error(409, "That request key was already used for something else. Try again.")
+
+
 RESTART_DELAY_SECONDS = 0.8
+# An installed update restarts the gateway only when no chat is running. Waiting is bounded: 30 minutes is long enough for
+# a normal chat or hand-off to finish, and shorter than the hour after which an unconfirmed update stops blocking a new one
+# and than the cron watch's life. Hermes itself refuses a restart while sessions are live (and says so only in the log of
+# the detached process it starts), so after asking, the hub keeps the rollback off for a grace period and, if it is still
+# running when that ends, treats the restart as not having happened.
+RESTART_POLL_SECONDS = 30
+RESTART_WAIT_SECONDS = 1800
+RESTART_GRACE_SECONDS = 240
+MAX_RESTART_TRIES = 3
+SNAPSHOT_EVERY_SECONDS = 300
 UPDATE_TIMEOUT_SECONDS = 30 * 60
 UPDATE_CHECK_SECONDS = 10 * 60
 MAX_ROUTINE_PROMPT = 8000
@@ -3201,15 +3216,47 @@ class Hub:
         target = str(body.get("target") or "")
         if target not in ("hermes", "winglet"):
             return _error(400, "target must be hermes or winglet")
-        if target == "hermes":
-            detail = {"from": self.hermes_version() or "", "message": "Starting the update…"}
-        else:
-            detail = {"from": VERSION, "message": "Downloading the new version…"}
-        job = await self._begin_job(request, device, f"{target}_update", detail, body=body)
+        if target == "winglet":
+            return await self._start_winglet_update(request, device, h, body)
+        detail = {"from": self.hermes_version() or "", "message": "Starting the update…"}
+        job = await self._begin_job(request, device, "hermes_update", detail, body=body)
         if isinstance(job, web.Response):
             return job
-        self.audit("system.update", device, f"started a {'Hermes' if target == 'hermes' else 'Winglet'} update")
-        self._spawn(self._run_hermes_update(job["id"], h) if target == "hermes" else self._run_winglet_update(job["id"], h))
+        self.audit("system.update", device, "started a Hermes update")
+        self._spawn(self._run_hermes_update(job["id"], h))
+        return _json({"job": job}, status=202)
+
+    async def _start_winglet_update(self, request: web.Request, device: Dict[str, Any], h: Any, body: Dict[str, Any]) -> web.Response:
+        """The phone names a version and nothing else. The server accepts it only if it is exactly the newest published
+        release and newer than the one running; the repository and the commit come from its own GitHub lookup."""
+        key = str(body.get("idempotency_key") or "")[:64] or None
+        if key:
+            existing = self.store.job_by_key(key)
+            if existing is not None:  # a retry, perhaps after the restart: answer with the job, not with "already up to date"
+                return _json({"job": existing}, status=202) if existing["kind"] == "winglet_update" else _key_in_use()
+        version = body.get("version")
+        if not isinstance(version, str) or h.parse_version(version) is None:
+            return _error(400, "Say which Winglet version to install, like 0.10.5.")
+        try:
+            release = await asyncio.to_thread(h.latest_release, True)  # looked up afresh: never trust a ten-minute-old answer here
+        except Exception as exc:
+            logger.info("[winglet] release lookup before an update failed: %s", exc)
+            return _error(503, "Couldn't reach GitHub to check the release. Nothing was changed.")
+        if not release:
+            return _error(409, "There is no published Winglet release to install.")
+        if version != release["version"]:
+            return _error(409, f"Winglet {version} isn't the newest release (that is {release['version']}). Check for updates again.")
+        if not h.is_newer(release["version"], VERSION):
+            return _error(409, f"Winglet is already on {VERSION}. Only a newer version can be installed.")
+        needs = release.get("requires_hermes")
+        if h.hermes_supports(needs, self.hermes_version()) is False:
+            return _error(409, f"Winglet {version} needs Hermes {needs}, and this server runs {self.hermes_version()}. Update Hermes first.")
+        detail = {"from": VERSION, "to": version, "message": "Backing up before the update…"}
+        job = await self._begin_job(request, device, "winglet_update", detail, body=body)
+        if isinstance(job, web.Response):
+            return job
+        self.audit("system.update", device, f"started a Winglet update to {version}")
+        self._spawn(self._run_winglet_update(job["id"], h, release))
         return _json({"job": job}, status=202)
 
     async def _begin_job(self, request: web.Request, device: Dict[str, Any], kind: str, detail: Dict[str, Any],
@@ -3220,7 +3267,7 @@ class Hub:
         if key:
             existing = self.store.job_by_key(key)
             if existing is not None:
-                return _json({"job": existing}, status=202)
+                return _json({"job": existing}, status=202) if existing["kind"] == kind else _key_in_use()
         busy = self._busy_job()
         if busy is not None:
             return _json({"error": "Something else is already in progress. Wait for it to finish.", "job": busy}, status=409)
@@ -3277,25 +3324,144 @@ class Hub:
             return
         await self._finish_job(job_id, "unknown", "The update is taking too long to report back. Check the server.")
 
-    async def _run_winglet_update(self, job_id: str, h: Any) -> None:
+    async def _run_winglet_update(self, job_id: str, h: Any, release: Dict[str, Any]) -> None:
+        """Safety net, install, check, then (and only then) restart so the new code loads. Every failure undoes the
+        install and stops: nothing on a failure path restarts the gateway, because Kraig does that himself."""
+        to = release["version"]
         try:
-            code, lines = await h.update_winglet()
+            prepared = await asyncio.to_thread(h.begin_update, release, VERSION)
         except Exception as exc:
-            logger.warning("[winglet] plugin update failed", exc_info=True)
-            await self._finish_job(job_id, "failed", f"The update couldn't start: {_clip(str(exc), 300)}")
+            logger.warning("[winglet] update safety net failed", exc_info=True)
+            await self._finish_job(job_id, "failed", f"The update didn't start, and nothing was changed: {_clip(str(exc), 300)}")
             return
-        if code != 0:
-            await self._finish_job(job_id, "failed", "The update didn't finish. Its output is below.", lines=lines[-20:])
+        try:
+            await self._job_event(self.store.update_job(job_id, backup=Path(prepared["backup"]).name, message=f"Installing Winglet {to}…"))
+            try:
+                code, lines = await h.install_release(release["sha"])
+            except Exception as exc:
+                code, lines = -1, [f"The install couldn't start: {_clip(str(exc), 300)}"]
+            if code == 0 and not await asyncio.to_thread(h.installed_version_is, to):
+                code, lines = 1, [*lines[-10:], f"The install finished, but the plugin is not at {to}."]
+            if code != 0:
+                await self._abandon_update(job_id, h, prepared, "The install didn't finish.", lines)
+                return
+            await self._job_event(self.store.update_job(job_id, lines=lines[-12:]))
+        except Exception as exc:
+            logger.warning("[winglet] update stopped before the restart", exc_info=True)
+            await self._abandon_update(job_id, h, prepared, f"The update stopped: {_clip(str(exc), 300)}.", [])
             return
-        if any("already up to date" in line.lower() for line in lines):
-            await self._finish_job(job_id, "succeeded", "Winglet is already up to date.", lines=lines[-6:])
-            return
-        await self._job_event(self.store.update_job(job_id, lines=lines[-12:], message="Updated. Restarting to load it…"))
-        await self._restart_soon(job_id, h)
+        await self._restart_when_quiet(job_id, h, prepared, to)
+
+    async def _restart_when_quiet(self, job_id: str, h: Any, prepared: Dict[str, Any], to: str) -> None:
+        """The install worked. Restart the gateway now if no chat is running; otherwise leave the new files in place, say
+        so, and restart when the chats have finished (at most RESTART_WAIT_SECONDS). The rollback clock starts only at
+        the restart: while waiting, the cron watch is held off with a lease the hub renews every poll, so it never rolls
+        back a healthy update that is merely waiting. Every failure undoes the install and stops: no failure restarts."""
+        minutes = max(1, round(RESTART_WAIT_SECONDS / 60))
+        give_up = time.monotonic() + RESTART_WAIT_SECONDS
+        waited, tries, last_snapshot = False, 0, time.monotonic()
+        asked = False  # once a restart has been asked for, nothing here may undo the install: the new code may be loading
+        while True:
+            try:
+                quiet = await self._is_quiet(h)
+                if quiet and waited:
+                    await asyncio.to_thread(h.snapshot_database, prepared)  # a rollback must not undo the chats written while waiting
+                    last_snapshot = time.monotonic()
+                    quiet = await self._is_quiet(h)  # a chat may have started while the copy was made
+                if quiet:
+                    await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
+                    await self._job_event(self.store.update_job(job_id, phase="restarting", message="Installed. Restarting to load it…"))
+                    await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
+                    pid = await asyncio.to_thread(h.spawn_restart)
+                    tries, asked = tries + 1, True
+                    await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
+                    if not await self._hold_through_restart(job_id, h, prepared):
+                        return
+                    # Still here: Hermes did not restart the gateway (it refuses while sessions are live).
+                    if tries >= MAX_RESTART_TRIES or time.monotonic() >= give_up:
+                        await self._abandon_update(job_id, h, prepared, "Hermes would not restart the gateway, which it refuses while chats are running, "
+                                                   "so the new version was never loaded. Try again when it is quiet.", [])
+                        return
+                    waited = True
+                    await self._job_event(self.store.update_job(job_id, phase="restart_pending",
+                                                                message=f"Installed. Hermes didn't restart the gateway because chats are running; I'll try again when they finish."))
+                    continue
+                if not waited:
+                    waited = True
+                    note = (f"Winglet {to} is installed but not running yet. The gateway will restart by itself once the running chats have "
+                            f"finished (I will wait up to {minutes} minutes). You can also restart it yourself at any time.")
+                    if not await asyncio.to_thread(h.hold_lease, prepared, note):
+                        await self._finish_gone(job_id)
+                        return
+                    await self._job_event(self.store.update_job(
+                        job_id, phase="restart_pending", wait_until=time.time() + RESTART_WAIT_SECONDS,
+                        message=(f"Winglet {to} is installed. The gateway will restart by itself once the running chats have finished "
+                                 f"(I'll wait up to {minutes} minutes), or you can restart it yourself.")))
+                if time.monotonic() >= give_up:
+                    await self._abandon_update(job_id, h, prepared, f"Chats were still running after {minutes} minutes, so the new version was never loaded. "
+                                               "Try again when it is quiet.", [])
+                    return
+                await asyncio.sleep(RESTART_POLL_SECONDS)
+                if not await asyncio.to_thread(h.hold_lease, prepared):
+                    await self._finish_gone(job_id)
+                    return
+                if time.monotonic() - last_snapshot >= SNAPSHOT_EVERY_SECONDS:
+                    last_snapshot = time.monotonic()
+                    try:
+                        await asyncio.to_thread(h.snapshot_database, prepared)
+                    except Exception:
+                        logger.info("[winglet] could not refresh the database copy while waiting", exc_info=True)
+            except asyncio.CancelledError:
+                raise  # the gateway is going down: this is the restart working
+            except Exception as exc:
+                logger.warning("[winglet] update stopped while waiting to restart", exc_info=True)
+                if asked:
+                    return  # the restart was asked for: leave the install and the watch exactly as they are
+                await self._abandon_update(job_id, h, prepared, f"The restart couldn't be arranged: {_clip(str(exc), 300)}.", [])
+                return
+
+    async def _is_quiet(self, h: Any) -> bool:
+        """Nothing is running or queued in any bot. Not being able to tell is not quiet."""
+        busy = await self._update_busy(h)
+        return not busy["bots"] and not busy["unknown"]
+
+    async def _hold_through_restart(self, job_id: str, h: Any, prepared: Dict[str, Any]) -> bool:
+        """After the restart was asked for: keep the rollback off while the gateway may still be draining. True if this
+        process is still alive when the grace period ends (the restart did not happen); False if the update is over."""
+        end = time.monotonic() + RESTART_GRACE_SECONDS
+        while time.monotonic() < end:
+            await asyncio.sleep(RESTART_POLL_SECONDS)
+            if not await asyncio.to_thread(h.hold_lease, prepared):
+                await self._finish_gone(job_id)
+                return False
+        return True
+
+    async def _finish_gone(self, job_id: str) -> None:
+        await self._finish_job(job_id, "failed", "The previous version was already put back before the restart, so nothing was restarted. "
+                                                 "Details were sent to your Telegram.")
+
+    async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
+        """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what
+        happened. This never restarts the gateway."""
+        try:
+            await asyncio.to_thread(h.cancel_update, prepared)
+            message = f"{why} The previous version was put back, and the gateway was not restarted."
+        except Exception as exc:
+            logger.warning("[winglet] could not undo a failed update", exc_info=True)
+            message = (f"{why} I could not put the old version back automatically ({_clip(str(exc), 200)}). "
+                       f"The backup is {Path(prepared['backup']).name} in the backups folder. The gateway was not restarted.")
+        await self._finish_job(job_id, "failed", message, lines=lines[-20:])
 
     async def reconcile_jobs(self) -> None:
         """Finish the jobs an earlier process started: a restart or update that ended it is done now."""
         h = self.hermes
+        settled = None
+        if h is not None:  # the new version confirming itself (or learning it was rolled back) happens whether or not a job remembers it
+            try:
+                settled = await asyncio.to_thread(h.settle_pending_update, VERSION)
+            except Exception:
+                logger.debug("[winglet] pending update could not be settled", exc_info=True)
+        outcome = (settled or {}).get("outcome")
         for job in self.store.list_jobs(running=True, limit=50):
             if job["detail"].get("boot") == self.boot_id:
                 continue
@@ -3304,7 +3470,13 @@ class Hub:
                 await self._finish_job(job["id"], "succeeded", "Back online.")
             elif kind == "winglet_update":
                 previous = detail.get("from")
-                if not previous:
+                if outcome == "rolled_back":
+                    state, message = "failed", (f"The new version did not start, so Winglet {settled.get('from')} was put back. "
+                                                f"Details were sent to your Telegram. Winglet did not restart the gateway.")
+                elif outcome == "rollback_failed":
+                    state, message = "failed", ("The new version did not start, and I could not put the old one back automatically. "
+                                                "The backup is in the backups folder on the server; details were sent to your Telegram.")
+                elif not previous:
                     state, message = "unknown", "The server restarted, but the starting Winglet version was not recorded."
                 elif previous == VERSION:
                     state, message = "failed", f"The server restarted, but Winglet is still at version {VERSION}."
@@ -3354,26 +3526,49 @@ class Hub:
         return _json({"job": job}) if job else _error(404, "no such job")
 
     async def h_system_updates(self, request: web.Request) -> web.Response:
-        """Is a newer Hermes or Winglet available? Checked at most every ten minutes unless forced."""
+        """Is a newer Hermes or Winglet available? The lookups are remembered ten minutes unless forced; who is busy,
+        and whether the running Hermes suits the newest release, are worked out fresh each time."""
         self._require(request)
         h = self._need_hermes()
         force = request.query.get("force") in ("1", "true")
         cached = self._update_check
         if cached and not force and time.monotonic() - cached["at"] < UPDATE_CHECK_SECONDS:
-            return _json(cached["data"])
+            data = cached["data"]
+        else:
+            try:
+                hermes = await h.check_hermes_update(force=force)
+            except Exception as exc:
+                logger.info("[winglet] hermes update check failed: %s", exc)
+                hermes = {"error": "Couldn't check for a Hermes update."}
+            data = {"hermes": hermes, "winglet": await self._winglet_release_status(h, force), "checked_at": time.time()}
+            self._update_check = {"at": time.monotonic(), "data": data}
+        winglet = dict(data["winglet"])
+        release = winglet.get("latest_release")
+        winglet["requires_hermes_ok"] = h.hermes_supports(release.get("requires_hermes"), self.hermes_version()) if release else None
+        winglet["busy"] = await self._update_busy(h)
+        return _json({**data, "winglet": winglet})
+
+    async def _winglet_release_status(self, h: Any, force: bool) -> Dict[str, Any]:
+        """Winglet's own answer from its GitHub releases. Hermes's run_checks is not asked: it reports "provenance
+        drift" for every sub-directory install, so it can never say whether something newer exists."""
+        status: Dict[str, Any] = {"version": VERSION, "current": VERSION, "latest": None, "latest_release": None}
         try:
-            hermes = await h.check_hermes_update(force=force)
-        except Exception as exc:
-            logger.info("[winglet] hermes update check failed: %s", exc)
-            hermes = {"error": "Couldn't check for a Hermes update."}
-        try:
-            winglet = await asyncio.to_thread(h.check_winglet_update)
+            release = await asyncio.to_thread(h.latest_release, force)
         except Exception as exc:
             logger.info("[winglet] winglet update check failed: %s", exc)
-            winglet = {"update_available": None, "reason": "Couldn't check for a Winglet update."}
-        data = {"hermes": hermes, "winglet": {**winglet, "version": VERSION}, "checked_at": time.time()}
-        self._update_check = {"at": time.monotonic(), "data": data}
-        return _json(data)
+            return {**status, "update_available": None, "reason": "Couldn't check for a Winglet update."}
+        if release:
+            status.update(latest=release["version"], latest_release=release)
+        return {**status, "update_available": h.is_newer(release["version"], VERSION) if release else False, "reason": ""}
+
+    async def _update_busy(self, h: Any) -> Dict[str, Any]:
+        """Which bots a restart would interrupt right now. The phone warns; the server does not block."""
+        try:
+            activity = await self.refresh_bot_activity(fresh=True) if self.activity_provider is not None else None
+            return h.busy_bots(activity)
+        except Exception:
+            logger.debug("[winglet] busy list unavailable", exc_info=True)
+            return {"bots": [], "unknown": True}
 
     async def h_logs(self, request: web.Request) -> web.Response:
         self._require(request)

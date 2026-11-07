@@ -15,7 +15,11 @@ import json
 import logging
 import math
 import re
+import shutil
 import time
+import unicodedata
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import List, Optional
 
@@ -673,44 +677,447 @@ def _plugin_dir():
     return Path(__file__).resolve().parent
 
 
-@_scoped
-def check_winglet_update() -> dict:
-    """Whether a newer Winglet is published where it was installed from: {update_available, current,
-    latest, reason}. update_available is None when it can't tell (a copied folder, no network)."""
+# -- which Winglet release is the newest -------------------------------------------------------------------
+#
+# The server decides this itself, from the GitHub releases of ONE hard-coded repository. The phone never names a
+# repository, a branch or a commit. Hermes's own update check (run_checks) is not used for this answer: it reports
+# "provenance drift" for every sub-directory install, which is how Winglet is installed.
+
+RELEASE_REPO = "XerxeS2K1/winglet"
+RELEASE_CACHE_SECONDS = 600
+_API_PREFIX = f"https://api.github.com/repos/{RELEASE_REPO}/"
+_RAW_PREFIX = f"https://raw.githubusercontent.com/{RELEASE_REPO}/"
+_MAX_GITHUB_BYTES = 1_000_000
+_VERSION = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\Z")
+_SHA = re.compile(r"[0-9a-f]{40}\Z")
+_RELEASE_CACHE: dict = {}
+
+
+class ReleaseCheckFailed(RuntimeError):
+    """GitHub could not be asked, or its answer was not something a release can be built from."""
+
+
+def parse_version(text) -> Optional[tuple]:
+    """(major, minor, patch) for a plain ``1.2.3``; None for anything else (pre-releases, ``v`` prefixes, junk)."""
+    if not isinstance(text, str):
+        return None
+    match = _VERSION.match(text)
+    return tuple(int(part) for part in match.groups()) if match else None
+
+
+def parse_tag(tag) -> Optional[tuple]:
+    """The version of a release tag ``v1.2.3``; None for beta/rc tags, branches and everything else."""
+    return parse_version(tag[1:]) if isinstance(tag, str) and tag.startswith("v") else None
+
+
+def is_newer(candidate, current) -> bool:
+    """A real, numeric 'newer than'. A version that cannot be read is never newer (unknown is not an upgrade)."""
+    a, b = parse_version(candidate), parse_version(current)
+    return a is not None and b is not None and a > b
+
+
+def _url_allowed(url) -> bool:
+    return (isinstance(url, str) and url.startswith((_API_PREFIX, _RAW_PREFIX)) and ".." not in url
+            and not any(c.isspace() or c == "\\" or ord(c) < 32 for c in url))
+
+
+class _SameRepoRedirect(urllib.request.HTTPRedirectHandler):
+    """GitHub may move an address; it may not send us to a different repository or host."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _url_allowed(newurl):
+            raise urllib.error.URLError(f"redirect outside {RELEASE_REPO} refused")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _github_get(url: str, *, text: bool = False):
+    """One bounded GET to the Winglet repository on GitHub: parsed JSON, or text with ``text=True``."""
+    if not _url_allowed(url):
+        raise ReleaseCheckFailed("that address is not part of the Winglet repository")
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json", "User-Agent": "winglet-plugin",
+                                                   "X-GitHub-Api-Version": "2022-11-28"})
     try:
-        from hermes_cli.plugins_updates import run_checks
+        with urllib.request.build_opener(_SameRepoRedirect()).open(request, timeout=10) as response:
+            data = response.read(_MAX_GITHUB_BYTES + 1)
+        if len(data) > _MAX_GITHUB_BYTES:
+            raise ReleaseCheckFailed("GitHub's answer was unexpectedly large")
+        return data.decode("utf-8") if text else json.loads(data)
+    except ReleaseCheckFailed:
+        raise
+    except (OSError, ValueError) as exc:  # URLError and HTTPError are OSErrors; bad JSON and bad UTF-8 are ValueErrors
+        raise ReleaseCheckFailed(f"GitHub could not be read: {exc}") from exc
+
+
+def _tag_commit(tag: str, fetch) -> str:
+    """The commit id a release tag points at (an annotated tag is followed once). Tags only, never a branch."""
+    ref = fetch(f"{_API_PREFIX}git/ref/tags/{tag}")
+    target = ref.get("object") if isinstance(ref, dict) else None
+    if isinstance(target, dict) and target.get("type") == "tag" and isinstance(target.get("sha"), str) and _SHA.match(target["sha"]):
+        annotated = fetch(f"{_API_PREFIX}git/tags/{target['sha']}")
+        target = annotated.get("object") if isinstance(annotated, dict) else None
+    sha = target.get("sha") if isinstance(target, dict) and target.get("type") == "commit" else None
+    if not isinstance(sha, str) or not _SHA.match(sha):
+        raise ReleaseCheckFailed(f"{tag} does not point at a commit")
+    return sha
+
+
+def _manifest_field(text: str, name: str) -> Optional[str]:
+    match = re.search(rf"(?m)^{name}:[ \t]*(.*)$", text)
+    if not match:
+        return None
+    value = re.sub(r"\s#.*$", "", match.group(1)).strip().strip("\"'").strip()
+    return value or None
+
+
+def latest_release(force: bool = False, *, fetch=None, clock=None) -> Optional[dict]:
+    """The newest stable Winglet release: {version, tag, sha, notes, url, requires_hermes}, or None when none exists.
+
+    Drafts, pre-releases and tags that are not exactly ``vX.Y.Z`` are ignored, and the highest version wins (not the
+    most recently published: a backport must not hide the real latest). The tag is resolved to its commit, and the
+    plugin manifest at that commit must carry the same version. Remembered for ten minutes."""
+    fetch = fetch or _github_get
+    now = (clock or time.monotonic)()
+    cached = _RELEASE_CACHE.get("entry")
+    if cached is not None and not force and now - cached["at"] < RELEASE_CACHE_SECONDS:
+        return cached["value"]
+    try:
+        value = _newest_release(fetch)
+    except ReleaseCheckFailed:
+        raise
+    except Exception as exc:  # whatever the fetch raised: the check failed, and a failure is not remembered
+        raise ReleaseCheckFailed(f"GitHub could not be read: {exc}") from exc
+    _RELEASE_CACHE["entry"] = {"at": now, "value": value}
+    return value
+
+
+def _newest_release(fetch) -> Optional[dict]:
+    listing = fetch(f"{_API_PREFIX}releases?per_page=30")
+    if not isinstance(listing, list):
+        raise ReleaseCheckFailed("GitHub's list of releases was not a list")
+    best = None
+    for entry in listing:
+        if not isinstance(entry, dict) or entry.get("draft") is not False or entry.get("prerelease") is not False:
+            continue
+        found = parse_tag(entry.get("tag_name"))
+        if found is not None and (best is None or found > best[0]):
+            best = (found, entry)
+    value = None
+    if best is not None:
+        numbers, entry = best
+        tag, version = entry["tag_name"], ".".join(str(n) for n in numbers)
+        sha = _tag_commit(tag, fetch)
+        manifest = fetch(f"{_RAW_PREFIX}{sha}/plugin/plugin.yaml", text=True)
+        if not isinstance(manifest, str):
+            raise ReleaseCheckFailed("the plugin manifest could not be read")
+        declared = _manifest_field(manifest, "version")
+        if declared != version:
+            raise ReleaseCheckFailed(f"{tag} contains Winglet {declared or 'with no version'}, not {version}")
+        notes = entry.get("body")
+        value = {"version": version, "tag": tag, "sha": sha, "notes": notes[:4000] if isinstance(notes, str) else "",
+                 "url": f"https://github.com/{RELEASE_REPO}/releases/tag/{tag}",
+                 "requires_hermes": _manifest_field(manifest, "requires_hermes")}
+    return value
+
+
+# -- installing a release from the app ---------------------------------------------------------------------------
+#
+# Order, each step failing closed: backup, watch script, cron job, pending-update record, then the install. A failed
+# install is undone in-process (files and install record only) and never restarts the gateway. If the new version
+# installs but does not start, the cron script (plugin/update_rollback.py) restores the files, record and database and
+# messages Kraig; he restarts the gateway himself.
+
+UPDATE_INSTALL_WINDOW_SECONDS = 600   # how long the install itself may take before the watch treats the update as failed
+UPDATE_WATCH_RUNS = 60                # the one-minute cron job removes itself after this many runs (outlasts the install and the longest wait for a quiet moment)
+UPDATE_ALERT_DELIVER = "telegram"     # Kraig's home channel through Hermes cron delivery (Winglet itself may be down)
+UPDATE_STALE_SECONDS = 3600           # an unconfirmed update record older than this no longer blocks a new update
+
+
+def _updater():
+    from . import update_rollback
+    return update_rollback
+
+
+def _check_release(release) -> None:
+    """Only a release this module found itself (plain version, matching tag, 40-hex commit) can be installed."""
+    if not isinstance(release, dict):
+        raise ValueError("that release is not one this server can install")
+    version, tag, sha = release.get("version"), release.get("tag"), release.get("sha")
+    if parse_version(version) is None or parse_tag(tag) != parse_version(version) or not (isinstance(sha, str) and _SHA.match(sha)):
+        raise ValueError("that release is not one this server can install")
+
+
+def _default_db_path():
+    from .adapter import data_dir
+    return data_dir() / "data.db"
+
+
+@_scoped
+def _create_watch_job(script) -> str:
+    job = _cron().create_job(None, "every 1m", name="Winglet update watch", deliver=UPDATE_ALERT_DELIVER, script=str(script),
+                             no_agent=True, repeat=UPDATE_WATCH_RUNS)
+    return str(job["id"])
+
+
+@_scoped
+def _remove_job(job_id: str) -> None:
+    _cron().remove_job(job_id)
+
+
+def remove_update_watch(job_id) -> None:
+    """Stand the cron watch down. Best effort: a job that cannot be removed removes itself after its last run."""
+    if isinstance(job_id, str) and job_id:
+        try:
+            _remove_job(job_id)
+        except Exception as exc:
+            logger.info("[winglet] could not remove the update watch job: %s", exc)
+
+
+def _install_watch_script(destination) -> None:
+    """Copy the RUNNING plugin's rollback script into Hermes's scripts folder (cron only runs scripts from there)."""
+    import os
+    updater = _updater()
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temp = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        temp.write_bytes(Path(updater.__file__).read_bytes())
+        os.chmod(temp, 0o700)
+        os.replace(temp, destination)
+    finally:
+        if temp.exists():
+            temp.unlink()
+
+
+def begin_update(release, from_version, *, plugin_dir=None, db_path=None, home=None, now=None) -> dict:
+    """Make everything ready for an install and return what the later steps need. Raises (installing nothing, leaving
+    nothing pending) if any part of the safety net cannot be set up."""
+    import os
+    updater = _updater()
+    _check_release(release)
+    if parse_version(from_version) is None:
+        raise ValueError("the running version is not a plain x.y.z")
+    plugin_dir = Path(plugin_dir) if plugin_dir is not None else _plugin_dir()
+    home = Path(home) if home is not None else _home()
+    db_path = db_path if db_path is not None else _default_db_path()
+    now = time.time() if now is None else now
+    root = plugin_dir.parent.parent
+    if os.path.realpath(updater.hermes_root(home)) != os.path.realpath(root):
+        raise ValueError("this install layout cannot update itself: the cron scripts and the backups would be in different places")
+    folder = root / "backups" / updater.BACKUP_FOLDER
+    try:
+        existing = updater.read_marker(folder)
+    except ValueError as exc:
+        raise ValueError("an earlier update's record cannot be read; look in backups/winglet-plugin before updating") from exc
+    if existing and existing.get("state") == "pending":
+        created = existing.get("created")
+        if not isinstance(created, (int, float)) or now - created < UPDATE_STALE_SECONDS:
+            raise ValueError("An update is already waiting to be confirmed.")
+        remove_update_watch(existing.get("cron_job"))
+    backup = updater.create_backup(plugin_dir=plugin_dir, db_path=db_path, from_version=from_version,
+                                   to_version=release["version"], now=now)
+    script = home / "scripts" / updater.SCRIPT_NAME
+    _install_watch_script(script)
+    job_id = None
+    try:
+        job_id = _create_watch_job(script)
+        updater.write_marker(folder, {"from": from_version, "to": release["version"], "backup": backup.name, "state": "pending",
+                                      "cron_job": job_id, "created": now, "deadline": now + UPDATE_INSTALL_WINDOW_SECONDS})
+    except BaseException:
+        remove_update_watch(job_id)
+        updater.clear_marker(folder)
+        if backup.parent == folder:  # the backup made a moment ago for an update that will not happen; an earlier one is never touched
+            shutil.rmtree(backup, ignore_errors=True)
+        raise
+    return {"backup": str(backup), "job": job_id, "script": str(script), "from": from_version, "to": release["version"],
+            "folder": str(folder), "root": str(root)}
+
+
+def arm_deadline(prepared: dict, *, now=None) -> None:
+    """The install is done and the gateway is about to restart: the new version now has a few minutes to confirm itself."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    marker = updater.read_marker(folder)
+    if marker is not None:
+        marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
+        updater.write_marker(folder, marker)
+
+
+def hold_lease(prepared: dict, note: Optional[str] = None, *, now=None) -> bool:
+    """While an installed update waits for a quiet moment to restart: push the rollback deadline a few minutes ahead, so
+    the watch leaves a healthy update that merely hasn't been loaded yet alone. The hub calls this again and again; the
+    rollback clock therefore runs from the last call before the restart, i.e. from the restart. ``note`` is what the
+    watch tells Kraig on Telegram, once. False means the update is not pending any more (the watch already acted)."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    marker = updater.read_marker(folder)
+    if not marker or marker.get("state") != "pending" or marker.get("backup") != Path(prepared["backup"]).name:
+        return False
+    marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
+    if isinstance(note, str) and note.strip() and "note" not in marker:
+        marker["note"] = "".join(ch for ch in " ".join(note.split()) if ch.isprintable())[:800]
+    updater.write_marker(folder, marker)
+    return True
+
+
+def mark_started(current_version, *, home=None, now=None) -> bool:
+    """The new version records, just before it first opens its database, that it started. The rollback watch puts the
+    database back only if it finds this mark: if the new code never ran, the database holds only what the old version
+    wrote, which is newer than the backup. Never raises: a start-up must not depend on this record."""
+    try:
+        updater = _updater()
+        folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
+        marker = updater.read_marker(folder)
+        if not marker or marker.get("state") != "pending" or marker.get("to") != current_version or updater._has_started(marker):
+            return False
+        marker["started"] = time.time() if now is None else now
+        updater.write_marker(folder, marker)
+        return True
     except Exception as exc:
-        raise HermesUnavailable("plugin update check unavailable") from exc
-    here = _plugin_dir()
-    for result in run_checks(here.parent, include_pip=False):
-        if result.name in (here.name, "winglet"):
-            data = result.to_json()
-            return {k: data.get(k) for k in ("update_available", "current", "latest", "reason", "needs_fixing")}
-    return {"update_available": None, "current": None, "latest": None, "reason": "not installed from git"}
+        logger.info("[winglet] could not record that the new version started: %s", exc)
+        return False
 
 
-async def update_winglet(timeout: float = 300) -> tuple:
-    """`hermes plugins update` for this plugin, without prompts (new capabilities stay ungranted until
-    someone reviews them on the server). Returns (exit code, output tail)."""
+def snapshot_database(prepared: dict) -> None:
+    """A fresh copy of the database in this update's backup (see update_rollback.refresh_database)."""
+    _updater().refresh_database(Path(prepared["backup"]))
+
+
+def cancel_update(prepared: dict, *, now=None) -> dict:
+    """The install failed (or the restart could not be started): put the old files and install record back. The new
+    code never ran, so the database is left alone. Does not restart anything."""
+    updater = _updater()
+    folder = Path(prepared["folder"])
+    try:
+        report = updater.restore(Path(prepared["root"]), Path(prepared["backup"]), time.time() if now is None else now,
+                                 with_database=False)
+    except updater.RollbackError as exc:
+        marker = updater.read_marker(folder) or {}
+        marker.update(state="rollback_failed", error=str(exc)[:300])
+        updater.write_marker(folder, marker)
+        raise
+    finally:
+        remove_update_watch(prepared.get("job"))
+    updater.clear_marker(folder)
+    return report
+
+
+def installed_version_is(version, *, plugin_dir=None) -> bool:
+    """Whether the plugin folder on disk now says it is this version (what the install should have produced)."""
+    try:
+        text = ((Path(plugin_dir) if plugin_dir is not None else _plugin_dir()) / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return parse_version(version) is not None and _manifest_field(text, "version") == version
+
+
+def settle_pending_update(current_version, *, home=None) -> Optional[dict]:
+    """Called when Winglet starts. If the update that was waiting is this very version, it worked: clear the record and
+    stand the watch down. If the watch rolled it back, say so once. Otherwise leave it to the watch."""
+    updater = _updater()
+    folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
+    try:
+        marker = updater.read_marker(folder)
+    except ValueError:
+        return None
+    if not marker:
+        return None
+    state = marker.get("state")
+    result = {"from": marker.get("from"), "to": marker.get("to")}
+    if state == "pending" and marker.get("to") == current_version:
+        result = {"outcome": "succeeded", **result}
+    elif state in ("rolled_back", "rollback_failed"):
+        result = {"outcome": state, **result, "error": marker.get("error"), "kept": marker.get("kept")}
+    else:
+        return None
+    updater.clear_marker(folder)
+    remove_update_watch(marker.get("cron_job"))
+    return result
+
+
+async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 60) -> tuple:
+    """`hermes plugins install XerxeS2K1/winglet/plugin --ref <sha> --force --no-enable`, the command used by hand,
+    for a commit id this module resolved itself. Returns (exit code, output tail)."""
     import asyncio as _asyncio
     import os
+    if not isinstance(sha, str) or not _SHA.match(sha):
+        raise ValueError("an install needs a full commit id")
     try:
         from hermes_cli._launchers import runtime_command
         from hermes_cli.web_server import PROJECT_ROOT
     except Exception as exc:
-        raise HermesUnavailable("plugin update unavailable") from exc
-    code = ("from hermes_cli.plugins_cmd_update import cmd_update; "
-            f"cmd_update({_plugin_dir().name!r}, interactive=False)")
-    env = {**os.environ, "HERMES_HOME": str(_home()), "COLUMNS": "200"}
-    proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, code=code), env=env,
-                                                 stdin=_asyncio.subprocess.DEVNULL, stdout=_asyncio.subprocess.PIPE,
-                                                 stderr=_asyncio.subprocess.STDOUT)
+        raise HermesUnavailable("plugin install unavailable") from exc
+    args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable")
+    env = {**_install_environment(os.environ), "HERMES_HOME": str(_home()), "COLUMNS": "200"}
+    proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, args), env=env, stdin=_asyncio.subprocess.DEVNULL,
+                                                 stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT)
     try:
         out, _ = await _asyncio.wait_for(proc.communicate(), timeout)
     except _asyncio.TimeoutError:
         proc.kill()
-        return -1, ["The update took too long and was stopped."]
-    return proc.returncode, out.decode("utf-8", errors="replace").splitlines()[-30:]
+        return -1, ["The install took too long and was stopped."]
+    return proc.returncode, clean_output(out.decode("utf-8", errors="replace"))
+
+
+# What the install child may inherit: where programs are, who is running them, the language, and what git and TLS need to reach
+# GitHub. Nothing else: the gateway's environment holds API keys and tokens that an install has no use for.
+_INSTALL_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TMPDIR", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "no_proxy")
+
+
+def _install_environment(environ) -> dict:
+    return {name: value for name, value in environ.items() if name in _INSTALL_ENV or name.startswith("LC_")}
+
+
+_ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b[@-_]")
+OUTPUT_LINES = 30
+OUTPUT_LINE_CHARS = 300
+
+
+def clean_output(text: str) -> list:
+    """The last lines a child printed as plain, bounded text for the phone: no colour codes, no control, zero-width or
+    direction-changing characters, no blank lines, no line longer than OUTPUT_LINE_CHARS."""
+    lines = []
+    for raw in text.splitlines():
+        line = _ANSI.sub("", raw).replace("\t", " ")
+        line = "".join(ch for ch in line if not unicodedata.category(ch).startswith("C")).strip()
+        if line:
+            lines.append(line if len(line) <= OUTPUT_LINE_CHARS else line[:OUTPUT_LINE_CHARS - 1] + "\u2026")
+    return lines[-OUTPUT_LINES:]
+
+
+def busy_bots(activity) -> dict:
+    """Who a gateway restart would interrupt: {bots: [{bot, state, queued}], unknown}. ``activity`` is the bot activity
+    snapshot ({name: {state, queued}}) or None when nothing could look. Unknown stays unknown: it is never counted as
+    idle. Counts and states only, no queue previews."""
+    if not isinstance(activity, dict):
+        return {"bots": [], "unknown": True}
+    bots, unknown = [], False
+    for name in sorted(activity, key=str):
+        entry = activity[name]
+        state = entry.get("state") if isinstance(entry, dict) else None
+        if state not in ("idle", "working"):
+            unknown = True
+            continue
+        queued = entry.get("queued")
+        queued = queued if isinstance(queued, int) and not isinstance(queued, bool) and queued > 0 else 0
+        if state == "working" or queued:
+            bots.append({"bot": str(name), "state": state, "queued": queued})
+    return {"bots": bots, "unknown": unknown}
+
+
+def hermes_supports(requirement, running) -> Optional[bool]:
+    """Whether the running Hermes satisfies a release's ``requires_hermes`` range. None when it cannot be told."""
+    if requirement is None or not str(requirement).strip():
+        return True
+    match = re.match(r"\s*v?([0-9]+(?:\.[0-9]+){0,3})", running) if isinstance(running, str) else None
+    if not match:
+        return None
+    try:
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import Version
+        return bool(SpecifierSet(str(requirement)).contains(Version(match.group(1)), prereleases=True))
+    except Exception:  # no packaging, or a range it cannot read
+        return None
 
 
 _LOG_FILES = {"agent": "agent.log", "gateway": "gateway.log", "errors": "errors.log"}

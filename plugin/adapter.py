@@ -110,6 +110,14 @@ def data_dir() -> Path:
 
 
 def open_store() -> Store:
+    # An in-app update waits for the new version to prove it started. Say so BEFORE the database is first opened (and its
+    # schema changed): the rollback puts the database back only if this mark exists. Never blocks a start-up.
+    try:
+        from . import hermes_api
+        from .hub import VERSION
+        hermes_api.mark_started(VERSION)
+    except Exception:
+        logger.debug("[winglet] start mark failed", exc_info=True)
     return Store(data_dir() / "data.db")
 
 
