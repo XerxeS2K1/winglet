@@ -8,7 +8,7 @@ function harness(data: any = updates) {
   const useApp: any = (select: any) => select(state); useApp.getState = () => ({ ...state, toast: (v: any) => toasts.push(v) });
   const modules: any = {
     react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View' },
-    'react-native-reanimated': { default: { View: 'AnimatedView' }, FadeIn: anything }, 'expo-router': { router: anything, useFocusEffect: () => {} },
+    'react-native-reanimated': { default: { View: 'AnimatedView' }, FadeIn: anything }, 'expo-router': { router: anything, useFocusEffect: () => {}, usePathname: () => '/' },
     '../components/JobSheet': { JobSheet: 'JobSheet' }, '../components/icons': anything,
     '../components/Screen': { Screen: 'Screen' }, '../components/ServerScreen': { withSelectedServer: (c: any) => c }, '../components/Sheet': { Sheet: 'Sheet' },
     '../components/ui': { Button: 'Button', Card: 'Card', ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Skeleton: 'Skeleton', Toggle: 'Toggle' },

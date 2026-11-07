@@ -6,6 +6,7 @@ import { checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpda
 import { getJSON, setJSON } from '../lib/storage';
 import { useApp, useServerState } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
+import { router, usePathname } from 'expo-router';
 import type { Job, Server } from '../lib/types';
 import { JobSheet } from './JobSheet';
 import { Sheet } from './Sheet';
@@ -15,10 +16,11 @@ import { Button } from './ui';
 const putOff = new Set<string>();
 
 export function ServerUpdatePrompt() {
+  const pathname = usePathname();
   const server = useApp((st) => st.servers.find((s) => s.id === st.selection.serverId) ?? st.servers[0]);
   const rt = useServerState(server?.id);
-  // Do not assume a still-unknown device role is owner. Server-side signing/role checks remain authoritative.
   if (!server || rt?.me?.role !== 'owner') return null;
+  if (pathname === '/pair' || pathname === '/scan') return null;
   return <ServerPrompt key={serverUpdateKey(server)} server={server} />;
 }
 

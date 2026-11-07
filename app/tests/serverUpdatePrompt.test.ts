@@ -16,6 +16,7 @@ function harness(options: any = {}) {
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },
     '../lib/storage': { getJSON: async (key: string, fallback: any) => storage.get(key) ?? fallback, setJSON: async (key: string, value: any) => { storage.set(key, value); } },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
+    'expo-router': { usePathname: () => '/' },
     './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' }, './JobSheet': { JobSheet: 'JobSheet' },
   };
   const exports = load('components/ServerUpdatePrompt.tsx', modules);
