@@ -44,7 +44,7 @@ from .store import ROLES, Store, new_id
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.10.5"
+VERSION = "0.10.6"
 # Wire protocol: bumped only for breaking changes. The app compares these to its own and asks for
 # whichever side is out of date to be updated.
 PROTOCOL = 2
@@ -3236,7 +3236,7 @@ class Hub:
                 return _json({"job": existing}, status=202) if existing["kind"] == "winglet_update" else _key_in_use()
         version = body.get("version")
         if not isinstance(version, str) or h.parse_version(version) is None:
-            return _error(400, "Say which Winglet version to install, like 0.10.5.")
+            return _error(400, "Say which Winglet version to install, like 0.10.6.")
         try:
             release = await asyncio.to_thread(h.latest_release, True)  # looked up afresh: never trust a ten-minute-old answer here
         except Exception as exc:
