@@ -1,11 +1,14 @@
 import Constants from 'expo-constants';
 import { useEffect, useState } from 'react';
-import { Linking, Text, View } from 'react-native';
+import { Text, View } from 'react-native';
 import type { AppUpdate } from '../lib/appUpdate';
 import { useAppInstall } from '../lib/appInstall';
 import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { useLock } from '../lib/appLock';
 import { usePrefs } from '../lib/prefs';
+import { useApp, useServerState } from '../lib/store';
+import { unifiedUpdate, useUnifiedUpdate, updateContext } from '../lib/unifiedUpdateFlow';
+import { updateScope } from '../lib/updateJobs';
 import { getJSON, setJSON } from '../lib/storage';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import { CircleArrowUp, Download } from './icons';
@@ -26,15 +29,16 @@ export function UpdatePrompt() {
   const update = useAppUpdate((st) => st.update);
   const locked = useLock((st) => st.locked);
   const downloading = useAppInstall((st) => st.phase === 'downloading');
+  const unified = useUnifiedUpdate((st) => st);
   const [skipped, setSkipped] = useState<string | null | undefined>(undefined);
   const [, rerender] = useState(0);
   useEffect(() => {
     getJSON<string | null>(SKIP_KEY, null).catch(() => null).then(setSkipped);
   }, []);
   // Unmount the native modal immediately when locked; Sheet otherwise animates closed over the lock.
-  if (!appUpdateSupported || !enabled || !update || skipped === undefined || locked) return null;
+  if (!appUpdateSupported || !enabled || !update || skipped === undefined || locked || !unified.loaded || unified.record) return null;
   const visible = update.version !== skipped && !putOff.has(update.version);
-  // Swiping the sheet away mid-download lets the download finish and the installer open.
+  // The shared handoff host takes over once the one-tap consent is persisted.
   const later = () => {
     putOff.add(update.version);
     rerender((n) => n + 1);
@@ -45,7 +49,7 @@ export function UpdatePrompt() {
     later();
   };
   return (
-    <Sheet visible={visible} onClose={later} title="Update available">
+    <Sheet visible={visible} dismissible={!unified.working} onClose={later} title="Update available">
       <View style={s.body}>
         <Text style={s.lead}>Winglet {update.version} is out. You have {Constants.expoConfig?.version}.</Text>
         {update.notes ? <Text style={s.notes} numberOfLines={6}>{update.notes}</Text> : null}
@@ -65,34 +69,23 @@ export function UpdatePrompt() {
 export function InstallButton({ update }: { update: AppUpdate }) {
   const t = useTheme();
   const s = useStyles();
-  const { phase, progress, version, error, install, cancel } = useAppInstall();
-  const mine = version === update.version;
-  if (mine && phase === 'downloading') {
-    return (
-      <View style={{ gap: 8 }}>
-        <View style={s.track} accessibilityRole="progressbar"
-          accessibilityValue={progress == null ? undefined : { min: 0, max: 100, now: Math.round(progress * 100) }}>
-          <View style={[s.fill, { width: `${Math.round((progress ?? 0.1) * 100)}%` }]} />
-        </View>
-        <Text style={s.caption}>Downloading{progress == null ? '…' : ` ${Math.round(progress * 100)}%`}</Text>
-        <Button title="Cancel" variant="secondary" onPress={cancel} />
-      </View>
-    );
-  }
-  return (
-    <View style={{ gap: 8 }}>
-      <Button title={mine && phase === 'ready' ? 'Install' : `Update to ${update.version}`}
-        icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
-        onPress={() => install(update)} />
-      {mine && phase === 'error' && error ? (
-        <Text style={s.error}>
-          {error} <Text style={s.inlineLink} onPress={() => Linking.openURL(update.apk ?? update.page)}>Download in the browser</Text>
-        </Text>
-      ) : (
-        <Text style={s.caption}>Your bots and chats are kept.</Text>
-      )}
-    </View>
-  );
+  const state = useUnifiedUpdate((st) => st);
+  const server = useApp((st) => st.servers.find((item) => item.id === st.selection.serverId) ?? st.servers[0]);
+  const rt = useServerState(server?.id);
+  const offeredScope = server ? updateScope(server) : undefined;
+  const role = rt?.me?.role;
+  const eligible = () => { const current = updateContext(); return (current.server ? updateScope(current.server) : undefined) === offeredScope && current.role === role; };
+  if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
+  const consent = update.apk && server && role === 'owner'
+    ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
+    : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
+  return <View style={{ gap: 8 }}>
+    <Button title={update.apk ? `Update to ${update.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
+      icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
+      onPress={() => unifiedUpdate.start(update, eligible)} />
+    <Text style={s.caption}>{consent}</Text>
+    {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
+  </View>;
 }
 
 const useStyles = makeStyles((t) => ({

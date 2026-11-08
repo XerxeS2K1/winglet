@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useUnifiedUpdate } from '../lib/unifiedUpdateFlow';
 import { Text, View } from 'react-native';
 import { usePathname } from 'expo-router';
 import { updateRecovery, updateScope, useUpdateJobs } from '../lib/updateJobs';
@@ -14,6 +15,8 @@ export function UpdateJobHost() {
   const pathname = usePathname();
   const server = useApp((s) => s.servers.find((v) => v.id === s.selection.serverId) ?? s.servers[0]);
   const rt = useServerState(server?.id);
+  const unified = useUnifiedUpdate((state) => state);
+  if (!unified.loaded || (server && unified.record?.scope === updateScope(server))) return null;
   if (!server || rt?.me?.role !== 'owner' || pathname === '/pair' || pathname === '/scan') return null;
   return <PairingUpdateJobs key={updateScope(server)} server={server} />;
 }

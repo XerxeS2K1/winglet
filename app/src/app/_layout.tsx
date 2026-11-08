@@ -15,7 +15,7 @@ import { AppState, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { UpdatePrompt } from '../components/AppUpdate';
-import { ServerUpdatePrompt } from '../components/ServerUpdatePrompt';
+import { UnifiedUpdateHost } from '../components/UnifiedUpdateHost';
 import { UpdateJobHost } from '../components/UpdateJobHost';
 import { AppNavigation } from '../components/AppNavigation';
 import { BatteryPrompt } from '../components/BatteryPrompt';
@@ -128,7 +128,7 @@ function Navigator() {
       <ShareListener />
       <Toasts />
       <UpdatePrompt />
-      <ServerUpdatePrompt />
+      <UnifiedUpdateHost />
       <UpdateJobHost />
       <BatteryPrompt />
       <VerifySheet />

@@ -81,9 +81,9 @@ for (const status of [400, 409, 503]) test(`Server Winglet row surfaces ${status
   const h = harness(); h.fail(status, `Row server says ${status}`); const action = await h.start(); const pending = action.run('winglet');
   assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); await pending; assert.equal(h.toasts[0].body, `Row server says ${status}`);
 });
-test('startup mounts server prompt alongside unchanged APK prompt and About no longer requires manual paired-server updates', () => {
+test('startup uses one app update offer and unified handoff host, retaining standalone Server repair', () => {
   const root = readFileSync(new URL('../src/app/_layout.tsx', import.meta.url), 'utf8');
-  assert.match(root, /<ServerUpdatePrompt\s*\/>/); assert.match(root, /<UpdatePrompt\s*\/>/);
+  assert.doesNotMatch(root, /<ServerUpdatePrompt\s*\/>/); assert.match(root, /<UnifiedUpdateHost\s*\/>/); assert.match(root, /<UpdatePrompt\s*\/>/);
   const about = readFileSync(new URL('../src/app/about.tsx', import.meta.url), 'utf8');
   assert.match(about, /app can update the server/i); assert.match(about, /no phone paired/i);
 });

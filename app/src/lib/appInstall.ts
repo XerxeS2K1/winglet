@@ -9,6 +9,8 @@ const updatesDir = () => new Directory(Paths.cache, 'updates');
 const APK_TYPE = 'application/vnd.android.package-archive';
 const GRANT_READ_URI_PERMISSION = 1;
 
+export type InstallOutcome = 'opened' | 'browser' | 'cancelled' | 'error';
+
 type Phase = 'idle' | 'downloading' | 'ready' | 'error';
 
 type State = {
@@ -19,7 +21,7 @@ type State = {
   version?: string;
   error?: string;
   /** Downloads the update and opens Android's installer. Without an APK, opens the release page instead. */
-  install: (update: AppUpdate) => Promise<void>;
+  install: (update: AppUpdate, eligible?: () => boolean) => Promise<InstallOutcome>;
   cancel: () => void;
 };
 
@@ -30,16 +32,17 @@ let downloaded: File | null = null;
 export const useAppInstall = create<State>((set, get) => ({
   phase: 'idle',
   progress: null,
-  install: async (update) => {
+  install: async (update, eligible = () => true) => {
+    if (!eligible()) return 'cancelled';
     if (!update.apk) {
       await Linking.openURL(update.page);
-      return;
+      return 'browser';
     }
-    if (get().phase === 'downloading') return;
+    if (get().phase === 'downloading') return 'cancelled';
     // Already downloaded (the installer was closed without installing): just open it again.
     if (get().phase === 'ready' && get().version === update.version && downloaded?.exists) {
-      await openInstaller(downloaded).catch(() => set({ phase: 'error', error: "Android's installer didn't open." }));
-      return;
+      try { await openInstaller(downloaded); return 'opened'; }
+      catch { set({ phase: 'error', error: "Android's installer didn't open." }); return 'error'; }
     }
     const controller = new AbortController();
     abort = controller;
@@ -55,9 +58,9 @@ export const useAppInstall = create<State>((set, get) => ({
         onProgress: ({ bytesWritten, totalBytes }) => set({ progress: totalBytes > 0 ? Math.min(1, bytesWritten / totalBytes) : null }),
       });
       // Native completion can race with cancellation and resolve instead of rejecting.
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || !eligible()) {
         set({ phase: 'idle', progress: null });
-        return;
+        return 'cancelled';
       }
       if (update.apkSize && file.size !== update.apkSize) {
         file.delete();
@@ -66,15 +69,17 @@ export const useAppInstall = create<State>((set, get) => ({
       downloaded = file;
       set({ phase: 'ready', progress: 1 });
       await openInstaller(file);
+      return 'opened';
     } catch (e) {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted || !eligible()) {
         set({ phase: 'idle', progress: null });
-        return;
+        return 'cancelled';
       }
       const message = e instanceof Error && e.message.startsWith('The download') ? e.message
         : get().phase === 'ready' ? "Android's installer didn't open."
         : "Couldn't download the update. Check your connection and try again.";
       set({ phase: 'error', error: message });
+      return 'error';
     } finally {
       abort = null;
     }

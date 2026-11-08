@@ -20,6 +20,7 @@ test('locking immediately unmounts the update modal instead of animating it over
     }, useEffect: (fn: () => void) => { if (!mounted) fn(); } },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { Text: 'Text', View: 'View' },
+    '../lib/unifiedUpdateFlow': { useUnifiedUpdate: (fn: any) => fn({ loaded: true, record: null }) },
     '../lib/appInstall': { useAppInstall: (select: any) => select({ phase: 'idle' }) },
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: (select: any) => select({ update: { version: '0.3.0' } }) },
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },

@@ -4,7 +4,7 @@ import { Platform, Text, useWindowDimensions, View, StyleSheet } from 'react-nat
 import { useAddBot } from '../components/AddBot';
 import { AgentFace } from '../components/AgentFace';
 import { NavigationToggle } from '../components/AppNavigation';
-import { Bell, ChevronRight, CircleArrowUp, Fingerprint, Info, Palette, Plus, Smartphone } from '../components/icons';
+import { Bell, ChevronRight, Fingerprint, Info, Palette, Plus, Smartphone } from '../components/icons';
 import { Screen } from '../components/Screen';
 import { Footnote, ListGroup, ListRow, SectionHeader, Segmented, Tap, Toggle } from '../components/ui';
 import { lockAvailable, unlock } from '../lib/appLock';
@@ -60,13 +60,6 @@ export default function SettingsScreen() {
           if (on && !(await unlock('Turn on app lock'))) return;
           update({ appLock: on });
         }} />} /> : null}
-      <ListRow title="Auto-update server plugin" icon={<CircleArrowUp />}
-        subtitle="Install a release as soon as it appears, then restart when chats are idle."
-        right={<Toggle label="Auto-update server plugin" value={prefs.autoUpdateServer} onValueChange={async (on) => {
-          // Prove the phone's unlock works before the app can change the server on its own.
-          if (on && !(await unlock('Turn on auto-update'))) return;
-          update({ autoUpdateServer: on });
-        }} />} />
       <View style={s.sidebar}>
         <Text style={s.label}>Sidebar</Text>
         <Segmented label="Sidebar" value={prefs.sidebar} onChange={(sidebar) => update({ sidebar })} options={[

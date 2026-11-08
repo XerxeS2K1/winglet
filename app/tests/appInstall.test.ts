@@ -61,6 +61,16 @@ test('a complete download opens the installer with a readable content URI and re
   assert.equal(h.intents.length, 2);
 });
 
+test('opening the installer reports only an opened handoff, never installed success', async () => {
+  const h = harness(); assert.equal(await h.state.install(h.update), 'opened');
+  assert.equal(h.state.phase, 'ready');
+});
+test('a stale authorization guard prevents the Android intent after downloading', async () => {
+  let eligible = true;
+  const h = harness({ download: async (_url: string, file: any) => { file.exists = true; file.size = 100; eligible = false; } });
+  const outcome = await h.state.install(h.update, () => eligible);
+  assert.equal(h.intents.length, 0); assert.equal(outcome, 'cancelled');
+});
 test('a size mismatch deletes the incomplete APK and never opens the installer', async () => {
   const h = harness({ size: 99 });
   await h.state.install(h.update);

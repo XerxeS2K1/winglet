@@ -27,15 +27,16 @@ export async function checkServerUpdates(server: Server, force = false): Promise
 }
 
 /** Fresh local authentication is mandatory even when the ordinary app lock is disabled. */
-export async function updateServerWinglet(server: Server, version?: string | null, eligible = () => true,
-  options: { skipUnlock?: boolean } = {}): Promise<Job | null> {
+export async function updateServerWinglet(server: Server, version?: string | null, eligible = () => true): Promise<Job | null> {
   if (!eligible()) return null;
-  // Auto-update has already been authorized by the owner's setting; a tap still asks for biometric proof.
-  if (!options.skipUnlock) {
-    const ok = await unlock('Update the server');
-    if (!ok || !eligible()) return null;
-  }
-  const body = { target: 'winglet', ...(version ? { version } : {}), idempotency_key: idempotencyKey() };
+  const ok = await unlock('Update the server');
+  if (!ok || !eligible()) return null;
+  return sendConsentedWingletUpdate(server, { target: 'winglet', ...(version ? { version } : {}), idempotency_key: idempotencyKey() }, eligible);
+}
+
+/** Internal handoff after explicit authenticated consent. Not a standing unlock bypass or startup permission. */
+export async function sendConsentedWingletUpdate(server: Server, body: Record<string, string>, eligible = () => true): Promise<Job | null> {
+  if (!eligible()) return null;
   await updateRecovery.begin(server, body);
   if (!eligible()) { await updateRecovery.clearPending(server, body.idempotency_key); return null; }
   const send = () => signedApi<{ job: Job }>(server, 'POST', '/api/system/update', body);

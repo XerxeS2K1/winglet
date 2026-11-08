@@ -5,7 +5,7 @@ import { load, hooks, jsx, anything, network, server, tick, nodes, button, text 
 
 test('one global plugin job host replaces competing prompt/local sheets; Server has a persistent plugin result row', () => {
   const root = readFileSync(new URL('../src/app/_layout.tsx', import.meta.url), 'utf8');
-  const prompt = readFileSync(new URL('../src/components/ServerUpdatePrompt.tsx', import.meta.url), 'utf8');
+  const prompt = readFileSync(new URL('../src/components/AppUpdate.tsx', import.meta.url), 'utf8');
   const screen = readFileSync(new URL('../src/app/server.tsx', import.meta.url), 'utf8');
   assert.match(root, /<UpdateJobHost\s*\/>/);
   assert.doesNotMatch(prompt, /<JobSheet/);
@@ -18,6 +18,7 @@ function harness() {
   const useApp: any = (fn: any) => fn(state); useApp.getState = () => state;
   const modules: any = {
     react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx },
+    '../lib/unifiedUpdateFlow': { useUnifiedUpdate: (fn: any) => fn({ loaded: true, record: null }) },
     '../lib/updateJobs': net.jobs, '../lib/store': { useApp, useServerState: () => ({ status, me: { role } }) },
     './JobSheet': { JobSheet: 'JobSheet' }, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button', Footnote: 'Footnote' },
     'react-native': { Text: 'Text', View: 'View' }, '../lib/themeContext': { makeStyles: () => () => anything },
