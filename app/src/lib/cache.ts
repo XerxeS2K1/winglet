@@ -113,6 +113,12 @@ export async function cacheGet<T>(key: string, fallback: T): Promise<T> {
   }
 }
 
+/** Durable handoffs must learn when storage failed rather than silently treating it as absent. */
+export async function cacheGetStrict<T>(key: string, fallback: T): Promise<T> {
+  const raw = await ordered(async () => { await ready(); return db.getItemAsync(key); });
+  return raw ? (JSON.parse(open(key, raw)) as T) : fallback;
+}
+
 export async function cacheSet(key: string, value: unknown): Promise<void> {
   try {
     const raw = JSON.stringify(value);

@@ -35,6 +35,15 @@ export function UpdatePrompt() {
   useEffect(() => {
     getJSON<string | null>(SKIP_KEY, null).catch(() => null).then(setSkipped);
   }, []);
+  useEffect(() => {
+    // Once this phone is running a different release, a consent for an older unselected pairing is
+    // stale. Clear it so the current app offer is not suppressed by a dead handoff.
+    const saved = unifiedUpdate.record, current = updateContext();
+    const scope = current.server ? updateScope(current.server) : undefined;
+    if (saved?.scope && scope && scope !== saved.scope && Constants.expoConfig?.version !== saved.version) {
+      void unifiedUpdate.recoverOrphan();
+    }
+  }, [unified.record?.key, unified.record?.stage]);
   // Unmount the native modal immediately when locked; Sheet otherwise animates closed over the lock.
   if (!appUpdateSupported || !enabled || !update || skipped === undefined || locked || !unified.loaded || unified.record) return null;
   const visible = update.version !== skipped && !putOff.has(update.version);

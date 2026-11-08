@@ -51,6 +51,26 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - No push, tag, release, plugin install, gateway restart, live pairing or phone installation is
   authorised by this local work. Phone APKs use the in-app updater, **never adb**.
 
+### Unified app update (local implementation)
+
+One Update action coordinates the Android APK and the matching server-plugin release for one owner
+pairing. Android still owns the required APK installation confirmation, and opening that confirmation
+is not installation success. The app must not install or report an app update merely because the user
+opened Android's installer. Server dispatch happens only after the matching app is running. The server
+command is signed, exact-release-bound and one-tap authorized. There is no separate auto-update
+setting, no startup installer, no second automatic server prompt and no silent server upgrade while
+the app updates.
+
+The local implementation lives in `UnifiedUpdateHost.tsx`, `unifiedUpdate.ts` and
+`unifiedUpdateFlow.ts`; it is not yet merged or independently reviewed after correction. A first cold
+review found orphaned pairing consent, an undismissable error notice, mislabeled download/dispatch
+failures, silent authentication failures, an enabled Later/Skip control, failed hydration, strict read
+failures and a danger-styled success notice. The local fixes add orphan recovery, dismissible notices,
+truthful messages, explicit authentication errors, active-control gating, strict reads and terminal-job
+rendering. The app suite then passed 716 tests and TypeScript was clean; the v0.10.7 plugin's focused
+update suite passed 313 tests with 22 skips. Those are code checks only. Final integration, a
+corrected-diff cold review, a matching release and web freshness remain required before release.
+
 ### Bootstrap and next actions
 
 The already-running **0.10.5** updater and the published **0.10.6** updater omit `--yes-deps`.

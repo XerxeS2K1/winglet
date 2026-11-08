@@ -6,7 +6,7 @@ export function load(file: string, modules: any, extra: any = {}) {
   const exports: any = {};
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../../src/' + file, import.meta.url), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX, esModuleInterop: true },
-  }).outputText, { exports, require: (id: string) => { assert.ok(id in modules, `Unexpected import ${id}`); return modules[id]; }, ...extra });
+  }).outputText, { exports, console, require: (id: string) => { assert.ok(id in modules, `Unexpected import ${id}`); return modules[id]; }, ...extra });
   return exports;
 }
 export const anything: any = new Proxy(function () {}, { get: (_t, key) => key === 'then' ? undefined : key === Symbol.toPrimitive ? () => 0 : anything, apply: () => anything });

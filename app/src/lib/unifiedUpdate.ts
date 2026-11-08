@@ -22,6 +22,7 @@ export class UnifiedUpdate {
   record: Handoff | null = null;
   loaded = false;
   working = false;
+  /** Kept for the current notice; the next start or refresh begins a new attempt. */
   error = '';
   private epoch = 0;
   private queue: Promise<unknown> = Promise.resolve();
@@ -43,7 +44,7 @@ export class UnifiedUpdate {
         throw new Error('The saved update cannot be read. No server command was sent.');
       }
       this.record = saved; this.loaded = true; this.emit();
-    }).catch((e) => { this.loading = undefined; throw e; });
+    }).catch((e) => { this.loading = undefined; this.loaded = true; this.error = (e as Error).message; this.emit(); throw e; });
   }
   /** Selection changes invalidate in-flight authentication/download/preflight, even after switch-back. */
   invalidate() { this.epoch++; }
@@ -58,7 +59,10 @@ export class UnifiedUpdate {
       if (this.record) throw new Error('Finish or cancel the current update first.');
       if (!versionOK(update.version) || !versionOK(original.current) || compareVersions(update.version, original.current) <= 0) throw new Error('Only a newer published release can be installed.');
       if (!update.apk) { await this.deps.install(update, eligible); return; }
-      if (!(await this.deps.authenticate('Update Winglet')) || !eligible()) return;
+      if (!(await this.deps.authenticate('Update Winglet'))) {
+        throw new Error('The update needs your approval before it can start. Try again.');
+      }
+      if (!eligible()) throw new Error('The selected connection changed before the update could start. Try again.');
       const owner = original.role === 'owner' && !!original.server;
       const record: Handoff = { version: update.version, key: this.deps.key(), stage: 'awaiting-app',
         ...(owner ? { scope: scope(original), serverName: original.server!.bot.title, role: original.role } : {}),
@@ -68,7 +72,10 @@ export class UnifiedUpdate {
       const result = await this.deps.install(update, eligible);
       if (this.snapshot() !== record) return;
       if (!eligible() || result === 'cancelled') await this.save(null);
-      else if (result !== 'opened') await this.save({ ...record, stage: 'failed', message: 'The app installer could not be opened. The server was not changed.' });
+      else if (result !== 'opened') await this.save({ ...record, stage: 'failed',
+        message: result === 'error'
+          ? 'The app update could not be downloaded or opened. The server was not changed.'
+          : 'The app update was cancelled. The server was not changed.' });
     } catch (e) { this.error = (e as Error).message; }
     finally { this.working = false; this.emit(); }
   }
@@ -113,8 +120,13 @@ export class UnifiedUpdate {
             : { ...dispatch, stage: 'failed', message: 'The server step was cancelled before sending.' });
         } catch (e) {
           const status = (e as { status?: number }).status;
-          await this.save({ ...dispatch, stage: typeof status === 'number' && status > 0 ? 'failed' : 'unknown',
-            message: typeof status === 'number' && status > 0 ? (e as Error).message : 'The server reply was lost. Checking history; no new installation will be sent automatically.' });
+          if (typeof status === 'number' && status > 0) {
+            await this.save({ ...dispatch, stage: 'failed', message: (e as Error).message });
+          } else if (status === 0) {
+            await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' });
+          } else {
+            await this.save({ ...dispatch, stage: 'failed', message: (e as Error).message || 'The server update could not be started.' });
+          }
         }
       } else if (eligible()) {
         if (record.stage === 'dispatching') await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' });
@@ -126,20 +138,35 @@ export class UnifiedUpdate {
     } catch (e) { this.error = (e as Error).message; }
     finally { this.working = false; this.emit(); }
   }
+  clearError() { if (!this.error) return; this.error = ''; this.emit(); }
+  /**
+   * A saved consent is bound to one selected pairing. If that pairing is gone, the app must still
+   * be updateable. This clears only a record whose Android consent was never given: once the app
+   * is running the consented version, the host treats it as a completed terminal handoff.
+   */
+  async recoverOrphan() {
+    const record = this.record, context = this.deps.context();
+    if (!record || record.scope === undefined || scope(context) === record.scope) return;
+    // Only a consent whose app was never installed is dead. If this phone is running the consented
+    // version, the host still needs it to decide whether the matching server step is required.
+    if (context.current === record.version) return;
+    this.invalidate(); this.deps.abort();
+    try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
+  }
   async cancel() {
     if (this.record && !['awaiting-app', 'failed', 'complete'].includes(this.record.stage)) return;
     this.invalidate(); this.deps.abort();
-    try { await this.save(null); } catch (e) { this.error = (e as Error).message; this.emit(); }
+    try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
   async done() {
     const record = this.record, context = this.deps.context();
     if (!record || record.stage === 'awaiting-app' || record.stage === 'dispatching') return;
     try {
       if (record.scope) {
-        if (scope(context) !== record.scope || context.role !== 'owner') return;
+        if (scope(context) !== record.scope) return;
         await this.deps.acknowledge(context.server!, record);
       }
-      await this.save(null);
+      await this.save(null); this.error = ''; this.emit();
     } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
 }

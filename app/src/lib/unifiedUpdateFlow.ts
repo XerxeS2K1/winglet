@@ -4,7 +4,7 @@ import { api } from './api';
 import { useAppInstall } from './appInstall';
 import { appUpdateSupported } from './appUpdateCheck';
 import { unlock, useLock } from './appLock';
-import { cacheGet, cacheSetStrict } from './cache';
+import { cacheGetStrict, cacheSetStrict } from './cache';
 import { idempotencyKey } from './control';
 import { sendConsentedWingletUpdate } from './serverUpdates';
 import { useApp } from './store';
@@ -20,7 +20,7 @@ export function updateContext(): UpdateContext {
     online: !!server && state.runtime[server.id]?.status === 'online', foreground: state.foreground, locked: useLock.getState().locked };
 }
 export const unifiedUpdate = new UnifiedUpdate({
-  read: () => cacheGet<Handoff | null>(KEY, null), write: (record) => cacheSetStrict(KEY, record),
+  read: () => cacheGetStrict<Handoff | null>(KEY, null), write: (record) => cacheSetStrict(KEY, record),
   context: updateContext, authenticate: unlock, key: idempotencyKey,
   install: (update, eligible) => useAppInstall.getState().install(update, eligible), abort: () => useAppInstall.getState().cancel(),
   system: (server) => api(server, '/api/system'), send: sendConsentedWingletUpdate,

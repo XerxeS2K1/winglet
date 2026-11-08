@@ -13,7 +13,7 @@ function harness(disk = new Map(), current = '0.10.7') {
   const core = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}), './updateRecovery': load('lib/updateRecovery.ts', {}) });
   const flow = load('lib/unifiedUpdateFlow.ts', {
     'expo-constants': { expoConfig: { version: current } }, zustand, './api': net.api,
-    './cache': { cacheGet: async (key: string) => disk.get(key) ?? null, cacheSetStrict: async (key: string, value: any) => { disk.set(key, structuredClone(value)); } },
+    './cache': { cacheGetStrict: async (key: string) => disk.get(key) ?? null, cacheSetStrict: async (key: string, value: any) => { disk.set(key, structuredClone(value)); } },
     './appInstall': { useAppInstall: installer }, './appUpdateCheck': { appUpdateSupported: true }, './appLock': { unlock: async () => { events.push('authenticate'); return true; }, useLock: lock },
     './store': { useApp }, './control': { idempotencyKey: () => 'handoff-key' }, './serverUpdates': net.core, './updateJobs': net.jobs,
     './unifiedUpdate': core,
@@ -67,7 +67,30 @@ test('one managed job sheet owns unified progress, excluding the ordinary global
   const tree = next.progress(); assert.equal(nodes(tree).filter((n) => n.type === 'JobSheet').length, 1);
   const ordinary = load('components/UpdateJobHost.tsx', next.modules); const view = hooks(); assert.equal(view.render(() => ordinary.UpdateJobHost()), null);
 });
+test('a stale error notice can be dismissed instead of blocking the app', async () => {
+  const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: true, record: null, error: 'stale read' });
+  const tree = h.progress(); const sheet = nodes(tree).find((n) => n.type === 'Sheet'); assert.equal(sheet.props.dismissible, true);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  h.flow.unifiedUpdate.clearError();
+  assert.equal(h.flow.unifiedUpdate.error, '');
+  assert.equal(h.progress(), null);
+});
 test('the handoff host waits for saved state instead of flashing an error before hydration', async () => {
   const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: false, record: null, error: 'stale read' });
   assert.equal(h.progress(), null);
+});
+test('a different installed app clears a saved consent for an unselected pairing once the host runs', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')(); const next = harness(h.disk, '0.10.9');
+  next.change({ servers: [{ ...server, id: 'moved', deviceId: 'moved-device' }], selection: { serverId: 'moved' }, runtime: { moved: { status: 'online', me: { role: 'owner' } } } });
+  next.api.api = async () => ({ version: '0.10.7', jobs: [] }); await next.flow.unifiedUpdate.observe();
+  next.progress(); await next.flow.unifiedUpdate.recoverOrphan();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record, null);
+  assert.equal(next.prompt(), null);
+});
+test('a successful managed job never calls the handoff done/cancel action while it still owns the sheet', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')(); const next = harness(h.disk, update.version);
+  next.api.api = async () => ({ version: '0.10.7', jobs: [] }); await next.flow.unifiedUpdate.observe();
+  const sheet = nodes(next.progress()).find((node) => node.type === 'JobSheet'); assert.ok(sheet);
+  let called = false; sheet.props.onClose = () => { called = true; }; sheet.props.job.state = 'succeeded';
+  assert.equal(called, false);
 });

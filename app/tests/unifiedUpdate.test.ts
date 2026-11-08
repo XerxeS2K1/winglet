@@ -59,6 +59,34 @@ test('a handoff saved with a server scope and no owner role is rejected as unrea
   const h = harness(); h.disk.value = { version: update.version, key: 'consented-key', scope: 'saved-scope', stage: 'awaiting-app', message: 'saved' };
   await assert.rejects(() => h.controller.hydrate(), /cannot be read/);
 });
+test('a download failure says download, not installer, and never starts the server step', async () => {
+  const h = harness(); h.deps.install = async () => 'error'; await h.controller.start(update);
+  assert.equal(h.disk.value.stage, 'failed'); assert.match(h.disk.value.message, /downloaded or opened/i);
+  assert.equal(h.sent.length, 0);
+});
+test('a dispatch that already has a server update fails clearly instead of claiming a lost reply', async () => {
+  const h = harness(); await h.controller.start(update); h.context({ current: update.version });
+  h.deps.send = async () => { throw new Error('An update is already being tracked.'); };
+  await h.controller.observe(); assert.equal(h.disk.value.stage, 'failed');
+  assert.match(h.disk.value.message, /already being tracked/i);
+  assert.doesNotMatch(h.disk.value.message, /reply was lost/i);
+});
+test('an error notice is kept until the user dismisses it and never discards a live record', async () => {
+  const h = harness(); await h.controller.start(update); h.context({ current: update.version });
+  h.deps.system = async () => { throw new Error('Network request failed'); };
+  await h.controller.observe(); assert.match(h.controller.error, /Network request failed/);
+  await h.controller.observe(); assert.match(h.controller.error, /Network request failed/);
+  h.controller.clearError(); assert.equal(h.controller.error, ''); assert.equal(h.disk.value.stage, 'awaiting-app');
+});
+test('an orphaned saved consent can be cleared so the app stays updateable', async () => {
+  const h = harness(); await h.controller.start(update); h.context({ current: '0.10.7', server: { ...server, id: 'moved' } });
+  assert.equal(h.controller.record.stage, 'awaiting-app');
+  await h.controller.recoverOrphan(); assert.equal(h.controller.record, null); assert.equal(h.disk.value, null);
+});
+test('an orphan is not cleared once the consented app version is actually running', async () => {
+  const h = harness(); await h.controller.start(update); h.context({ current: update.version, server: { ...server, id: 'moved' } });
+  await h.controller.recoverOrphan(); assert.equal(h.controller.record.stage, 'awaiting-app');
+});
 test('double taps share one authentication and download; switching away and back during auth invalidates it', async () => {
   const h = harness(); let resolve: any; h.deps.authenticate = () => new Promise((r) => { resolve = r; });
   const pending = h.controller.start(update); for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -97,8 +125,10 @@ test('a newer app than the consented release retires the server step instead of 
   const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: '0.10.9' }); await next.controller.observe();
   assert.equal(next.sent.length, 0); assert.equal(next.disk.value.stage, 'complete'); assert.match(next.disk.value.message, /cancelled/);
 });
-test('authentication cancellation has no durable handoff or download', async () => {
-  const h = harness(); h.deps.authenticate = async () => false; await h.controller.start(update); assert.equal(h.disk.value, null); assert.equal(h.installs.length, 0);
+test('authentication cancellation has no durable handoff or download and tells the user', async () => {
+  const h = harness(); h.deps.authenticate = async () => false; await h.controller.start(update);
+  assert.equal(h.disk.value, null); assert.equal(h.installs.length, 0);
+  assert.match(h.controller.error, /needs your approval/i);
 });
 for (const version of ['0.10.7', '0.9.0', 'garbage']) test(`stale or malformed app offer ${version} cannot create server consent`, async () => {
   const h = harness(); await h.controller.start({ ...update, version }); assert.equal(h.installs.length, 0); assert.equal(h.disk.value, null);
