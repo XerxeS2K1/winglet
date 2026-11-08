@@ -27,6 +27,7 @@ import { clearUpdateDownloads } from '../lib/appInstall';
 import { lockOnStart, onAppVisibility } from '../lib/appLock';
 import { resolveMainBot } from '../lib/bots';
 import { useAppUpdate } from '../lib/appUpdateCheck';
+import { unifiedUpdate } from '../lib/unifiedUpdateFlow';
 import { watchNetwork } from '../lib/network';
 import { attachPersistence } from '../lib/persist';
 import { usePrefs } from '../lib/prefs';
@@ -76,6 +77,12 @@ export default function RootLayout() {
   useEffect(() => {
     if (updateCheck) checkForUpdate();
   }, [updateCheck, checkForUpdate]);
+
+  // Read the saved update handoff once at startup. Without this, a saved server step stays invisible
+  // until something else calls observe(), and the app offer cannot know that a handoff exists.
+  useEffect(() => {
+    unifiedUpdate.hydrate().catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web') {

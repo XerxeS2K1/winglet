@@ -5,6 +5,7 @@ import { network, server } from './helpers/serverUpdateHarness.ts';
 const source = (file: string) => readFileSync(new URL('../src/' + file, import.meta.url), 'utf8');
 test('there is one app update flow, no automatic server startup prompt or separate auto-update setting', () => {
   assert.doesNotMatch(source('app/_layout.tsx'), /<ServerUpdatePrompt/);
+  assert.match(source('app/_layout.tsx'), /unifiedUpdate\.hydrate/);
   assert.doesNotMatch(source('app/settings.tsx') + source('lib/prefs.ts'), /autoUpdateServer|Auto-update server plugin/);
   assert.doesNotMatch(source('lib/serverUpdates.ts'), /skipUnlock/);
 });
