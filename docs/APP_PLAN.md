@@ -107,7 +107,13 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - Fifth cold review (deleg_39e99c95) of diff 6496095..a77cef8: FIX-FIRST (small); 4 new MED findings
   and 1 LOW; all fixes committed locally and merged into unified worktree. App suite 730/730
   passing, TypeScript clean.
-- Next: merge unified worktree into main, publish v0.10.7 release, independently rerun app tests/typecheck,
+- Sixth cold review (deleg_f54501a8) of diff b8e7c3f: no blockers, mergeable with follow-ups; 732/732
+  app tests passing, tsc clean. Sixth-review fixes applied (commit b8e7c3f): cancel() restores record
+  on write failure and surfaces the error as a notice, `expected` guard on all observe() saves,
+  HTTP 5xx → unknown (4xx → failed), redundant first useEffect removed, offline close trade-off
+  documented, clock-skew margin edge case documented.
+- Next: push the merged unified-update branch to origin (done at commit 9c7a81d), publish the
+  release carrying the unified update flow, independently rerun app tests/typecheck on main,
   audit affected Markdown and rebuild/freshness-check `plugin/web`.
 - Publication and live deployment require their own approvals. A new release, not a rewritten
   0.10.7 tag, is needed to deliver this change. Record APK installation and server running version
