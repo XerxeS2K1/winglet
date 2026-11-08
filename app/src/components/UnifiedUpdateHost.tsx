@@ -15,7 +15,7 @@ import { Button } from './ui';
 /** The one app+plugin handoff host; the ordinary job host yields only this pairing. */
 export function UnifiedUpdateHost() {
   const s = useStyles(), pathname = usePathname();
-  const { record, error } = useUnifiedUpdate();
+  const { record, error, loaded } = useUnifiedUpdate();
   const server = useApp((state) => state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0]);
   const foreground = useApp((state) => state.foreground);
   const rt = useServerState(server?.id), locked = useLock((state) => state.locked);
@@ -30,6 +30,7 @@ export function UnifiedUpdateHost() {
     return () => { if (timer !== undefined) clearInterval(timer); };
   }, [server, rt?.status, rt?.me?.role, foreground, locked, pathname, record?.key, record?.stage, polling]);
   if (!appUpdateSupported || locked || pathname === '/pair' || pathname === '/scan') return null;
+  if (!loaded) return null;
   if (!record) return error ? <Sheet visible dismissible={false} onClose={() => {}} title="Update unavailable">
     <Text style={s.error}>{error}</Text><Button title="Check again" onPress={() => unifiedUpdate.observe()} />
   </Sheet> : null;

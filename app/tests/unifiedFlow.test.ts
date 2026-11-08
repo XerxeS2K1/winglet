@@ -67,3 +67,7 @@ test('one managed job sheet owns unified progress, excluding the ordinary global
   const tree = next.progress(); assert.equal(nodes(tree).filter((n) => n.type === 'JobSheet').length, 1);
   const ordinary = load('components/UpdateJobHost.tsx', next.modules); const view = hooks(); assert.equal(view.render(() => ordinary.UpdateJobHost()), null);
 });
+test('the handoff host waits for saved state instead of flashing an error before hydration', async () => {
+  const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: false, record: null, error: 'stale read' });
+  assert.equal(h.progress(), null);
+});
