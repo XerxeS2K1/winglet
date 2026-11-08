@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.7](docs/releases/v0.10.7.md):** the server updater consents to declared Python dependencies, so a phone-triggered update installs instead of being refused; update progress cannot be dismissed and its result survives reconnect and relaunch; and new devices pair in one scan with trusted-phone browser sign-in. A one-time manual plugin install is required first, because the live 0.10.5 and published 0.10.6 updaters omit that consent.
+> **New in [v0.10.8](docs/releases/v0.10.8.md):** one app Update action now updates the app and the server plugin together — the plugin installs hands-off from the release artifact and restarts the gateway, with no separate setting, no second prompt and no manual command. Recovery survives a pairing switch, a lost reply, a corrupt cache and an interrupted send. A one-time manual plugin install is still required first, because the live 0.10.5 and published 0.10.6/0.10.7 updaters omit that consent.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
