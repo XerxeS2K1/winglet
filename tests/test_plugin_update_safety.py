@@ -54,36 +54,41 @@ async def test_stopped_installer_must_not_leave_a_writer_alive(tmp_path, monkeyp
     pytest.importorskip('hermes_cli.web_server')
     from hermes_cli import _launchers
     sentinel = tmp_path / 'grandchild-wrote-after-timeout'
-    ready = tmp_path / 'ready'
+    launcher_ready = tmp_path / 'launcher-ready'
+    test_ready = tmp_path / 'test-ready'
     pidfile = tmp_path / 'grandchild-pid'
     child = tmp_path / 'benign-installer.py'
     grandchild_code = "import time,pathlib; time.sleep(0.5); pathlib.Path(%r).write_text('late write')" % str(sentinel)
     child.write_text('import subprocess,sys,time,pathlib\n'
         + 'p=subprocess.Popen([sys.executable,"-c",%r])\n' % grandchild_code
         + 'pathlib.Path(%r).write_text(str(p.pid))\n' % str(pidfile)
-        + 'pathlib.Path(%r).touch()\n' % str(ready)
+        + 'pathlib.Path(%r).touch()\n' % str(launcher_ready)
         + 'time.sleep(30)\n')
     original_exec = asyncio.create_subprocess_exec
     direct = []
     async def launch(*args, **kwargs):
         proc = await original_exec(*args, **kwargs)
         direct.append(proc)
-        # Ensure the descendant exists before the timeout countdown starts.
+        # Keep the countdown wait out of the launch helper: the timeout starts only after launch returns.
         for _ in range(200):
-            if ready.exists():
+            if launcher_ready.exists():
                 return proc
             await asyncio.sleep(0.005)
         raise AssertionError('benign child did not start')
     monkeypatch.setattr(_launchers, 'runtime_command', lambda root,args: [sys.executable,str(child)])
-    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch)
+    async def launch_and_arm(*args, **kwargs):
+        proc = await launch(*args, **kwargs)
+        test_ready.touch()
+        return proc
+    monkeypatch.setattr(asyncio, 'create_subprocess_exec', launch_and_arm)
     try:
         task = asyncio.create_task(api.install_release('a' * 40, timeout=0.05 if stop == 'timeout' else 30))
         if stop == 'cancel':
             for _ in range(200):
-                if ready.exists():
+                if test_ready.exists():
                     break
                 await asyncio.sleep(0.005)
-            assert ready.exists()
+            assert test_ready.exists() and launcher_ready.exists()
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task

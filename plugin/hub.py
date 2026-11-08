@@ -3235,6 +3235,16 @@ class Hub:
         self._spawn(self._run_hermes_update(job["id"], h))
         return _json({"job": job}, status=202)
 
+    async def _fresh_owner(self, request: web.Request, device: Dict[str, Any]) -> Optional[web.Response]:
+        """Re-check authority after every awaited step, binding the signature to the key that is still current."""
+        sign_key = request.get("verified_sign_key")
+        current = self.store.get_device(device["id"])
+        if (current is None or current.get("role") != "owner" or not current.get("verified")
+                or sign_key is None or sign_key != self.store.device_sign_key(current["id"])):
+            self.store.add_audit("refused", device=device, summary="POST /api/system/update: authority changed before the job", outcome="refused")
+            return _error(403, "Your device no longer has owner authority. Nothing was changed.")
+        return None
+
     async def _start_winglet_update(self, request: web.Request, device: Dict[str, Any], h: Any, body: Dict[str, Any]) -> web.Response:
         """The phone names a version and nothing else. The server accepts it only if it is exactly the newest published
         release and newer than the one running; the repository and the commit come from its own GitHub lookup."""
@@ -3246,6 +3256,9 @@ class Hub:
         version = body.get("version")
         if not isinstance(version, str) or h.parse_version(version) is None:
             return _error(400, "Say which Winglet version to install, like 0.10.6.")
+        refusal = await self._fresh_owner(request, device)
+        if refusal is not None:
+            return refusal
         try:
             release = await asyncio.to_thread(h.latest_release, True)  # looked up afresh: never trust a ten-minute-old answer here
         except Exception as exc:
@@ -3260,6 +3273,9 @@ class Hub:
         needs = release.get("requires_hermes")
         if h.hermes_supports(needs, self.hermes_version()) is False:
             return _error(409, f"Winglet {version} needs Hermes {needs}, and this server runs {self.hermes_version()}. Update Hermes first.")
+        refusal = await self._fresh_owner(request, device)
+        if refusal is not None:
+            return refusal
         detail = {"from": VERSION, "to": version, "message": "Backing up before the update…"}
         job = await self._begin_job(request, device, "winglet_update", detail, body=body)
         if isinstance(job, web.Response):
