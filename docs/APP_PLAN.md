@@ -40,10 +40,15 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   `feat/auto-update-server`, with one visible app Update action, durable one-release consent, exact
   owner pairing, one APK, server dispatch only after the matching app is running, no startup
   installer, no separate server prompt and explicit terminal acknowledgement. It is not merged or
-  independently reviewed. Its app suite passed 705 tests and TypeScript was clean; the v0.10.7
-  plugin's focused update suite passed 313 tests with 22 skips. Those are code checks only. Final
-  integration, cold review, parent-rerun results, a matching release and web freshness remain
-  required before completion.
+  independently reviewed after correction. The first cold review found orphaned pairing consent,
+  an undismissable error notice, mislabeled download/dispatch failures, silent authentication
+  failures, an enabled Later/Skip control, failed hydration, strict read failures and a
+  danger-styled success notice. The local fixes add orphan recovery, dismissible notices, truthful
+  messages, explicit authentication errors, active-control gating, strict reads and terminal-job
+  The app suite then passed 716 tests and TypeScript was clean; the v0.10.7 plugin's focused
+  focused update suite passed 313 tests with 22 skips. Those are code checks only. Final
+  integration, a corrected-diff cold review, a matching release and web freshness remain required
+  before completion.
 - Safety: owner signing and exact release pinning remain. No silent downgrade, upgrade of another
   pairing or claim that merely opening Android's installer proves the APK was installed. Android's
   required package-install confirmation cannot be bypassed.
