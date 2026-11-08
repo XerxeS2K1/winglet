@@ -33,7 +33,7 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - Rejected implementation: local `feat/auto-update-server` commits `91b0b10` and `2164445` added an
   opt-in toggle. Those commits do **not** meet the requirement and were not released.
 - The replacement app implementation is in `/root/Code/winglet-autoupdate` on
-  `feat/auto-update-server` (`6496095` app code and third-review fixes, `ea57741` doc corrections).
+  `feat/auto-update-server` (`a77cef8` app code and fourth-review fixes, `ea57741` doc corrections).
   Puppet Master owns
   documentation and generated web integration in `/root/Code/winglet-unified-update` on
   `fix/unified-update-integration`, initially based on `2164445`.
@@ -61,8 +61,19 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   The local fixes clear the unreadable record, recover a terminal job from history filtered by the
   exact release version when no job ID survived, expose `servers`/`runtime` in the update context so
   orphan recovery can find the saved pairing, let `Done`/orphan cleanup work for non-owners, and
-  close consent older than seven days without sending a server command. The app suite then passed
-  723 tests and TypeScript was clean; the v0.10.7 plugin's focused update suite passed 313 tests
+  close consent older than seven days without sending a server command. A fourth cold review of that
+  corrected diff (`6496095`) then found that overlapping polls could burn one consent into a false
+  failure (the re-entrancy guard was set only after hydration and the eligibility check compared the
+  record by presence rather than identity), that a send interrupted by a pairing switch left the
+  record stuck in `dispatching` or `unknown` instead of recording that nothing was sent, that a
+  read/parse failure was still unreadable-with-no-recovery and blocked `start()`, that history
+  recovery had no age filter and did not link a running job, and that a scoped record could be
+  cleared locally before the owner role was known. The local fixes add an `observing` re-entrancy
+  guard and restore record-identity eligibility, save a truthful terminal state for an interrupted
+  send, make a read failure clearable and non-blocking for a fresh consented update, filter history
+  by the saved consent time and link running jobs, and wait for the owner role before clearing a
+  scoped record. The app suite then passed
+  730 tests and TypeScript was clean; the v0.10.7 plugin's focused update suite passed 313 tests
   with 22 skips. Those are code checks only. Final integration, a corrected-diff cold review, a
   matching release and web freshness remain required before completion.
 - Safety: owner signing and exact release pinning remain. No silent downgrade, upgrade of another
