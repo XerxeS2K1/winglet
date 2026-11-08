@@ -36,8 +36,8 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.6](docs/releases/v0.10.6.md):** the app offers the server-plugin update, with fingerprint verification, a safe idempotency key and focus gating. That release is historical; the live plugin updater it loads still omits Hermes's Python-dependency consent, so it must be repaired before another in-app update is expected to work.
-> **Local integration (not released):** progress and results stay visible until acknowledged, with reconnect/relaunch recovery; the pinned server installer is being repaired; and trusted-phone browser sign-in plus one-step pairing are merged locally. Exact status, evidence and next gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md). Do not read this text as a published release.
+> **New in [v0.10.7](docs/releases/v0.10.7.md):** the server updater consents to declared Python dependencies, so a phone-triggered update installs instead of being refused; update progress cannot be dismissed and its result survives reconnect and relaunch; and new devices pair in one scan with trusted-phone browser sign-in. A one-time manual plugin install is required first, because the live 0.10.5 and published 0.10.6 updaters omit that consent.
+> **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
 ## Why Winglet?
