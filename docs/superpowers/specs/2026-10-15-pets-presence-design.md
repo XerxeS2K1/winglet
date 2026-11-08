@@ -1,5 +1,7 @@
 # Pets 2.0, main-bot presence and sounds
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 Pieces 1 and 2 of the UI/UX overhaul (sound and feel; pets and the main bot). Later pieces — chat header and
 model picker, landing page, agent dock, native notifications — get their own specs.
 

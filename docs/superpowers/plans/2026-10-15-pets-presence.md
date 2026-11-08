@@ -1,5 +1,7 @@
 # Pets 2.0, Main-Bot Presence and Sounds — Implementation Plan
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Pets take their real colours from their sprites, respond to touch everywhere they're live, appear live in chats, and the main bot gets a permanent place in the tab bar; plus four small general sounds.

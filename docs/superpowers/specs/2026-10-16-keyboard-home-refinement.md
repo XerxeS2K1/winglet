@@ -1,5 +1,7 @@
 # Keyboard and Home refinement
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 Navigation and Home presentation are superseded by `2026-10-16-chat-first-sidebar.md`. The keyboard/composer behavior below remains applicable.
 
 The walkthrough exposed a missed keyboard regression in the main chat: its composer was absolutely positioned below Android's IME. The existing KeyboardAvoidingView did not account for Android edge-to-edge behavior, and absolute children do not reliably follow padding. The user also requested a simpler Home, reachable composer controls in the Claude pattern, bot swiping with neighboring content visible, and a quieter Chats list.

@@ -1,5 +1,7 @@
 # Mobile chat polish and reliability
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 The later walkthrough changes the model-button placement and Home layout described below. Current design: `2026-10-16-keyboard-home-refinement.md` in this directory. Model controls now live inside the shared composer.
 
 The phone audit found an unlabeled model icon competing with the message field, a picker with three repeated headings and densely wrapped chips, sheet dragging attached to scrollable content, an always-allocated tab-bar recorder, and recorder races on repeated/interrupted gestures. Model controls also replaced chat previews and incorrectly ended the local working indicator.

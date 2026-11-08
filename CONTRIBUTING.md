@@ -20,8 +20,9 @@ plugin/   Hermes Agent companion plugin (Python)
 ## Pull requests
 
 Work lands on `integration/dev-all`. A release is a pull request from there to `main`, and the version tag goes on
-`main`, which is what people install. (The pending updater/linking integration uses a topic branch off
-current `main`; see `docs/APP_PLAN.md`.)
+`main`, which is what people install. The original updater/linking integration shipped in v0.10.7.
+Current local unified-update work and its separate publication gates are recorded in
+[the app plan](docs/APP_PLAN.md).
 
 1. Fork the repo and create a branch from `integration/dev-all`, and open your pull request against that branch.
 2. Keep each PR focused on one thing.

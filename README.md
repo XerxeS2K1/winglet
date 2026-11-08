@@ -96,7 +96,7 @@ verifies that device instead of creating another one. Address/code-only access s
 With the matching device-linking server API, an unpaired web browser can show a sign-in QR for an already-verified
 owner phone: **Devices → Link a device → Scan browser QR**, compare the check code, choose Member or Owner and
 explicitly approve. The browser receives its own keys and identity. Older servers keep the manual fallback.
-See [pairing and browser sign-in](docs/DEVICE_LINKING.md) for the trust checks, expiry, storage recovery and local-only test status.
+This flow shipped in v0.10.7. See [pairing and browser sign-in](docs/DEVICE_LINKING.md) for trust checks, expiry, storage recovery and physical-phone verification limits.
 For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**. Which Hermes versions work, and what an older one loses: [compatibility](docs/HERMES_COMPATIBILITY.md).
 Current integration status, the 0.10.5 updater bootstrap limitation, and approval gates are recorded in
 [the app plan](docs/APP_PLAN.md). Server-update command and trust limits are in
@@ -266,8 +266,10 @@ for Hermes and Winglet with progress that carries on across the restart. **Logs*
 gateway and error logs with keys and tokens hidden, and **Schedule** takes routines in plain words
 ("weekdays at 9am", "every 2h", "in 30m") and posts their results to the Updates chat.
 
-In-app updates need Hermes installed from git and Winglet installed with `hermes plugins install`; otherwise
-the app shows the command to run on the server. Under Agent → Abilities you manage **Skills**, **Tools**
+Hermes updates have their own installation requirements (including a supported git install).
+Winglet's repaired plugin updater instead resolves trusted pinned releases directly; copied/subdirectory
+installs must not rely on git-provenance discovery. Loaded 0.10.5/0.10.6 updaters need the
+[one-time bootstrap](docs/SERVER_PLUGIN_UPDATE.md); already-repaired servers do not. Under Agent → Abilities you manage **Skills**, **Tools**
 (including approvals and what members can use) and **MCP servers**. Changes to tools apply from the next
 message; MCP changes apply when you tap Reconnect.
 </details>

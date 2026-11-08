@@ -118,15 +118,26 @@ command or queue order, even when only one request appears to match. See
 
 ## Updating
 
-On the server, run `hermes plugins update winglet` and restart the gateway. Supported installs can also
-update from Winglet's Server screen. The updated plugin serves the new iPhone/desktop web app.
+On a supported repaired server, an owner can update Winglet from the Server screen using a
+trusted release pinned to its resolved full commit SHA. The updated plugin serves the new
+iPhone/desktop web app after activation. Copied/subdirectory plugin installs do not contain
+`.git`; do not rely on `hermes plugins update winglet` provenance checks to discover releases.
+Hermes itself has its own update/install requirements, separate from Winglet release discovery.
 
-> **The loaded updater matters, not just the APK.** The live 0.10.5 plugin and the published 0.10.6
-> plugin both omit `--yes-deps`, so an in-app update from either is refused at the dependency step.
+> **The loaded updater matters, not just the APK.** Servers still running the 0.10.5 or 0.10.6
+> plugin omit `--yes-deps`, so an in-app update from either is refused at the dependency step.
 > A newer APK cannot repair an already-loaded updater. A separately approved manual pinned
 > repaired-plugin bootstrap plus gateway restart is required once before the repaired self-update
 > path can be exercised. See [SERVER_PLUGIN_UPDATE.md](SERVER_PLUGIN_UPDATE.md) and the
 > [current plan](APP_PLAN.md). Do not retry the broken updater expecting a new APK to fix it.
+> This maintainer server already completed the bootstrap to 0.10.7 and owner restart on
+> 2026-11-08; that is dated server evidence, not proof of the phone APK version.
+
+**Unified Update (local correction):** the next app flow coordinates the APK and matching
+server-plugin release from one app Update action, without a separate auto-update toggle.
+It is not yet published or physical-phone-verified. Android still asks to install the APK;
+installer handoff is not successful installation. See APP_PLAN for exact implementation,
+recovery and review/test status.
 
 Android releases use the same signing key and can update the installed app. Phones on v0.3.0 can use
 the update prompt for v0.4.0; phones on v0.2.0 use About and a browser download. The in-app download,

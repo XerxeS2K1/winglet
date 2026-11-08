@@ -1,5 +1,7 @@
 # Mobile polish implementation
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 1. Record baseline phone screenshots and audit chat, model selection, sheets and recording lifecycle.
 2. Add regression coverage and make voice recording serial, cancellable and recoverable.
 3. Add model display/search helpers; move model selection to the header; render accessible rows and immediate selection feedback.

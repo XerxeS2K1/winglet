@@ -1,5 +1,7 @@
 # Mobile polish validation
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 Current navigation: see the final **17 October: carousel overlap correction** section and `../specs/2026-10-16-chat-first-sidebar.md`. Earlier history-filter and boxed-carousel checks below describe superseded iterations.
 
 Follow-up walkthrough: the main-chat keyboard failure missed in the initial pass was reproduced and fixed. Current model placement is inside the composer, superseding the header placement recorded below. See the final follow-up results at the end of this file.

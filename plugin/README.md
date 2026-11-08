@@ -20,7 +20,7 @@ See [approval compatibility](../docs/APPROVALS.md).
 ## Install
 
 ```bash
-hermes plugins install XerxeS2K1/winglet/plugin --force   # --force: see the note below
+hermes plugins install XerxeS2K1/winglet/plugin --force --yes-deps   # separate scanner and dependency consent; see below
 hermes plugins enable winglet
 hermes winglet setup          # prepares HTTPS, starts/restarts the gateway and shows a QR
 ```

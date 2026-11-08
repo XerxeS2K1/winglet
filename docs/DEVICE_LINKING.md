@@ -1,15 +1,15 @@
 # Pairing and browser sign-in
 
-This describes the new app flow. It requires the matching device-linking server API; an older
-server keeps pairing-link and address/code access, without the browser QR option. This local
-app slice is not a released build and has not been checked on a phone or against a live gateway.
-This text now describes the local branch merged with the updater-repair integration; source-level
-documentation is not a deployment record. See [APP_PLAN.md](APP_PLAN.md) for current status.
+This flow shipped in v0.10.7 at `f33a2c1`. It requires the matching device-linking server API; an
+older server keeps pairing-link and address/code access, without the browser QR option. Release
+publication and the later maintainer-phone reconnect do not prove the camera/browser approval
+flow was physically tested. See [APP_PLAN.md](APP_PLAN.md) for verification and deployment status;
+the new unified app-update correction is separate local work.
 
 Related: [setup](../docs/SETUP.md), [security](../SECURITY.md),
 [Hermes compatibility](HERMES_COMPATIBILITY.md) and the
-[server update path](SERVER_PLUGIN_UPDATE.md). This is integrated locally at the audited snapshot
-and **unreleased**; it is not phone-verified.
+[server update path](SERVER_PLUGIN_UPDATE.md). These docs distinguish published functionality
+from still-unverified physical-phone states.
 
 ## Connect the first phone
 

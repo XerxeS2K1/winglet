@@ -44,6 +44,18 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - No push, release, live plugin install or gateway restart is performed by this local correction.
   Phone builds use the in-app updater, **never adb**.
 
+### Markdown audit
+
+- An independent helper read all **85 tracked Markdown files** at `2164445`; the parent checked
+  that its per-file inventory exactly matches Git. Classification: 20 current, 56 historical,
+  5 legal, 3 template and 1 generated. Twelve current documents needed adjustment.
+- Current status/contract corrections and historical annotations are local; exact unified-flow
+  details still require reconciliation with the final app implementation. The per-file
+  [audit and disposition](MARKDOWN_AUDIT.md) preserves what was checked. Adding that report
+  increases the repository inventory by one; it does not change the baseline denominator.
+- GitHub `main` was read back at `f33a2c1` and still has the older checkpoint. Do not call the
+  local corrections published until an approved push and remote read-back establish that.
+
 ### Verification history and remaining gates
 
 - Released integration's parent-rerun app suite: **683 passed, 0 failed**, typecheck exit **0**.

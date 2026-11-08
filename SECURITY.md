@@ -24,7 +24,8 @@ A full pairing link carries an out-of-band server fingerprint. A manual code alo
 justify trusting a fingerprint fetched over that same network; code-only connections remain
 unpinned and cannot claim verified owner access. Existing pinned identities reject a conflicting link.
 
-The local browser-linking app flow requires the matching server API. A browser generates its own
+The browser-linking flow shipped in v0.10.7 and requires the matching server API. Publication
+does not establish physical-phone/camera verification; see APP_PLAN for those gates. A browser generates its own
 Ed25519 key in memory and shows only a public request id and fingerprint in the QR. A verified
 owner on that same, already-pinned server must compare the six-digit code, explicitly choose
 a role (Member by default), confirm and approve. Requester-supplied browser name/platform are
@@ -41,6 +42,21 @@ ambiguous; Devices can remove an orphan before a deliberate new sign-in.
 
 See [the flow and limitations](docs/DEVICE_LINKING.md). App tests use isolated fake HTTP, not a
 phone or live gateway. Backend enforcement and integrated browser testing are separate gates.
+
+## Update authorization and installation boundaries
+
+The published v0.10.7 updater accepts only signed owner requests for a trusted, exact release;
+the server resolves its full commit SHA, checks Hermes compatibility and rejects a downgrade.
+The owner authorizes the release and its declared Python dependencies, not arbitrary packages.
+Local phone authentication is a UI gate, not server-verifiable biometric proof.
+
+The new unified app Update action is local work, not a standing auto-install permission. Its
+contract binds the matching app/plugin release and original pairing, keeps failure/unknown
+outcomes visible, and does not silently select another release or server. Android retains its
+package-install confirmation. Opening that installer is not evidence the APK was installed;
+APK and running-plugin versions must be verified separately. No update is made merely because
+a release appears. See [update trust and rollback limits](docs/SERVER_PLUGIN_UPDATE.md) and
+[implementation, test and deployment status](docs/APP_PLAN.md).
 
 ## Automatic remote access
 

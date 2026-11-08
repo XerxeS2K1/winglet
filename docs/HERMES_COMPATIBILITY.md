@@ -20,13 +20,13 @@ The plugin declares `requires_hermes: ">=0.22.7"`.
 
 Do not collapse these into one "Winglet version". A report needs all of them:
 
-| Identity | Current value (2026-11-08) | Where it lives |
+| Identity | Last established state (2026-11-08) | Evidence/source |
 | --- | --- | --- |
-| Phone APK | 0.10.6 (owner-reported) | Installed app |
-| Live server plugin | 0.10.5 (source inspected) | Loaded gateway plugin |
-| Published 0.10.6 updater | Omits `--yes-deps` | Release tag |
-| Repaired updater | Unreleased local branch | `fix/plugin-update-combined` |
-| Browser-linking API | Merged locally, unreleased | Same branch |
+| Phone APK | 0.10.6, last owner-reported; not freshly checked | Installed app must be verified separately |
+| Live server plugin | 0.10.7 after owner restart 11:45, phone reconnect 11:49 | Dated `/api/info` verification, not a new runtime check |
+| Published 0.10.5/0.10.6 updater | Omits `--yes-deps`; conditional bootstrap required | Historical release tags |
+| Repaired updater and browser-linking API | Published v0.10.7 at `f33a2c1` | Release; not proof of every native-phone flow |
+| Unified app/plugin Update action | Local correction, not released | `fix/unified-update-integration`; see APP_PLAN for exact source and test evidence |
 
 See [SERVER_PLUGIN_UPDATE.md](SERVER_PLUGIN_UPDATE.md) and [APP_PLAN.md](APP_PLAN.md).
 

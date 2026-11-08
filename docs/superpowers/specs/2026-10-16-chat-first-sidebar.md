@@ -1,5 +1,7 @@
 # Chat-first navigation
 
+> **Historical design/validation record.** This dated document preserves earlier plans and evidence, not current implementation or deployment status. Use [APP_PLAN.md](../../APP_PLAN.md), [FEATURES.md](../../FEATURES.md) and [DESIGN.md](../../DESIGN.md) for the current checkpoint and behaviour.
+
 This supersedes the bottom navigation and boxed Home carousel in the earlier mobile-polish documents. The user requested a quiet default chat canvas, a lower and unboxed bot slot, recent conversations in a sidebar, Inbox at the top right, and separate Settings and Agent destinations. No subagents or PR review workflow were requested or used.
 
 ## References and interpretation
