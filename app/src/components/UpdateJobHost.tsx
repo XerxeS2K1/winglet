@@ -29,6 +29,7 @@ export function PairingUpdateJobs({ server }: { server: Server }) {
   const record = useUpdateJobs((s) => s.byScope[updateScope(server)]);
   const rt = useServerState(server.id);
   const [error, setError] = useState('');
+  const watching = !!record?.pending || !!record?.jobs.some((job) => job.state === 'running');
   const refresh = () => updateRecovery.refresh(server).catch((e) => setError((e as Error).message));
   useEffect(() => {
     let active = true, checking = false;
@@ -39,27 +40,25 @@ export function PairingUpdateJobs({ server }: { server: Server }) {
       catch (e) { if (active) setError((e as Error).message); }
       finally { checking = false; }
     };
-    void updateRecovery.hydrate(server).catch((e) => { if (active) setError((e as Error).message); });
+    // One observation on mount/reconnect; only unresolved work needs a recurring poll.
     void check();
-    const timer = setInterval(check, 2000);
-    return () => { active = false; clearInterval(timer); };
-  }, [server, rt?.status]);
+    const timer = watching ? setInterval(check, 2000) : undefined;
+    return () => { active = false; if (timer !== undefined) clearInterval(timer); };
+  }, [server, rt?.status, watching]);
   // Treat socket/replay as another observation, never an authoritative replacement for a terminal result.
   useEffect(() => {
     if (rt?.job) void updateRecovery.track(server, rt.job).catch((e) => setError((e as Error).message));
   }, [server, rt?.job]);
   const job = record?.jobs[0];
-  if (job) return <JobSheet key={`${updateScope(server)}:${job.id}`} managed server={server} job={job} notice={error}
-    onClose={() => updateRecovery.acknowledge(server, job.id).catch((e) => setError((e as Error).message))} />;
-  if (!record?.pending) return null;
+  if (!record?.pending) return job ? <JobSheet key={`${updateScope(server)}:${job.id}`} managed server={server} job={job} notice={error}
+    onClose={() => updateRecovery.acknowledge(server, job.id).catch((e) => setError((e as Error).message))} /> : null;
   return <Sheet visible dismissible={false} onClose={() => {}} title="Server plugin update">
     <View style={s.body}>
       <Text style={s.copy}>The update request has no confirmed result yet. Checking the server's job history; do not start another update.</Text>
+      {record.jobs.length ? <Text style={s.copy}>Other saved update results remain separate from this unconfirmed request.</Text> : null}
       {error ? <Text style={s.error} accessibilityRole="alert">{error}</Text> : null}
       <Button title="Check again" onPress={refresh} />
-      {record.uncertain ? <Button title="Acknowledge unknown result" variant="secondary" onPress={() => {
-        void updateRecovery.clearPending(server).catch((e) => setError((e as Error).message));
-      }} /> : null}
+      {record.uncertain ? <Button title="Acknowledge unknown result" variant="secondary" onPress={() => updateRecovery.acknowledgeUnknown(server, record.pending!.idempotency_key).catch((e) => setError((e as Error).message))} /> : null}
     </View>
   </Sheet>;
 }

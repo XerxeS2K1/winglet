@@ -5,15 +5,56 @@ import { load, server } from './helpers/serverUpdateHarness.ts';
 const job = (state = 'running', updated_at = 1, id = 'j') => ({ id, kind: 'winglet_update', state, updated_at, created_at: 1, device_id: 'd', detail: { message: state } });
 function harness(disk = new Map<string, any>()) {
   let history: any[] = [], response: any = null;
-  const paths: string[] = [];
+  const paths: string[] = []; let writes = 0, notifications = 0;
   const { UpdateRecovery } = load('lib/updateRecovery.ts', {});
   const recovery = new UpdateRecovery({
     read: async (key: string) => structuredClone(disk.get(key) ?? null),
-    write: async (key: string, value: any) => { disk.set(key, structuredClone(value)); },
+    write: async (key: string, value: any) => { writes++; disk.set(key, structuredClone(value)); },
     fetch: async (_s: any, path: string) => { paths.push(path); return path === '/api/system' ? { jobs: history } : { job: response }; },
   });
-  return { recovery, disk, paths, history: (v: any[]) => { history = v; }, response: (v: any) => { response = v; } };
+  recovery.subscribe(() => { notifications++; });
+  return { recovery, disk, paths, writes: () => writes, notifications: () => notifications, history: (v: any[]) => { history = v; }, response: (v: any) => { response = v; } };
 }
+test('acknowledging old history preserves an unrelated current unknown request across relaunch', async () => {
+  const h = harness(); const body = { target: 'winglet', version: 'CURRENT', idempotency_key: 'current-key' };
+  await h.recovery.begin(server, body); await h.recovery.markUnknown(server);
+  h.history([job('failed', 2, 'OLD')]); await h.recovery.refresh(server);
+  await h.recovery.acknowledge(server, 'OLD');
+  assert.equal(h.recovery.snapshot(server).pending?.idempotency_key, 'current-key');
+  assert.equal(h.recovery.snapshot(server).uncertain, true);
+  const next = harness(h.disk); await next.recovery.hydrate(server);
+  assert.equal(next.recovery.snapshot(server).pending?.idempotency_key, 'current-key');
+});
+test('stale unknown acknowledgement and request completion cannot clear a newer intent', async () => {
+  const h = harness(); await h.recovery.begin(server, { target: 'winglet', idempotency_key: 'first' });
+  await h.recovery.acknowledgeUnknown(server, 'first');
+  assert.equal(h.recovery.snapshot(server).pending.idempotency_key, 'first', 'sending request is not an unknown outcome');
+  await h.recovery.markUnknown(server); await h.recovery.acknowledgeUnknown(server, 'first');
+  await h.recovery.begin(server, { target: 'winglet', idempotency_key: 'second' }); await h.recovery.markUnknown(server);
+  await h.recovery.acknowledgeUnknown(server, 'first'); await h.recovery.clearPending(server, 'first');
+  assert.equal(h.recovery.snapshot(server).pending.idempotency_key, 'second');
+});
+test('unchanged hydration, acknowledged history and ignored observations cause no writes or notifications', async () => {
+  const h = harness(); await h.recovery.track(server, job('failed', 2));
+  await h.recovery.acknowledge(server, 'j'); h.history([job('failed', 2)]);
+  const writes = h.writes(), notifications = h.notifications();
+  for (let i = 0; i < 3; i++) await h.recovery.refresh(server);
+  await h.recovery.track(server, { ...job('failed', 2, 'other-device'), device_id: 'foreign' });
+  await h.recovery.track(server, { ...job('failed', 2, 'skill'), kind: 'skill_install' });
+  assert.equal(h.writes(), writes); assert.equal(h.notifications(), notifications);
+});
+test('a fresh reader publishes durable state once without rewriting it on hydration', async () => {
+  const h = harness(); await h.recovery.track(server, job('failed', 2));
+  const next = harness(h.disk); await next.recovery.hydrate(server); await next.recovery.hydrate(server);
+  assert.equal(next.writes(), 0); assert.equal(next.notifications(), 1);
+  assert.equal(next.recovery.snapshot(server).jobs[0].state, 'failed');
+});
+test('identical unacknowledged history preserves snapshot identity without writes', async () => {
+  const h = harness(); const value = job('failed', 2); await h.recovery.track(server, value); h.history([structuredClone(value)]);
+  const snapshot = h.recovery.snapshot(server), writes = h.writes(), notifications = h.notifications();
+  for (let i = 0; i < 3; i++) await h.recovery.refresh(server);
+  assert.equal(h.recovery.snapshot(server), snapshot); assert.equal(h.writes(), writes); assert.equal(h.notifications(), notifications);
+});
 test('an unresolved intent cannot be overwritten by another entry point or stale history', async () => {
   const h = harness(); const body = { target: 'winglet', idempotency_key: 'first' };
   await h.recovery.begin(server, body);

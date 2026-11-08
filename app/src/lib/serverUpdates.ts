@@ -33,17 +33,17 @@ export async function updateServerWinglet(server: Server, version?: string | nul
   if (!ok || !eligible()) return null;
   const body = { target: 'winglet', ...(version ? { version } : {}), idempotency_key: idempotencyKey() };
   await updateRecovery.begin(server, body);
-  if (!eligible()) { await updateRecovery.clearPending(server); return null; }
+  if (!eligible()) { await updateRecovery.clearPending(server, body.idempotency_key); return null; }
   const send = () => signedApi<{ job: Job }>(server, 'POST', '/api/system/update', body);
   try {
     // Retry only a lost transport reply, with exactly the same key/payload.
     const result = await send().catch((e) => e instanceof ApiError && e.status === 0 && eligible() ? send() : Promise.reject(e));
     await updateRecovery.track(server, result.job);
-    await updateRecovery.clearPending(server);
+    await updateRecovery.clearPending(server, body.idempotency_key);
     return result.job;
   } catch (e) {
     if (e instanceof ApiError && e.data?.job) await updateRecovery.track(server, e.data.job as Job);
-    if (e instanceof ApiError && e.status !== 0) await updateRecovery.clearPending(server);
+    if (e instanceof ApiError && e.status !== 0) await updateRecovery.clearPending(server, body.idempotency_key);
     else await updateRecovery.markUnknown(server);
     // With both replies lost, retain the intent and recover through existing history on reconnect.
     throw e;

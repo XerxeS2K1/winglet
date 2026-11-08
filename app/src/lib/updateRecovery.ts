@@ -25,18 +25,23 @@ export class UpdateRecovery {
   private change(s: Server, mutate: (record: UpdateRecord) => void): Promise<void> {
     const key = updateScope(s);
     const operation = (this.queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+      const hydrated = this.records.has(key);
       let record = this.records.get(key);
       if (!record) {
         const saved = await this.deps.read(storageKey(s));
         record = saved && Array.isArray(saved.jobs) && Array.isArray(saved.acknowledged) ? saved : empty();
-        if (record.pending) record.uncertain = true;
       }
       // Do not publish a change which has not been written durably.
       const next = { ...record, jobs: [...record.jobs], acknowledged: [...record.acknowledged] };
+      if (!hydrated && next.pending) next.uncertain = true;
       mutate(next);
-      await this.deps.write(storageKey(s), next);
-      this.records.set(key, next);
-      this.listeners.forEach((listener) => listener(s));
+      const changed = JSON.stringify(next) !== JSON.stringify(record);
+      if (changed) await this.deps.write(storageKey(s), next);
+      // Initial hydration publishes once, without rewriting identical durable data.
+      if (!hydrated || changed) {
+        this.records.set(key, next);
+        this.listeners.forEach((listener) => listener(s));
+      }
     });
     this.queues.set(key, operation);
     return operation;
@@ -49,7 +54,18 @@ export class UpdateRecovery {
     });
   }
   markUnknown(s: Server) { return this.change(s, (r) => { if (r.pending) r.uncertain = true; }); }
-  clearPending(s: Server) { return this.change(s, (r) => { delete r.pending; delete r.uncertain; }); }
+  clearPending(s: Server, requestKey: string) {
+    return this.change(s, (r) => {
+      if (r.pending?.idempotency_key !== requestKey) return;
+      delete r.pending; delete r.uncertain;
+    });
+  }
+  acknowledgeUnknown(s: Server, requestKey: string) {
+    return this.change(s, (r) => {
+      if (!r.uncertain || r.pending?.idempotency_key !== requestKey) return;
+      delete r.pending; delete r.uncertain;
+    });
+  }
   track(s: Server, job: Job) {
     return this.change(s, (r) => {
       if (job.kind !== 'winglet_update' || job.device_id !== s.deviceId || r.acknowledged.includes(job.id)) return;
@@ -72,7 +88,7 @@ export class UpdateRecovery {
       if (!job || job.state === 'running') return;
       r.jobs = r.jobs.filter((j) => j.id !== id);
       r.acknowledged.push(id);
-      delete r.pending; delete r.uncertain;
+      // History supplies no request key: this job cannot acknowledge an unrelated intent.
     });
   }
   async refresh(s: Server) {
