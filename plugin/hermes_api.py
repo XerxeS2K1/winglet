@@ -1035,8 +1035,12 @@ def settle_pending_update(current_version, *, home=None) -> Optional[dict]:
 
 
 async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 60) -> tuple:
-    """`hermes plugins install XerxeS2K1/winglet/plugin --ref <sha> --force --no-enable`, the command used by hand,
-    for a commit id this module resolved itself. Returns (exit code, output tail)."""
+    """Install the server-resolved commit, consenting to its declared Python dependencies without a TTY.
+
+    The signed owner update request is the consent; repo/ref stay server-controlled. ``--yes-deps``
+    answers only Hermes's Python-dependency question, not capability grants or gateway activation.
+    Returns (exit code, output tail).
+    """
     import asyncio as _asyncio
     import os
     if not isinstance(sha, str) or not _SHA.match(sha):
@@ -1046,7 +1050,7 @@ async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 
         from hermes_cli.web_server import PROJECT_ROOT
     except Exception as exc:
         raise HermesUnavailable("plugin install unavailable") from exc
-    args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable")
+    args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable", "--yes-deps")
     env = {**_install_environment(os.environ), "HERMES_HOME": str(_home()), "COLUMNS": "200"}
     proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, args), env=env, stdin=_asyncio.subprocess.DEVNULL,
                                                  stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT)

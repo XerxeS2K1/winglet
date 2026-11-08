@@ -108,7 +108,7 @@ def spawned(monkeypatch):
 async def test_the_install_is_exactly_the_command_used_by_hand_at_the_release_commit(spawned):
     code, lines = await api.install_release(SHA)
     assert code == 0 and lines[-1] == "Done"
-    assert spawned[0]["argv"][3:] == ["plugins", "install", "XerxeS2K1/winglet/plugin", "--ref", SHA, "--force", "--no-enable"]
+    assert spawned[0]["argv"][3:] == ["plugins", "install", "XerxeS2K1/winglet/plugin", "--ref", SHA, "--force", "--no-enable", "--yes-deps"]
     assert spawned[0]["stdin"] == asyncio.subprocess.DEVNULL     # it can never wait for an answer
 
 
