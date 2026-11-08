@@ -15,15 +15,21 @@ messaging gateway (`hermes gateway`), the same one you'd use for Telegram or Sla
 ## 1. On your Hermes machine
 
 ```bash
-hermes plugins install XerxeS2K1/winglet/plugin --force   # --force: see the note below
+hermes plugins install XerxeS2K1/winglet/plugin --yes-deps   # --yes-deps: consent to its declared Python dependencies
 hermes plugins enable winglet
 hermes winglet setup          # prepares HTTPS, starts the gateway, then shows the QR
 ```
 
-> **Why `--force`?** Hermes's install scanner rates community plugins that contain minified JavaScript (the bundled web app),
-> a subprocess call, or a downloaded binary as "caution" and blocks them. Winglet has all three: the compiled web app, and a
-> Cloudflare tunnel helper that downloads `cloudflared` and checks its SHA-256. The original Winglet plugin is blocked the same
-> way. Read the source first (`plugin/`), then use `--force` if you are happy with it.
+> **Why `--yes-deps`?** Hermes asks separately for consent to a plugin's declared Python dependencies. A
+> manual install must supply it, otherwise the install is refused. `--yes-deps` is not consent to
+> arbitrary packages, capability grants, or gateway activation. A pinned, reviewed release remains
+> required. The older `--force` wording in past notes referred to Hermes's caution-level install
+> scanner; read the source first (`plugin/`) and decide for yourself.
+
+> **Switching from the original Winglet plugin?** The original and this fork use different signing
+> keys. Uninstall the original plugin and re-pair your phones after installing this fork, or the
+> phone will keep trusting a key this server no longer holds. See
+> [v0.10.1](releases/v0.10.1.md) for the original warning.
 
 For a new or previously unpaired install, `setup` installs the dependencies and a checksum-verified
 Cloudflare tunnel client in your Hermes profile, starts/restarts the gateway, and checks the public HTTPS address against your
@@ -114,6 +120,13 @@ command or queue order, even when only one request appears to match. See
 
 On the server, run `hermes plugins update winglet` and restart the gateway. Supported installs can also
 update from Winglet's Server screen. The updated plugin serves the new iPhone/desktop web app.
+
+> **The loaded updater matters, not just the APK.** The live 0.10.5 plugin and the published 0.10.6
+> plugin both omit `--yes-deps`, so an in-app update from either is refused at the dependency step.
+> A newer APK cannot repair an already-loaded updater. A separately approved manual pinned
+> repaired-plugin bootstrap plus gateway restart is required once before the repaired self-update
+> path can be exercised. See [SERVER_PLUGIN_UPDATE.md](SERVER_PLUGIN_UPDATE.md) and the
+> [current plan](APP_PLAN.md). Do not retry the broken updater expecting a new APK to fix it.
 
 Android releases use the same signing key and can update the installed app. Phones on v0.3.0 can use
 the update prompt for v0.4.0; phones on v0.2.0 use About and a browser download. The in-app download,

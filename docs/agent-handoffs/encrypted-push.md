@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Encrypted push — implementation contract
 
 Capability: encrypted_push, envelope v1. Android uses the maintained UnifiedPush connector with the user's ntfy distributor and the server's configured HTTPS ntfy origin. An application AES-256-GCM envelope is additionally bound to server/device/key/version/purpose, then sent using existing RFC8291 Web Push encryption. The relay receives no bot/chat/title/action plaintext. Existing browser Web Push remains RFC8291 encrypted; its receive/action validation is upgraded separately.

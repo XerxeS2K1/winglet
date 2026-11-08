@@ -79,6 +79,25 @@ Use the current checkpoint and linked feature/security documents when resuming w
 The proposal covers look and feel, features, server-side work and the security model. Every item
 has a priority, milestones are split into small PRs, and each PR has acceptance criteria.
 
+### Read the historical sections with these known supersedures
+
+The original plan was written against v0.1.2 and never updated as releases landed. Treat its
+design and milestone text as history, not current fact. Known superseded or unshipped claims:
+
+- **Dark is not true black.** The app ships Charcoal as the default dark theme with Graphite and
+  Black as options; see [DESIGN.md](DESIGN.md) and [v0.9.0](releases/v0.9.0.md). The "true black"
+  and "Dark (true black)" labels in section 3.2 are stale.
+- **Radii and the four-tab glass bar are stale.** Section 3.3's radius table and the four-tab
+  bottom bar described later in the plan were superseded by the v0.9.0 sidebar/drawer/rail
+  navigation; see [DESIGN.md](DESIGN.md) and [FEATURES.md](FEATURES.md).
+- **Milestones M0–M6 are not a current backlog.** v0.7 and v0.8 were skipped and v0.9.0 replaced
+  the redesign. Items in section 6 marked "M4/M5/M6" were either shipped earlier, dropped, or
+  superseded. Do not read them as outstanding work; use the current checkpoint above.
+- **Job lookup by idempotency key was proposed, not shipped.** Current recovery uses existing job
+  IDs and bounded history, and keeps an explicitly unknown result when correlation is impossible.
+
+Where a historical section conflicts with a linked current document, the linked document wins.
+
 Priorities used throughout:
 
 | Tag | Meaning |

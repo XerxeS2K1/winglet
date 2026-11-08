@@ -1,5 +1,9 @@
 # Combined local test rehearsal
 
+> **Historical rehearsal.** This describes a 0.10.4-era local branch and its test counts. It is
+> kept as history, not as current evidence. For present status and gates see
+> [APP_PLAN.md](APP_PLAN.md).
+
 This local branch combines the reviewed web freshness gate, hand-off queue titles, server plugin updater,
 main-based release/document checks, background-task activity and session-scoped fallback detail.
 The existing bot features in the recorded main snapshot are retained. See [bot handling](BOTS.md),

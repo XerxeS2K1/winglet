@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Allow everything in one chat
 
 This shortcut is for normal chats only. An owner confirms it on an ordinary approval card; the current request is approved once and Hermes's session-scoped approval bypass is enabled. The chat displays a warning with **Turn back on** and a link to the Smart approvals settings. Smart-denied requests and Room cards do not offer it. Old servers hide the controls unless they advertise `chat_approval_bypass`.

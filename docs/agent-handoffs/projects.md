@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Projects, folders and persistent conversation workspaces
 
 Status: **ready for review — MOBILE VALIDATION PENDING**. Branch `codex/major-01-projects` in the

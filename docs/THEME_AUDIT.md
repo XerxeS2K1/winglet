@@ -1,5 +1,9 @@
 # Selected-theme source audit
 
+> **Historical source audit.** Scoped to snapshot `b33ad75` / 0.10.4. Its UNTESTED limitations
+> remain true for that snapshot and are not a current visual certification. See
+> [APP_PLAN.md](APP_PLAN.md) for present status.
+
 Scope: `fix/theme-consistency-2026-11-07`, based on exact combined snapshot `b33ad751b532e6980e12c451a5466dc2802d9420`. The six integrated features and version 0.10.4 are retained. This is a SOURCE audit and component-harness verification, not an all-route visual pass.
 
 ## Evidence and limits

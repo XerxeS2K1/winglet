@@ -94,3 +94,8 @@ An isolated watch emulator alone cannot prove Data Layer communication.
 Native builds/tests, browser layout checks and actual paired-device evidence are
 reported separately in `docs/agent-handoffs/wear-os.md`. **MOBILE VALIDATION PENDING**
 until that checklist is executed. This preview is not part of published v0.6.0.
+
+> **Scope note.** The Wear limits and polling cadence described here are separate from the
+> phone's browser-link and administrative job rules. Do not apply the Wear two-minute/30-day
+> limits or its ten-second active polling to the phone's update progress or pairing flow; see
+> [APP_PLAN.md](../docs/APP_PLAN.md) and [DEVICE_LINKING.md](../docs/DEVICE_LINKING.md).

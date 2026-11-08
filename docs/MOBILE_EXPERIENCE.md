@@ -1,5 +1,9 @@
 # Mobile experience review — 23 October 2026
 
+> **Dated review.** The "implemented in this pass" table below records the 0.6.0-era state; some
+> items listed as future increments there have since shipped. Preserve the review text as history
+> and read [FEATURES.md](FEATURES.md) and [APP_PLAN.md](APP_PLAN.md) for current behaviour.
+
 This review covers conversation controls, delivery and recovery, offline storage, model selection,
 navigation, agent management and the larger capabilities a complete mobile client needs. The current
 changes keep Winglet's Expo app, plugin protocol, pets, themes and existing server ownership model.

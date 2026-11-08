@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Combined major-feature validation — 26 October 2026
 
 This report supersedes earlier MOBILE VALIDATION PENDING notes for the checks listed below. It records the combined integration, rather than treating an export or an individual feature branch as device evidence.

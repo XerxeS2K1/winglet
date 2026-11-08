@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Checkpoint history, change previews and guarded restore
 
 Assignment: 03 (branch `codex/major-03-checkpoints`, worktree `03-checkpoints`).

@@ -6,6 +6,11 @@ app slice is not a released build and has not been checked on a phone or against
 This text now describes the local branch merged with the updater-repair integration; source-level
 documentation is not a deployment record. See [APP_PLAN.md](APP_PLAN.md) for current status.
 
+Related: [setup](../docs/SETUP.md), [security](../SECURITY.md),
+[Hermes compatibility](HERMES_COMPATIBILITY.md) and the
+[server update path](SERVER_PLUGIN_UPDATE.md). This is integrated locally at the audited snapshot
+and **unreleased**; it is not phone-verified.
+
 ## Connect the first phone
 
 Open Winglet and choose Scan QR code or Paste pairing link. Use the whole link printed by

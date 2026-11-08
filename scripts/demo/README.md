@@ -4,16 +4,18 @@ A disposable browser workspace for UI iteration and screenshots. It uses the rea
 
 ## Start
 
-From PowerShell, using the existing environment with aiohttp and cryptography installed:
-
-```powershell
-& 'C:/Users/vikas/Documents/winglet/.venv/Scripts/python.exe' -X utf8 'C:/Users/vikas/.codex/worktrees/major-feature-integration/winglet/scripts/demo/demo_server.py'
-```
-
-From Git Bash at this repository root:
+From Git Bash at this repository root (relative paths, preferred):
 
 ```bash
-"C:/Users/vikas/Documents/winglet/.venv/Scripts/python.exe" -X utf8 scripts/demo/demo_server.py
+python -X utf8 scripts/demo/demo_server.py
+```
+
+If your environment needs an explicit interpreter, use the one that has `aiohttp` and
+`cryptography` installed. The previous maintainer's absolute Windows paths below are historical
+examples from that machine and will not exist elsewhere:
+
+```powershell
+& 'C:/Users/vikas/Documents/winglet/.venv/Scripts/python.exe' -X utf8 'C:/Users/vikas/Documents/winglet/scripts/demo/demo_server.py'
 ```
 
 Defaults: `--port 18790 --web-root app/dist`. The web root is resolved relative to the repository, not the shell's current directory; an absolute path also works. For example, append `--port 18791 --web-root C:/path/to/export`.

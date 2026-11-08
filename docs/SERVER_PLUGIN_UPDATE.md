@@ -96,6 +96,12 @@ phone-triggered update exercise the repaired self-update path. Do not retry the 
 No bootstrap, plugin installation, gateway restart, APK deployment, push, tag or publication
 is performed by this local repair.
 
+Related: [DESIGN.md](DESIGN.md) (job and sheet behaviour), [APP_PLAN.md](APP_PLAN.md) (current
+status and gates), [DEVICE_LINKING.md](DEVICE_LINKING.md) and
+[HERMES_COMPATIBILITY.md](HERMES_COMPATIBILITY.md). Parent-reported app tests, server tests,
+Reviewer review, web freshness and phone approval are separate gates; none is a substitute for
+another, and none has been silently counted as a full pass.
+
 ## Offline verification scope
 
 - Command regression asserts the exact pinned argv including `--yes-deps`, stdin closed,

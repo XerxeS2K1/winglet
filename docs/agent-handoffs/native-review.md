@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Combined feature review and Android validation
 
 Reviewed integration: `441f26b4ded0b26e96e2354671196d81816ed35b` plus the

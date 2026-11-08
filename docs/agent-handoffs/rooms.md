@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Rooms: implementation and validation
 
 Base: reviewed integration 4ef6c6e390ba1af06aa90ccb2322f92f8351a12b.

@@ -7,14 +7,28 @@ Hermes versions this fork is checked against and what stops working on an older 
 
 | Hermes | How it is checked | Result |
 | --- | --- | --- |
-| **v0.23.0** (pinned) | The `CI` workflow installs this exact release and runs the whole test suite on every push to `main` and `integration/dev-all`, and on every pull request. A run by hand on 6 Nov 2026 gave 976 passed, 2 failed, 1 skipped; the two that failed are rooms tests that start a real Hermes session. | Runs live on the maintainer's server |
+| **v0.23.0** (pinned) | The `CI` workflow installs this exact release and runs the whole test suite on every push to `main` and `integration/dev-all`, and on every pull request. A run by hand on 6 Nov 2026 at `7b47f12` gave 976 passed, 2 failed, 1 skipped; the two that failed are rooms tests that start a real Hermes session and reproduce on the untouched base. | Runs live on the maintainer's server |
 | v0.22.7 | Was the `CI` pin until 6 Nov 2026. | Worked |
-| **`main`** (latest) | The `Hermes main check` workflow runs the same suite every Monday, and by hand. | Green when last run |
+| **`main`** (latest) | The `Hermes main check` workflow runs the same suite every Monday, and by hand. | Last hand run 6 Nov 2026: green |
 | v0.22.5 | Ran live on the maintainer's server until the move to v0.22.7 (and then v0.23.0). | Worked |
 | Older than v0.22.5 | Not tested. | See below |
 
 The pinned version moves forward when a newer release has been tried. Look at `.github/workflows/ci.yml` for the commit it is on now.
 The plugin declares `requires_hermes: ">=0.22.7"`.
+
+## Version identities are separate
+
+Do not collapse these into one "Winglet version". A report needs all of them:
+
+| Identity | Current value (2026-11-08) | Where it lives |
+| --- | --- | --- |
+| Phone APK | 0.10.6 (owner-reported) | Installed app |
+| Live server plugin | 0.10.5 (source inspected) | Loaded gateway plugin |
+| Published 0.10.6 updater | Omits `--yes-deps` | Release tag |
+| Repaired updater | Unreleased local branch | `fix/plugin-update-combined` |
+| Browser-linking API | Merged locally, unreleased | Same branch |
+
+See [SERVER_PLUGIN_UPDATE.md](SERVER_PLUGIN_UPDATE.md) and [APP_PLAN.md](APP_PLAN.md).
 
 ## What needs v0.22.5 or later
 

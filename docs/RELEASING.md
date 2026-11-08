@@ -1,11 +1,11 @@
 # Releasing Winglet
 
-Pushing a tag like `v0.1.1` or `v0.2.0-beta.1` builds the Android APKs and the plugin bundle and publishes them as a
+Replace `VERSION` below with the release version (for example `0.10.7`). Pushing a tag like `vVERSION` builds the Android APKs and the plugin bundle and publishes them as a
 GitHub Release. There is one APK per CPU, `winglet-<version>-arm64-v8a.apk` (nearly every phone) and
 `winglet-<version>-armeabi-v7a.apk` (older 32-bit phones), about 61 MB and 52 MB against 81 MB for a universal one. Both share
 the release's versionCode, and the app's update check downloads the one that fits the phone.
 
-The tag sets the app version: `v0.1.1` becomes version `0.1.1`, Android versionCode
+The tag sets the app version: `vVERSION` becomes version `VERSION`, Android versionCode
 `101` (major × 10000 + minor × 100 + patch), so every release installs as an update over the last.
 
 The release workflow checks both APKs' package name, versionName and versionCode,

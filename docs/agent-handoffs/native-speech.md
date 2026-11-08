@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Android on-device speech: feature 07 follow-up
 
 For Codex orchestrator review. Primary workflow: Agency Agents Mobile App Builder,

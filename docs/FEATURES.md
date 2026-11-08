@@ -54,7 +54,9 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   notification.
 - **Questions** with one-tap answers, and an **Inbox** for everything waiting on you, across all your bots.
 - **Notifications** through Web Push on iPhone and desktop and ntfy on Android, with per-chat mute and
-  quiet hours.
+  quiet hours. On Android phones with Google Play services you can instead use built-in Google push,
+  which needs no second app; it is never chosen for you. See [SECURITY](../SECURITY.md) for what
+  Google can see.
 
 ## Your agent
 
