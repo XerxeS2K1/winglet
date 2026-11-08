@@ -108,6 +108,10 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   pressed. The Server screen keeps a reopenable row for unacknowledged results, and relaunch recovers them from
   device-scoped storage plus the existing server job history. An unconfirmed request never silently starts another
   installation. See [server update safety](SERVER_PLUGIN_UPDATE.md).
+- **Hands-off server updates.** Enable **Auto-update server plugin** in Settings → App and the owner's phone installs
+  each new server plugin release as soon as it appears, without a tap — the server installs, waits for idle chats,
+  then restarts. A backup is made first, with rollback if startup fails. Turn it off any time; the app still
+  shows the manual prompt if you prefer to confirm each update. See [server update safety](SERVER_PLUGIN_UPDATE.md).
 - **Schedule.** Routines in plain words ("weekdays at 9am", "every 2h"), with their results in the Updates chat.
 - **Logs** from Hermes, with keys and tokens hidden.
 - **Sessions:** every conversation your agent has had, in any app or routine. Search what was said and read

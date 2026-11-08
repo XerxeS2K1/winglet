@@ -3,6 +3,7 @@ import { Text, View } from 'react-native';
 import { ApiError } from '../lib/api';
 import { useLock } from '../lib/appLock';
 import { SERVER_UPDATE_CONSENT, checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
+import { usePrefs } from '../lib/prefs';
 import { getJSON, setJSON } from '../lib/storage';
 import { useApp, useServerState } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
@@ -29,6 +30,7 @@ export function ServerPrompt({ server }: { server: Server }) {
   const s = useStyles();
   const rt = useServerState(server.id);
   const locked = useLock((state) => state.locked);
+  const autoUpdate = usePrefs((st) => st.prefs.autoUpdateServer);
   const updates = useServerUpdates((state) => state.byServer[serverUpdateKey(server)]);
   const [skipped, setSkipped] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState('');
@@ -63,22 +65,29 @@ export function ServerPrompt({ server }: { server: Server }) {
     try { await setJSON(skipKey, version); if (active.current) { setSkipped(version); later(); } }
     catch (e) { if (active.current) setError((e as Error).message); }
   };
-  const start = async () => {
+  const start = async (skipUnlock = false) => {
     if (sending.current || !version || w?.requires_hermes_ok === false || !eligible()) return;
     sending.current = true; setStarting(true); setError('');
     try {
-      const next = await updateServerWinglet(server, version, eligible);
+      const next = await updateServerWinglet(server, version, eligible, { skipUnlock });
       if (next && eligible()) later();
     } catch (e) {
       if (active.current) {
         setError((e as Error).message);
         useApp.getState().toast({ serverId: server.id, title: "Couldn't update the server", body: (e as Error).message });
-        if (e instanceof ApiError && e.status === 409 && e.data?.job) { later(); }
+        if (e instanceof ApiError && e.status === 409 && e.data?.job) later();
       }
     } finally { sending.current = false; if (active.current) setStarting(false); }
   };
-  const visible = !tracking?.pending && !tracking?.jobs.length && rt?.me?.role === 'owner' && !locked && w?.update_available === true && !!release
-    && skipped !== undefined && version !== skipped && !putOff.has(runKey);
+  const available = !tracking?.pending && !tracking?.jobs.length && rt?.me?.role === 'owner'
+    && w?.update_available === true && !!release && w?.requires_hermes_ok !== false;
+  // The owner's auto-update setting: install a release as soon as it appears, without a tap or prompt.
+  const startRef = useRef(start);
+  useEffect(() => { startRef.current = start; }, [start]);
+  useEffect(() => {
+    if (autoUpdate && available) void startRef.current(true);
+  }, [autoUpdate, available, version]);
+  const visible = available && !autoUpdate && !locked && skipped !== undefined && version !== skipped && !putOff.has(runKey);
   return <>
     <Sheet visible={visible} onClose={later} title="Update the server?" scrollable>
       <View style={s.body}>

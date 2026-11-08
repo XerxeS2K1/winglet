@@ -24,6 +24,8 @@ export type Prefs = {
   appLock: boolean;
   /** Look on GitHub for a newer app (Android app only). */
   updateCheck: boolean;
+  /** Update the server plugin as soon as a release appears, without asking (owner phones). */
+  autoUpdateServer: boolean;
   /** The bot Home puts first and opens to: its id, or empty to use the first one paired. */
   mainBot: string;
   /** Drawer on phones by default; pinned uses a compact rail on narrow screens. */
@@ -38,7 +40,7 @@ export type Prefs = {
 
 export const DEFAULT_PREFS: Prefs = {
   voiceListenWith: 'server', voiceSpeakWith: 'server',
-  theme: 'system', accent: 'iris', darkTone: 'charcoal', layout: 'bubbles', motion: 'system', transparency: 'system', haptics: true, sounds: true, busyMode: 'steer', appLock: false, updateCheck: true, mainBot: '', sidebar: 'auto', pinnedChats: [], archivedChats: [], favoriteModels: [], recentModels: [],
+  theme: 'system', accent: 'iris', darkTone: 'charcoal', layout: 'bubbles', motion: 'system', transparency: 'system', haptics: true, sounds: true, busyMode: 'steer', appLock: false, updateCheck: true, autoUpdateServer: false, mainBot: '', sidebar: 'auto', pinnedChats: [], archivedChats: [], favoriteModels: [], recentModels: [],
 };
 
 const KEY = 'winglet.prefs';

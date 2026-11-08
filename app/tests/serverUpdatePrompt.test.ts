@@ -4,7 +4,7 @@ import { load, hooks, jsx, anything, nodes, text, button, tick, server, updates,
 
 function harness(options: any = {}) {
   const net = network(); let state: any = { servers: [server], selection: { serverId: server.id }, runtime: { s: { status: 'online', me: { role: options.role ?? 'owner' } } } };
-  const storage = options.storage ?? new Map(); let host = hooks(); let locked = false;
+  const storage = options.storage ?? new Map(); let host = hooks(); let locked = false; let autoUpdate = options.autoUpdate ?? false;
   const useApp: any = (select: any) => select(state); useApp.getState = () => ({ ...state, toast: (value: any) => toasts.push(value) });
   const toasts: any[] = [];
   const data = { ...updates, winglet: { ...updates.winglet, ...options.winglet } }; net.setUpdates(data); net.core.useServerUpdates.getState().publish(server, data);
@@ -14,6 +14,7 @@ function harness(options: any = {}) {
     '../lib/serverUpdates': net.core, '../lib/updateJobs': net.jobs, '../lib/api': net.api,
     '../lib/store': { useApp, useServerState: () => state.runtime.s },
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },
+    '../lib/prefs': { usePrefs: (select: any) => select({ prefs: { autoUpdateServer: autoUpdate } }) },
     '../lib/storage': { getJSON: async (key: string, fallback: any) => storage.get(key) ?? fallback, setJSON: async (key: string, value: any) => { storage.set(key, value); } },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
     'expo-router': { usePathname: () => '/' },
@@ -23,6 +24,7 @@ function harness(options: any = {}) {
   const render = () => host.render(() => exports.ServerPrompt({ server }));
   return { ...net, storage, toasts, render, root: () => host.render(() => exports.ServerUpdatePrompt()), unmount: () => host.unmount(),
     remount: () => { host.unmount(); host = hooks(); }, pairing: (value: any) => { state.servers = [value]; }, role: (role: any) => { state.runtime.s.me.role = role; }, lock: () => { locked = true; },
+    autoUpdate: (value: boolean) => { autoUpdate = value; },
     publish: (winglet: any) => net.core.useServerUpdates.getState().publish(server, { ...data, winglet: { ...data.winglet, ...winglet } }),
   };
 }
@@ -82,4 +84,27 @@ test('changing the paired server address during unlock cancels the old request',
 for (const status of [400, 409, 503]) test(`prompt surfaces ${status} server error text`, async () => {
   const h = harness(); h.fail(status, `Server says ${status}`); const pending = button(await ready(h), 'Update server')(); h.resolve(true); await pending;
   assert.ok(text(h.render()).includes(`Server says ${status}`));
+});
+
+test('auto-update installs a release with no tap and no biometric prompt', async () => {
+  const h = harness({ autoUpdate: true }); const tree = await ready(h);
+  assert.equal(offer(tree)?.props.visible, false);
+  assert.deepEqual(h.prompts, []);
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.requests[0][3].version, '0.10.6');
+  assert.equal(h.requests[0][3].idempotency_key, 'key');
+});
+test('auto-update does not run when Hermes is too old for the release', async () => {
+  const h = harness({ autoUpdate: true, winglet: { requires_hermes_ok: false } }); await ready(h);
+  assert.equal(h.requests.length, 0);
+});
+test('turning auto-update on after the prompt appears still updates without a tap', async () => {
+  const h = harness(); assert.equal(offer(await ready(h)).props.visible, true);
+  h.autoUpdate(true); await ready(h);
+  assert.equal(h.prompts.length, 0);
+  assert.equal(h.requests.length, 1);
+});
+test('auto-update never runs for a member', async () => {
+  const h = harness({ autoUpdate: true, role: 'member' }); assert.equal(h.root(), null);
+  await ready(h); assert.equal(h.requests.length, 0);
 });

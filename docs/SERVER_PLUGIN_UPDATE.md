@@ -102,6 +102,30 @@ status and gates), [DEVICE_LINKING.md](DEVICE_LINKING.md) and
 Reviewer review, web freshness and phone approval are separate gates; none is a substitute for
 another, and none has been silently counted as a full pass.
 
+## Hands-off auto-update (owner opt-in)
+
+When the owner enables **Auto-update server plugin** in Settings → App, the app
+installs each new release without a tap. The `ServerUpdatePrompt` component
+detects the preference and calls `updateServerWinglet(server, version,
+eligible, { skipUnlock: true })`, bypassing the per-tap biometric prompt. The
+consent is given once when enabling the setting (a biometric unlock is
+required to turn it on). The server still installs, waits for idle chats, then
+restarts. The setting can be turned off at any time; the manual prompt returns.
+
+The auto-update logic lives in `ServerUpdatePrompt.tsx`:
+- An effect watches `autoUpdate && available` and triggers the update.
+- The `visible` sheet computation excludes auto-update (`!autoUpdate`).
+- The `available` predicate already covers owner role, idle bots, Hermes
+  compatibility and no pending job.
+- Turning the setting on while the prompt is shown immediately triggers the
+  update without a tap.
+
+Tests cover:
+- Auto-update installs with no tap and no biometric prompt.
+- Auto-update respects `requires_hermes_ok === false`.
+- Enabling auto-update after the prompt appears still updates without a tap.
+- Auto-update never runs for a member.
+
 ## Offline verification scope
 
 - Command regression asserts the exact pinned argv including `--yes-deps`, stdin closed,
