@@ -33,8 +33,8 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - Rejected implementation: local `feat/auto-update-server` commits `91b0b10` and `2164445` added an
   opt-in toggle. Those commits do **not** meet the requirement and were not released.
 - The replacement app implementation is in `/root/Code/winglet-autoupdate` on
-   `feat/auto-update-server` (`459c4dd` app code and second-review fixes, `ea57741` doc corrections).
-   Puppet Master owns
+  `feat/auto-update-server` (`6496095` app code and third-review fixes, `ea57741` doc corrections).
+  Puppet Master owns
   documentation and generated web integration in `/root/Code/winglet-unified-update` on
   `fix/unified-update-integration`, initially based on `2164445`.
 - Status: the replacement app-only implementation is present locally on
@@ -54,10 +54,17 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   and an `unknown` record that could not link a historical job. The local fixes guard the
   empty-server render, add orphan acknowledgement and a reset path, refresh tracking jobs on polling,
   gate cancel correctly, render succeeded jobs safely, scope consent to the parent pairing, gate
-  Later/Skip during work, and recover historical terminal jobs. The app suite then passed 717 tests
-  and TypeScript was clean; the v0.10.7 plugin's focused update suite passed 313 tests with 22 skips.
-  Those are code checks only. Final integration, a corrected-diff cold review, a matching release and
-  web freshness remain required before completion.
+  Later/Skip during work, and recover historical terminal jobs. A third cold review then found three
+  high-severity gaps in that corrected diff: `resetUnreadable` was a no-op for the unreadable record
+  it was meant to clear, a historical terminal job could not be linked when the saved handoff had no
+  job ID, and orphan cleanup by stage left permanent dead ends for `dispatching`/`tracking` records.
+  The local fixes clear the unreadable record, recover a terminal job from history filtered by the
+  exact release version when no job ID survived, expose `servers`/`runtime` in the update context so
+  orphan recovery can find the saved pairing, let `Done`/orphan cleanup work for non-owners, and
+  close consent older than seven days without sending a server command. The app suite then passed
+  723 tests and TypeScript was clean; the v0.10.7 plugin's focused update suite passed 313 tests
+  with 22 skips. Those are code checks only. Final integration, a corrected-diff cold review, a
+  matching release and web freshness remain required before completion.
 - Safety: owner signing and exact release pinning remain. No silent downgrade, upgrade of another
   pairing or claim that merely opening Android's installer proves the APK was installed. Android's
   required package-install confirmation cannot be bypassed.
@@ -86,8 +93,8 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   was intermittent and passed isolated reruns on both trees. This was not a clean full-suite pass.
 - The final v0.10.7 updater delta review was completed; it confirmed the authority fix and the
   restart/child-cleanup safety fixes. That verdict does not cover this new unified app flow.
-- Next: finish integration, independently rerun app tests/typecheck, obtain a cold review of the
-  exact integrated diff, audit affected Markdown and rebuild/freshness-check `plugin/web`.
+- Next: obtain a cold review of the corrected third-review diff, finish integration, independently
+  rerun app tests/typecheck, audit affected Markdown and rebuild/freshness-check `plugin/web`.
 - Publication and live deployment require their own approvals. A new release, not a rewritten
   0.10.7 tag, is needed to deliver this change. Record APK installation and server running version
   separately, then exercise cancellation, relaunch/reconnect, lost replies and retained failures
