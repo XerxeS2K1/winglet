@@ -22,17 +22,14 @@ export function UnifiedUpdateHost() {
   const rt = useServerState(server?.id), locked = useLock((state) => state.locked);
   const jobs = useUpdateJobs((state) => server ? state.byScope[updateScope(server)] : undefined);
   const installer = useAppInstall();
-  const savedJob = record?.jobId ? jobs?.jobs.find((item) => item.id === record.jobId) : undefined;
   const polling = !!record && ['dispatching', 'tracking', 'unknown'].includes(record.stage);
   useEffect(() => {
-    // A consent written before its Android approval belongs to one selected pairing. Once a different
-    // app release is actually running, that stale pairing is irrelevant; clear it before the app offer.
-    const saved = unifiedUpdate.record, current = server ? updateScope(server) : undefined;
-    if (saved?.scope && current && current !== saved.scope && Constants.expoConfig?.version !== saved.version) {
-      void unifiedUpdate.recoverOrphan();
-    }
-    if (saved?.jobId && ['dispatching', 'tracking', 'unknown'].includes(saved.stage)) void unifiedUpdate.observe();
-  }, [server, record?.key, record?.stage]);
+    // A consent written before its Android approval belongs to one selected pairing. Polling must
+    // not silently drop a record for an unselected pairing; the host shows it until the user clears it.
+    const saved = unifiedUpdate.record;
+    if (saved?.jobId && ['dispatching', 'tracking', 'unknown'].includes(saved.stage)
+      && !locked && foreground && rt?.status === 'online') void unifiedUpdate.observe();
+  }, [server, record?.key, record?.stage, locked, foreground, rt?.status]);
   useEffect(() => {
     if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
     void unifiedUpdate.observe();
@@ -48,6 +45,9 @@ export function UnifiedUpdateHost() {
   </Sheet> : null;
   const orphan = !!record.scope && (!server || record.scope !== updateScope(server));
   const owner = !record.scope || rt?.me?.role === 'owner';
+  // A scoped record must not be closed before the owner role is known: clearing it locally would
+  // leave the job in the ledger and the ordinary job host would prompt for it again.
+  const rolePending = !!record.scope && rt?.me?.role === undefined;
   const runningVersion = Constants.expoConfig?.version === record.version;
   const job = owner && record.jobId ? jobs?.jobs.find((item) => item.id === record.jobId) : undefined;
   if (orphan && job && record.stage !== 'complete' && record.stage !== 'failed') {
@@ -83,7 +83,7 @@ export function UnifiedUpdateHost() {
         <Button title="Cancel update" variant="secondary" onPress={() => unifiedUpdate.cancel()} />
       </> : <>
         <Button title="Check again" variant="secondary" onPress={() => unifiedUpdate.observe()} />
-        {['failed', 'complete', 'unknown'].includes(record.stage) ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} onPress={() => unifiedUpdate.done()} /> : null}
+        {['failed', 'complete', 'unknown'].includes(record.stage) && !rolePending ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} onPress={() => unifiedUpdate.done()} /> : null}
         {['dispatching', 'tracking'].includes(record.stage) ? <Button title="Discard notice" variant="secondary" onPress={() => unifiedUpdate.cancel()} /> : null}
       </>}
     </View>

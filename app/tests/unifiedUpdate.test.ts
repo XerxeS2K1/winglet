@@ -143,4 +143,42 @@ test('a saved job missing from history becomes explicitly unknown, not an undism
 test('opening a release page without an APK carries no server authorization', async () => {
   const h = harness(); await h.controller.start({ ...update, apk: undefined }); assert.equal(h.disk.value, null); assert.equal(h.sent.length, 0);
 });
+test('an unreadable read failure is clearable and never blocks a fresh consented update', async () => {
+  const h = harness(); h.deps.read = async () => { throw new SyntaxError('Unexpected token'); };
+  await assert.rejects(() => h.controller.hydrate(), /Unexpected token/);
+  assert.match(h.controller.notice, /Unexpected token/);
+  await h.controller.resetUnreadable(); assert.equal(h.controller.record, null); assert.equal(h.controller.notice, '');
+  await h.controller.start(update); assert.equal(h.disk.value.stage, 'awaiting-app'); assert.equal(h.installs.length, 1);
+});
+test('overlapping polls cannot burn one consent into a false failure', async () => {
+  const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: update.version });
+  await Promise.all([next.controller.observe(), next.controller.observe()]);
+  assert.equal(next.sent.length, 1); assert.equal(next.disk.value.stage, 'tracking');
+});
+test('a send interrupted by a pairing switch records that nothing was sent', async () => {
+  const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: update.version });
+  next.deps.send = async () => { next.controller.invalidate(); return null; };
+  await next.controller.observe();
+  assert.equal(next.sent.length, 0); assert.equal(next.disk.value.stage, 'failed');
+  assert.match(next.disk.value.message, /No server command was sent/);
+});
+test('history recovery only considers jobs created after the saved consent', async () => {
+  const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: update.version });
+  let args: any[] = []; next.deps.recover = async (...a: any[]) => { args = a; return undefined; };
+  next.disk.value.stage = 'tracking'; next.disk.value.jobId = undefined;
+  await next.controller.observe();
+  assert.equal(args[3], next.disk.value.created);
+});
+test('a running historical job is linked so its progress is visible', async () => {
+  const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: update.version });
+  next.disk.value.stage = 'unknown'; next.disk.value.jobId = undefined;
+  next.deps.recover = async () => ({ id: 'job', kind: 'winglet_update', device_id: 'd', state: 'running', detail: {}, updated_at: 1, created_at: 1 });
+  await next.controller.observe();
+  assert.equal(next.disk.value.stage, 'tracking'); assert.equal(next.disk.value.jobId, 'job');
+});
+test('a scoped record is not cleared locally while the owner role is unknown', async () => {
+  const h = harness(); await h.controller.start(update); h.disk.value.stage = 'failed';
+  h.context({ current: update.version, role: undefined });
+  await h.controller.done(); assert.equal(h.disk.value.stage, 'failed');
+});
 

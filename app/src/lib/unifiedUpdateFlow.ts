@@ -25,7 +25,7 @@ export const unifiedUpdate = new UnifiedUpdate({
   context: updateContext, authenticate: unlock, key: idempotencyKey,
   install: (update, eligible) => useAppInstall.getState().install(update, eligible), abort: () => useAppInstall.getState().cancel(),
   system: (server) => api(server, '/api/system'), send: sendConsentedWingletUpdate,
-  recover: async (server, jobId, version) => {
+  recover: async (server, jobId, version, created) => {
     await updateRecovery.hydrate(server);
     // A saved handoff ID can outlive the in-memory ledger and the bounded history window.
     if (jobId && !updateRecovery.snapshot(server).jobs.some((job) => job.id === jobId)) {
@@ -38,8 +38,10 @@ export const unifiedUpdate = new UnifiedUpdate({
     const jobs = updateRecovery.snapshot(server).jobs;
     if (jobId) return jobs.find((job) => job.id === jobId);
     // No job ID survived (an interrupted send). History still names the exact release job.
+    // The server stamps created_at in seconds; the saved consent uses Date.now() in milliseconds.
     const candidates = jobs.filter((job) => job.kind === 'winglet_update' && job.device_id === server.deviceId
-      && (!version || job.detail?.to === version));
+      && (!version || job.detail?.to === version)
+      && (!created || job.created_at * 1000 >= created));
     return candidates.sort((a, b) => b.updated_at - a.updated_at)[0];
   },
   acknowledge: async (server, record) => {

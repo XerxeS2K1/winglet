@@ -12,7 +12,7 @@ type Deps = {
   install: (update: AppUpdate, eligible: () => boolean) => Promise<string>; abort: () => void;
   system: (server: Server) => Promise<{ version: string }>;
   send: (server: Server, body: Record<string, string>, eligible: () => boolean) => Promise<Job | null>;
-  recover: (server: Server, jobId?: string, version?: string) => Promise<Job | undefined>; acknowledge: (server: Server, record: Handoff) => Promise<void>;
+  recover: (server: Server, jobId?: string, version?: string, created?: number) => Promise<Job | undefined>; acknowledge: (server: Server, record: Handoff) => Promise<void>;
 };
 const versionOK = (v: string) => /^\d+\.\d+\.\d+$/.test(v);
 const scope = (c: UpdateContext) => c.server ? updateScope(c.server) : undefined;
@@ -28,9 +28,12 @@ export class UnifiedUpdate {
   /** A saved record that cannot be read at all; the app must still be updateable. */
   notice = '';
   private unreadable: Handoff | null = null;
+  /** True when the persisted record could not be read at all (parse/decrypt/storage failure). */
+  private readFailed = false;
   private epoch = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private loading?: Promise<void>;
+  private observing = false;
   private listeners = new Set<() => void>();
   constructor(private deps: Deps) {}
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
@@ -38,7 +41,7 @@ export class UnifiedUpdate {
   private emit() { this.listeners.forEach((fn) => fn()); }
   private save(record: Handoff | null) {
     const op = this.queue.catch(() => {}).then(async () => {
-      await this.deps.write(record); this.record = record; if (!record) this.unreadable = null; this.emit();
+      await this.deps.write(record); this.record = record; if (!record) this.unreadable = null; this.notice = ''; this.emit();
     });
     this.queue = op; return op;
   }
@@ -46,12 +49,14 @@ export class UnifiedUpdate {
     return this.loading ??= this.deps.read().then((saved) => {
       if (saved && (!versionOK(saved.version) || !saved.key || (saved.scope && saved.role !== 'owner') || !['awaiting-app', 'dispatching', 'tracking', 'unknown', 'failed', 'complete'].includes(saved.stage))) {
         // Keep the raw value so "Clear saved update" can discard it; never treat it as a live handoff.
-        this.unreadable = saved;
+        this.unreadable = saved; this.readFailed = false;
         throw new Error('The saved update cannot be read. No server command was sent.');
       }
-      this.unreadable = null;
+      this.unreadable = null; this.readFailed = false;
       this.record = saved; this.loaded = true; this.error = ''; this.notice = ''; this.emit();
-    }).catch((e) => { this.loading = undefined; this.loaded = true; this.notice = (e as Error).message; this.emit(); throw e; });
+    }).catch((e) => {
+      this.loading = undefined; this.loaded = true; this.readFailed = true; this.notice = (e as Error).message; this.emit(); throw e;
+    });
   }
   /** Selection changes invalidate in-flight authentication/download/preflight, even after switch-back. */
   invalidate() { this.epoch++; }
@@ -62,7 +67,8 @@ export class UnifiedUpdate {
     const eligible = () => epoch === this.epoch && visible() && scope(this.deps.context()) === scope(original)
       && (!original.server || this.deps.context().role === original.role);
     try {
-      await this.hydrate();
+      // An unreadable saved handoff must not block a fresh, explicitly consented update.
+      try { await this.hydrate(); } catch { /* a fresh consent replaces it */ }
       if (this.record) throw new Error('Finish or cancel the current update first.');
       if (!versionOK(update.version) || !versionOK(original.current) || compareVersions(update.version, original.current) <= 0) throw new Error('Only a newer published release can be installed.');
       if (!update.apk) { await this.deps.install(update, eligible); return; }
@@ -87,92 +93,110 @@ export class UnifiedUpdate {
     finally { this.working = false; this.emit(); }
   }
   async observe() {
-    if (this.working) return;
-    // Hydration is not work: polling must not make the app-offer sheet briefly non-dismissible.
-    try { await this.hydrate(); } catch (e) { this.error = (e as Error).message; this.emit(); return; }
-    const record = this.record;
-    if (!record || record.stage === 'failed' || record.stage === 'complete') return;
-    this.working = true;
-    const epoch = this.epoch;
+    // Guard re-entrancy without flagging work during hydration, so polling cannot disable the
+    // app-offer button or race a second observer into the same consent.
+    if (this.working || this.observing) return;
+    this.observing = true;
     try {
-      const context = this.deps.context();
-      const orphan = !!record.scope && scope(context) !== record.scope;
-      let scopeContext = context;
-      if (orphan && record.scope) {
-        const scopeServer = context.servers?.find((candidate: Server) => scope({ ...context, server: candidate }) === record.scope);
-        // Without the saved pairing there is nothing to ask; the host tells the user to reselect it.
-        if (!scopeServer) return;
-        scopeContext = { ...context, server: scopeServer, role: context.runtime?.[scopeServer.id]?.me?.role };
-      }
-      const eligible = () => epoch === this.epoch && this.record !== null && !orphan
-        && scope(scopeContext) === record.scope && scopeContext.role === record.role && record.role === 'owner'
-        && scopeContext.online && scopeContext.foreground && !scopeContext.locked;
-      if (record.stage === 'awaiting-app') {
-        // A consent bound to an unselected pairing is never sent on its own; the host offers to clear it.
-        if (orphan) return;
-        if (context.current !== record.version) {
-          if (versionOK(context.current) && compareVersions(context.current, record.version) > 0) {
-            await this.save({ ...record, stage: 'complete', message: 'A different app release is running. The saved server step was cancelled.' });
-          }
-          return;
+      try { await this.hydrate(); } catch (e) { this.error = (e as Error).message; this.emit(); return; }
+      if (this.working) return;
+      const record = this.record;
+      if (!record || record.stage === 'failed' || record.stage === 'complete') return;
+      this.working = true;
+      const epoch = this.epoch;
+      try {
+        const context = this.deps.context();
+        const orphan = !!record.scope && scope(context) !== record.scope;
+        let scopeContext = context;
+        if (orphan && record.scope) {
+          const scopeServer = context.servers?.find((candidate: Server) => scope({ ...context, server: candidate }) === record.scope);
+          // Without the saved pairing there is nothing to ask; the host tells the user to reselect it.
+          if (!scopeServer) return;
+          scopeContext = { ...context, server: scopeServer, role: context.runtime?.[scopeServer.id]?.me?.role };
         }
-        if (!record.scope) { await this.save({ ...record, stage: 'complete', message: `App ${record.version} is running. No server update was authorized.` }); return; }
-        if (record.created && Date.now() - record.created > CONSENT_TTL) {
-          await this.save({ ...record, stage: 'complete', message: 'The saved update consent expired. Start the update again.' });
-          return;
-        }
-        if (!eligible()) return;
-        const info = await this.deps.system(context.server!);
-        if (!eligible()) return;
-        if (!versionOK(info.version)) throw new Error('The server version is unknown. No server command was sent.');
-        if (compareVersions(info.version, record.version) >= 0) {
-          await this.save({ ...record, stage: 'complete', message: info.version === record.version
-            ? `App and server are on ${record.version}.` : `App ${record.version} is running. The newer server (${info.version}) was left unchanged.` });
-          return;
-        }
-        // This durable boundary comes BEFORE the network call: a crash here is unknown, never permission to resend.
-        const dispatch = { ...record, stage: 'dispatching' as const, message: `App ${record.version} is running. Starting the matching server update…` };
-        await this.save(dispatch);
-        const canSend = () => epoch === this.epoch && this.record === dispatch && scope(this.deps.context()) === record.scope
-          && this.deps.context().role === record.role && record.role === 'owner'
-          && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
-        if (!canSend()) { await this.save({ ...dispatch, stage: 'failed', message: 'The connection or pairing changed. No server command was sent.' }); return; }
-        try {
-          const job = await this.deps.send(context.server!, { target: 'winglet', version: record.version, idempotency_key: record.key }, canSend);
-          // A late reply after cancel/switch must not resurrect a discarded handoff.
-          if (this.snapshot() !== dispatch || epoch !== this.epoch) return;
-          await this.save(job ? { ...dispatch, stage: 'tracking', jobId: job.id, message: 'Installing the matching server plugin. Restart waits for idle chats.' }
-            : { ...dispatch, stage: 'failed', message: 'The server step was cancelled before sending.' });
-        } catch (e) {
-          if (this.snapshot() !== dispatch || epoch !== this.epoch) return;
-          const status = (e as { status?: number }).status;
-          if (typeof status === 'number' && status > 0) {
-            await this.save({ ...dispatch, stage: 'failed', message: (e as Error).message });
-          } else if (status === 0) {
-            await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' });
-          } else {
-            await this.save({ ...dispatch, stage: 'failed', message: (e as Error).message || 'The server update could not be started.' });
-          }
-        }
-      } else if (eligible() || (!!record.jobId && ['dispatching', 'tracking', 'unknown'].includes(record.stage))) {
-        if (record.stage === 'dispatching') {
-          // An interrupted send on an unselected pairing is left for the user to reselect and inspect.
+        const eligible = () => epoch === this.epoch && this.record === record && !orphan
+          && scope(scopeContext) === record.scope && scopeContext.role === record.role && record.role === 'owner'
+          && scopeContext.online && scopeContext.foreground && !scopeContext.locked;
+        if (record.stage === 'awaiting-app') {
+          // A consent bound to an unselected pairing is never sent on its own; the host offers to clear it.
           if (orphan) return;
-          await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' });
+          if (context.current !== record.version) {
+            if (versionOK(context.current) && compareVersions(context.current, record.version) > 0) {
+              await this.save({ ...record, stage: 'complete', message: 'A different app release is running. The saved server step was cancelled.' });
+            }
+            return;
+          }
+          if (!record.scope) { await this.save({ ...record, stage: 'complete', message: `App ${record.version} is running. No server update was authorized.` }); return; }
+          if (!record.created || Date.now() - record.created > CONSENT_TTL) {
+            await this.save({ ...record, stage: 'complete', message: 'The saved update consent expired. No server command was sent.' });
+            return;
+          }
+          if (!eligible()) return;
+          const info = await this.deps.system(context.server!);
+          if (!eligible()) return;
+          if (!versionOK(info.version)) throw new Error('The server version is unknown. No server command was sent.');
+          if (compareVersions(info.version, record.version) >= 0) {
+            await this.save({ ...record, stage: 'complete', message: info.version === record.version
+              ? `App and server are on ${record.version}.` : `App ${record.version} is running. The newer server (${info.version}) was left unchanged.` });
+            return;
+          }
+          // This durable boundary comes BEFORE the network call: a crash here is unknown, never permission to resend.
+          const dispatch = { ...record, stage: 'dispatching' as const, message: `App ${record.version} is running. Starting the matching server update…` };
+          await this.save(dispatch);
+          const canSend = () => epoch === this.epoch && this.record === dispatch && scope(this.deps.context()) === record.scope
+            && this.deps.context().role === record.role && record.role === 'owner'
+            && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
+          if (!canSend()) { await this.save({ ...dispatch, stage: 'failed', message: 'The connection or pairing changed. No server command was sent.' }); return; }
+          let job: Job | null = null;
+          let failure: { status?: number; message?: string } | null = null;
+          try {
+            job = await this.deps.send(context.server!, { target: 'winglet', version: record.version, idempotency_key: record.key }, canSend);
+          } catch (e) { failure = e as { status?: number; message?: string }; }
+          // A late reply after cancel/switch must not resurrect a discarded handoff.
+          if (this.snapshot() !== dispatch) return;
+          const interrupted = epoch !== this.epoch;
+          if (job) {
+            // The job was sent before the pairing changed; link it so the owner can still inspect it.
+            await this.save({ ...dispatch, stage: 'tracking', jobId: job.id, message: 'Installing the matching server plugin. Restart waits for idle chats.' });
+          } else if (failure) {
+            const status = failure.status;
+            if (interrupted) {
+              await this.save({ ...dispatch, stage: 'unknown', message: 'The connection changed during the server step. The result is unknown; no new installation will be sent automatically.' });
+            } else if (typeof status === 'number' && status > 0) {
+              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' });
+            } else if (status === 0) {
+              await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' });
+            } else {
+              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' });
+            }
+          } else {
+            await this.save({ ...dispatch, stage: 'failed', message: interrupted
+              ? 'The connection or pairing changed. No server command was sent.'
+              : 'The server step was cancelled before sending.' });
+          }
+        } else if (eligible() || (!!record.jobId && ['dispatching', 'tracking', 'unknown'].includes(record.stage))) {
+          if (record.stage === 'dispatching') {
+            // An interrupted send on an unselected pairing is left for the user to reselect and inspect.
+            if (orphan) return;
+            await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' });
+          }
+          const current = this.record;
+          if (!current) return;
+          const job = await this.deps.recover(scopeContext.server!, current.jobId, current.version, current.created);
+          if (this.snapshot() !== current) return;
+          if (job) {
+            const stage = job.state === 'succeeded' ? 'complete' : job.state === 'failed' ? 'failed' : 'tracking';
+            await this.save({ ...current, stage, jobId: job.id,
+              message: job.state === 'succeeded' ? `App and server are on ${current.version}.`
+                : job.state === 'failed' ? (job.detail?.message || 'The server update failed.')
+                : 'Installing the matching server plugin. Restart waits for idle chats.' });
+          } else if (current.jobId && current.stage !== 'unknown') {
+            await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' });
+          }
         }
-        const current = this.record;
-        if (!current) return;
-        const job = await this.deps.recover(scopeContext.server!, current.jobId, current.version);
-        if (this.snapshot() !== current) return;
-        if (job && job.state !== 'running') {
-          await this.save({ ...current, stage: job.state === 'succeeded' ? 'complete' : 'failed', jobId: job.id,
-            message: job.state === 'succeeded' ? `App and server are on ${current.version}.` : (job.detail?.message || 'The server update failed.') });
-        } else if (current.jobId && !job && current.stage !== 'unknown') {
-          await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' });
-        }
-      }
-    } catch (e) { this.error = (e as Error).message; }
-    finally { this.working = false; this.emit(); }
+      } catch (e) { this.error = (e as Error).message; }
+      finally { this.working = false; this.emit(); }
+    } finally { this.observing = false; }
   }
   clearError() { if (!this.error && !this.notice) return; this.error = ''; this.notice = ''; this.emit(); }
   /**
@@ -209,6 +233,9 @@ export class UnifiedUpdate {
   async done() {
     const record = this.record, context = this.deps.context();
     if (!record || record.stage === 'awaiting-app' || record.stage === 'dispatching') return;
+    // A scoped server record must not be cleared locally before the owner role is known:
+    // doing so leaves the job in the ledger and the ordinary job host re-prompts for it.
+    if (record.scope && scope(context) === record.scope && context.role === undefined) return;
     try {
       // Only the owner pairing can acknowledge a server job; everyone can close a local notice.
       if (record.scope && scope(context) === record.scope && context.role === 'owner') {
@@ -220,8 +247,8 @@ export class UnifiedUpdate {
   /** Discard an unreadable or hopeless handoff so the app can still be updated. */
   async resetUnreadable() {
     const record = this.record;
-    if (!record && !this.unreadable) return;
+    if (!record && !this.unreadable && !this.readFailed) return;
     if (record && ['awaiting-app', 'dispatching', 'tracking'].includes(record.stage)) return;
-    try { await this.save(null); this.unreadable = null; this.error = ''; this.notice = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
+    try { await this.save(null); this.unreadable = null; this.readFailed = false; this.error = ''; this.notice = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
 }

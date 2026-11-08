@@ -142,12 +142,23 @@ test('an interrupted send is recovered from history by the exact release version
   const next = harness(h.disk, update.version); const paths: string[] = [];
   next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
     ? { job: undefined }
-    : { version: '0.10.7', jobs: [{ id: 'job', kind: 'winglet_update', device_id: 'd', created_at: 1, updated_at: 2, state: 'succeeded', detail: { to: '0.10.8' } }] }; };
+    : { version: '0.10.7', jobs: [{ id: 'job', kind: 'winglet_update', device_id: 'd', created_at: Math.ceil(Date.now() / 1000), updated_at: 2, state: 'succeeded', detail: { to: '0.10.8' } }] }; };
   next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), stage: 'dispatching' });
   await next.flow.unifiedUpdate.observe();
   assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
   assert.equal(next.flow.useUnifiedUpdate.getState().record.jobId, 'job');
   assert.ok(paths.includes('/api/system'));
+});
+test('an old job to the same release is not adopted as the result of a lost send', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')();
+  const next = harness(h.disk, update.version); const paths: string[] = [];
+  next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
+    ? { job: undefined }
+    : { version: '0.10.7', jobs: [{ id: 'old', kind: 'winglet_update', device_id: 'd', created_at: 1, updated_at: 2, state: 'failed', detail: { to: '0.10.8' } }] }; };
+  next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), stage: 'dispatching' });
+  await next.flow.unifiedUpdate.observe();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'unknown');
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.jobId, undefined);
 });
 test('an orphan dispatching or tracking notice can be cleared without the saved pairing', async () => {
   const h = harness(); await button(h.render(), 'Update to 0.10.8')();
@@ -175,6 +186,6 @@ test('a saved consent older than seven days is closed without sending a server c
   next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), created: Date.now() - 8 * 24 * 60 * 60 * 1000 });
   await next.flow.unifiedUpdate.observe();
   assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
-  assert.equal(next.flow.useUnifiedUpdate.getState().record.message, 'The saved update consent expired. Start the update again.');
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.message, 'The saved update consent expired. No server command was sent.');
   assert.equal(next.requests.length, 0);
 });
