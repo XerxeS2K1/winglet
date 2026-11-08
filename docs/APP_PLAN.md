@@ -36,12 +36,16 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 ### Verification at this checkpoint
 
 - Parent-rerun combined app suite: **683 passed, 0 failed**; TypeScript typecheck exit **0**.
+- Combined server suite on this branch: **1697 passed, 3 failed**. Two are the pre-existing
+  `test_rooms_hermes.py` production-data-guard failures (reproduced on unchanged base). The third,
+  `test_context_insights_hermes.py::test_command_revalidates_after_async_preflight_and_profile_enter`,
+  is intermittent: it passed three isolated reruns on both the unchanged base and this branch.
+  This is **not** a clean full-suite pass and is not reported as one.
 - New updater safety regressions: **12 passed**. Signed-route/install/rollback/restart coverage
   also passed locally using sandbox files, SQLite and test-double publication, not real package installation.
-- Final combined server suite and final Reviewer verdict are pending. An earlier updater-only
-  full run had two existing Rooms production-data-guard failures and one context-preflight timeout.
-  The timeout passed three isolated reruns on both unchanged base and repaired source; it is
-  not silently counted as a clean full-suite run. Never bypass the production-data guard.
+- Final Reviewer verdict on the merged snapshot is still pending; the earlier updater-only review
+  found the restart/child-cleanup/version defects now fixed, plus the authority TOCTOU now fixed.
+  Never bypass the production-data guard or present an isolated rerun as a clean full-suite pass.
 - Earlier device-linking loopback/CI evidence describes `d5f6e99`, not this new combined snapshot.
   Reusing that feature is not proof that this integration was phone-tested.
 - No push, tag, release, plugin install, gateway restart, live pairing or phone installation is
