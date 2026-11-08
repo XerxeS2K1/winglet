@@ -25,13 +25,16 @@ export function normalizeCode(code: string): string {
 /** Pull `{url, code, fp}` out of a pairing link like `https://box.ts.net/#pair=ABCD2345&fp=…`. The
  * fingerprint is the server key's: with it, the phone can tell it's really talking to that server. */
 export function parsePairLink(text: string): { url: string; code: string; fp?: string } | null {
-  const trimmed = text.trim();
-  const match = trimmed.match(/^(https?:\/\/[^\s#?]+?)\/?(?:\?[^#]*)?#pair=([A-Za-z0-9-]+)(?:&fp=([A-Za-z0-9_-]{16,64}))?/);
-  if (!match) return null;
-  return { url: normalizeUrl(match[1]), code: normalizeCode(match[2]), ...(match[3] ? { fp: match[3] } : {}) };
+  try {
+    const u = new URL(text.trim());
+    if (!/^https?:$/.test(u.protocol) || u.username || u.password || u.search) return null;
+    const match = u.hash.match(/^#pair=([A-Za-z0-9-]+)(?:&fp=([A-Za-z0-9_-]{16,64}))?$/);
+    if (!match) return null;
+    return { url: normalizeUrl(`${u.origin}${u.pathname}`), code: normalizeCode(match[1]), ...(match[2] ? { fp: match[2] } : {}) };
+  } catch { return null; }
 }
 
-async function request<T>(url: string, init: RequestInit & { token?: string; timeoutMs?: number } = {}): Promise<T> {
+export async function request<T>(url: string, init: RequestInit & { token?: string; timeoutMs?: number } = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (init.body && !(typeof FormData !== 'undefined' && init.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   if (init.token) headers.Authorization = `Bearer ${init.token}`;
@@ -69,7 +72,7 @@ export function api<T>(server: Server, path: string, init: RequestInit & { timeo
   return request<T>(`${server.url}${botPath(server, path)}`, { ...init, token: server.token });
 }
 
-export async function fetchInfo(url: string): Promise<{ server_id: string; bot: Bot; version: string }> {
+export async function fetchInfo(url: string): Promise<{ server_id: string; bot: Bot; version: string; features?: { device_linking?: boolean } }> {
   const info = await request<any>(`${url}/api/info`);
   if (info?.app !== 'winglet') throw new ApiError("That address answered, but it isn't a Winglet server.", 0);
   return info;
@@ -111,7 +114,7 @@ export async function pair(url: string, code: string, deviceName: string, fp?: s
   const data = await request<any>(`${base}/api/pair`, { method: 'POST', body: JSON.stringify(body) });
   if (signing) await setItem(signKeyName(data.server_id), signing.secret);
   return { id: data.server_id, url: base, token: data.token, deviceId: data.device.id, bot: data.bot,
-    addedAt: Date.now(), ...(key ? { fingerprint: key.fingerprint, wsAuth: true } : {}),
+    addedAt: Date.now(), ...(key ? { wsAuth: true, ...(fp ? { fingerprint: key.fingerprint } : {}) } : {}),
     ...(Platform.OS === 'android' && data.recovery ? { recovery: data.recovery } : {}) };
 }
 
@@ -171,7 +174,7 @@ function needsVerify(server: Server, status: number, data?: any): ApiError {
 }
 
 /** An owner action: signed with this phone's key, so a leaked token alone can't do it. */
-export async function signedApi<T>(server: Server, method: 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, data?: unknown): Promise<T> {
+export async function signedApi<T>(server: Server, method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE', path: string, data?: unknown): Promise<T> {
   const secret = await getItem(keyOf(server));
   if (!secret) throw needsVerify(server, 403);
   const body = data === undefined ? '' : JSON.stringify(data);

@@ -137,6 +137,9 @@ class Forbidden(PermissionError):
 #   signed        any verified device, with a signed request
 #   owner_signed  an owner's verified device, with a signed request: every control action
 ROUTE_POLICY = {
+    "h_device_link_create": "public", "h_device_link_claim": "public",
+    "h_device_link_preview": "owner_signed", "h_device_link_approve": "owner_signed",
+    "h_device_link_deny": "owner_signed",
     "h_wear_links": "device", "h_wear_link_create": "signed", "h_wear_link_delete": "signed", "h_wear_relay": "public",
     "h_encrypted_push_get": "device", "h_encrypted_push_put": "signed", "h_encrypted_push_delete": "signed",
     "h_phone_tools": "device", "h_phone_tools_put": "signed", "h_phone_tools_revoke": "signed",
@@ -274,6 +277,8 @@ class Hub:
         self._pushed_messages: Dict[str, None] = {}
         self._typing: Set[str] = set()
         self._pair_failures: Dict[str, List[float]] = {}
+        from .device_links import DeviceLinks
+        self.device_links = DeviceLinks(self)
         self._alive_cache: Dict[str, tuple] = {}
         self.connection = {"mode": "direct", "url": None}
         # Set by the adapter for the Connection screen: the automatic tunnel (its .status), the address
@@ -379,6 +384,7 @@ class Hub:
         r.add_get("/api/phone-tools/log", self.h_phone_tools_log)
         r.add_get("/api/info", self.h_info)
         r.add_post("/api/pair", self.h_pair)
+        self.device_links.register(app)
         r.add_get("/api/ws", self.h_ws)
         r.add_get("/api/me", self.h_me)
         r.add_get("/api/connection", self.h_connection)
@@ -763,6 +769,9 @@ class Hub:
             return BAD_SIGNATURE
         if not self.store.use_nonce(nonce, keys.CLOCK_SKEW_SECONDS):
             return "This request was already used."
+        # Remember which key actually validated this request: the key was read before the body, so a
+        # rotation during that read must not let the revoked key's request be blessed by the new one.
+        request["verified_sign_key"] = sign_key
         return None
 
     # -- who sees what -------------------------------------------------------------------
@@ -928,7 +937,7 @@ class Hub:
                 "chat_approval_bypass": self.chat_approval_bypass is not None,
                 "wear_relay": True, "wear_reply": True, "encrypted_push": True, "webpush": True, "ntfy": True, "approvals": True, "questions": True, "uploads": True, "voice": True,
                 "replies": True, "export": True, "mute": True, "status_updates": True, "roles": True,
-                "signed_actions": True, "ws_auth": True, "pickers": True, "agent": self.hermes is not None,
+                "signed_actions": True, "device_linking": True, "ws_auth": True, "pickers": True, "agent": self.hermes is not None,
                 "control": self.hermes is not None, "goals": self.chat_goal is not None, "search": True, "files": True,
                 "abilities": self.hermes is not None, "commands": self.commands_provider is not None,
                 "sessions": self.hermes is not None and self._has(self.hermes, "sessions_available"),

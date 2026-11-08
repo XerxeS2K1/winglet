@@ -5,7 +5,9 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Camera, X } from '../components/icons';
 import { Button, IconButton, Tap } from '../components/ui';
-import { defaultDeviceName, fetchInfo, pair, parsePairLink, verifyDevice } from '../lib/api';
+import { defaultDeviceName, parsePairLink } from '../lib/api';
+import { parseDeviceLink } from '../lib/deviceLinks';
+import { connectPairing, type PairingResult } from '../lib/pairing';
 import { useApp } from '../lib/store';
 import { FIXED } from '../lib/theme';
 import { makeStyles, useTheme } from '../lib/themeContext';
@@ -17,14 +19,18 @@ export default function ScanScreen() {
   const styles = useStyles();
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
-  const addServer = useApp((s) => s.addServer);
-  const updateServer = useApp((s) => s.updateServer);
-  const [status, setStatus] = useState<'scanning' | 'pairing' | 'verifying' | 'error'>('scanning');
+  const [result, setResult] = useState<PairingResult | null>(null);
+  const [status, setStatus] = useState<'scanning' | 'pairing' | 'complete' | 'error'>('scanning');
   const [error, setError] = useState('');
   const handled = useRef(false);
 
   const onScan = async (data: string) => {
     if (handled.current) return;
+    if (parseDeviceLink(data)) {
+      handled.current = true;
+      router.replace({ pathname: '/link-device', params: { link: data } });
+      return;
+    }
     const link = parsePairLink(data);
     if (!link) {
       setError("That QR code isn't a Winglet pairing code.");
@@ -32,22 +38,9 @@ export default function ScanScreen() {
     }
     handled.current = true;
     try {
-      // A code from a server this phone already has verifies the phone instead of pairing it twice.
-      const info = await fetchInfo(link.url);
-      const existing = useApp.getState().servers.find((x) => x.id === info.server_id);
-      if (existing && link.fp) {
-        setStatus('verifying');
-        const verified = await verifyDevice(existing, link.code, link.fp);
-        await updateServer(existing.id, { fingerprint: verified.fingerprint }, true);
-        useApp.getState().toast({ serverId: existing.id, title: 'Phone verified', body: `You can manage ${existing.bot.title} from this phone now.` });
-        router.back();
-        return;
-      }
       setStatus('pairing');
-      const server = await pair(link.url, link.code, defaultDeviceName(), link.fp);
-      await addServer(server);
-      router.dismissAll();
-      router.replace('/');
+      setResult(await connectPairing(data, '', defaultDeviceName(), useApp.getState()));
+      setStatus('complete');
     } catch (e) {
       setError((e as Error).message);
       setStatus('error');
@@ -72,11 +65,16 @@ export default function ScanScreen() {
         </IconButton>
         <Viewfinder still={status !== 'scanning'} />
         <View style={styles.hintBox}>
-          {status === 'pairing' || status === 'verifying' ? <ActivityIndicator color={FIXED.white} /> : null}
+          {status === 'pairing' ? <ActivityIndicator color={FIXED.white} /> : null}
           <Text style={styles.hint}>
-            {status === 'pairing' ? 'Pairing…' : status === 'verifying' ? 'Verifying this phone…'
-              : error || 'Scan the code from hermes winglet pair or another phone.'}
+            {status === 'pairing' ? 'Connecting…' : result ? `${result.verified ? 'Verified' : 'Limited connection'}${result.role ? ` · ${result.role === 'owner' ? 'Owner' : 'Member'}` : ' · Access not checked yet'}`
+              : error || 'Scan a pairing code or a browser sign-in QR.'}
           </Text>
+          {result ? <>
+            <Text style={styles.hint}>{result.verified ? result.role === 'owner' ? 'Owner access includes approvals, settings and device management.' : 'Member access includes your own chats, without approvals or settings.' : 'Paste a full fingerprint-bearing pairing link to complete verification.'}</Text>
+            {!result.verified ? <Button title="Complete verification" onPress={() => router.replace('/pair')} /> : null}
+            <Button title="Continue" onPress={() => router.replace('/')} />
+          </> : null}
           {status === 'error' ? (
             <Button title="Try again" onPress={() => { handled.current = false; setError(''); setStatus('scanning'); }} />
           ) : null}
@@ -96,7 +94,7 @@ function AskCamera({ onAllow }: { onAllow: () => unknown }) {
       <Camera size={36} color={t.colors.textSecondary} strokeWidth={1.6} />
       <View style={styles.askWords}>
         <Text style={styles.title} accessibilityRole="header">Camera access</Text>
-        <Text style={styles.text}>Only used to scan pairing codes.</Text>
+        <Text style={styles.text}>Only used to scan pairing and browser sign-in codes.</Text>
       </View>
       <View style={styles.askActions}>
         <Button title="Allow camera" onPress={() => { onAllow(); }} size="lg" />
