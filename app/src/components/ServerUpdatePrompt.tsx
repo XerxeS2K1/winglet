@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import { ApiError } from '../lib/api';
 import { useLock } from '../lib/appLock';
-import { checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
+import { SERVER_UPDATE_CONSENT, checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
 import { getJSON, setJSON } from '../lib/storage';
 import { useApp, useServerState } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
@@ -84,7 +84,7 @@ export function ServerPrompt({ server }: { server: Server }) {
       <View style={s.body}>
         <Text style={s.lead}>Server plugin {w?.current ?? w?.version} → {version}</Text>
         {release?.notes ? <Text style={s.notes} numberOfLines={6}>{release.notes}</Text> : null}
-        <Text style={s.notes}>This restarts the server, about 30 seconds. A backup is made first and it rolls back if the new version does not start.</Text>
+        <Text style={s.notes}>{SERVER_UPDATE_CONSENT}</Text>
         {w?.busy?.bots.length ? <Text style={s.warning}>Bots are busy: {w.busy.bots.map((bot) => `${bot.bot}: ${bot.state}${bot.queued ? ` (${bot.queued} queued)` : ''}`).join(', ')}. You can still update.</Text> : null}
         {w?.busy?.unknown ? <Text style={s.warning}>The server couldn't tell whether all bots are idle. You can still update.</Text> : null}
         {w?.requires_hermes_ok === false ? <Text style={s.warning}>Hermes is too old for this release. Update Hermes first ({release?.requires_hermes}).</Text>

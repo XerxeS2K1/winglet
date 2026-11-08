@@ -38,7 +38,10 @@ for (const winglet of [{ update_available: false }, { update_available: null }, 
 test('startup fetches update metadata and displays versions, clamped notes and restart/backup copy', async () => {
   const h = harness(), tree = await ready(h); assert.ok(h.checks.includes('/api/system/updates'));
   assert.equal(offer(tree).props.visible, true); assert.match(text(tree), /0\.10\.5.*→.*0\.10\.6/);
-  assert.match(text(tree), /30 seconds/); assert.match(text(tree), /backup.*rolls back/i);
+  assert.match(text(tree), /authorizes.*pinned.*release.*declared Python dependencies/i);
+  assert.match(text(tree), /installs first.*restarts when chats are idle/i);
+  assert.doesNotMatch(text(tree), /30 seconds/i);
+  assert.match(text(tree), /backup.*rollback/i);
   assert.equal(nodes(tree).find((n) => n.props.children === 'Release details')?.props.numberOfLines, 6);
 });
 test('Later survives remounts in this run but reoffers on the next app run', async () => {

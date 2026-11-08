@@ -5,6 +5,8 @@ import { idempotencyKey } from './control';
 import { updateRecovery } from './updateJobs';
 import type { Job, Server, UpdatesInfo } from './types';
 
+export const SERVER_UPDATE_CONSENT = 'Tapping Update server authorizes the pinned Winglet release and its declared Python dependencies. It installs first, then restarts when chats are idle. A backup is made first, with rollback if startup fails.';
+
 export const serverUpdateKey = (server: Server) => `${server.id}:${server.deviceId}`;
 
 /** Shared preflight results let Check now and the startup prompt use the same release. Never persisted. */

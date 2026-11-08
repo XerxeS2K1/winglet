@@ -18,7 +18,7 @@ import { bytes, duration, idempotencyKey } from '../lib/control';
 import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
 import { isOwner, useApp, useServerState } from '../lib/store';
-import { checkServerUpdates, updateServerWinglet } from '../lib/serverUpdates';
+import { SERVER_UPDATE_CONSENT, checkServerUpdates, updateServerWinglet } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Job, PauseState, SystemInfo, UpdatesInfo } from '../lib/types';
 
@@ -333,7 +333,7 @@ function ConfirmSheet({ what, bot, onCancel, onConfirm }: { what: Confirm | null
   const copy = {
     restart: { title: 'Restart now?', body: `${bot} stops and starts again. Every platform reconnects within a few seconds, and a reply that's being written is cut off.`, action: 'Restart' },
     hermes: { title: 'Update Hermes?', body: 'Hermes downloads the update, installs it and restarts. Chats pause for a minute or two. If something goes wrong, the log shows why.', action: 'Update and restart' },
-    winglet: { title: 'Update Winglet?', body: 'The server downloads the new Winglet and restarts to load it. Chats pause for a few seconds. Update this app too if it asks.', action: 'Update and restart' },
+    winglet: { title: 'Update Winglet?', body: SERVER_UPDATE_CONSENT, action: 'Update server' },
   }[w];
   return (
     <Sheet visible={!!what} onClose={onCancel} title={copy.title}>

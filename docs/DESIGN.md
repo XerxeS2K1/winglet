@@ -101,6 +101,7 @@ explicitly untested visual/device states. Source and harness checks are not an a
 ## Server plugin updates
 
 - Plugin updates and APK installation are separate operations. Label the persistent Server row "Server plugin update".
+- Both plugin update entry points share concise consent: the tap authorizes the pinned release and its declared Python dependencies. Installation happens first; restart waits for chats to be idle. Do not promise an immediate restart or a fixed 30-second completion.
 - Running JobSheets have no Hide action. Backdrop taps, back/Escape and drag gestures cannot dismiss progress or results.
 - Success, failure and unknown outcomes stay until the user presses Done. Do not auto-hide a result on a timer or on reconnection.
 - One global plugin JobSheet serves both the startup offer and the Server screen. Keep its progress and acknowledgement in durable storage, scoped to server ID, address and paired device. The Server row reopens the same tracked result.
