@@ -90,6 +90,7 @@ export function InstallButton({ update }: { update: AppUpdate }) {
     ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
     : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
   return <View style={{ gap: 8 }}>
+    {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
     <Button title={update.apk ? `Update to ${update.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
       icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
       onPress={() => unifiedUpdate.start(update, eligible)} />

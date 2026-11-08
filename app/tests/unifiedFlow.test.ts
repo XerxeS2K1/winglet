@@ -85,8 +85,24 @@ test('a tracking job is refreshed while it is running and settles at its termina
   assert.ok(paths.some((p) => p.startsWith('/api/jobs/')), `paths: ${paths.join(',')}`);
   assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
 });
+test('a tracking job refreshes even when its saved pairing is no longer selected', async () => {
+  let state = 'running'; const paths: string[] = [];
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')(); const next = harness(h.disk, update.version);
+  next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
+    ? { job: { id: 'job', kind: 'winglet_update', device_id: 'd', state, detail: {}, updated_at: 2, created_at: 1 } }
+    : { version: '0.10.7', jobs: [] }; };
+  await next.flow.unifiedUpdate.observe(); assert.equal(next.flow.useUnifiedUpdate.getState().record.jobId, 'job');
+  next.change({ servers: [{ ...server, id: 'moved', deviceId: 'moved-device' }, server], selection: { serverId: 'moved' }, runtime: { moved: { status: 'online', me: { role: 'owner' } }, s: { status: 'online', me: { role: 'owner' } } } });
+  next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
+    ? { job: { id: 'job', kind: 'winglet_update', device_id: 'd', state, detail: {}, updated_at: 2, created_at: 1 } }
+    : { version: '0.10.7', jobs: [] }; };
+  await next.flow.unifiedUpdate.observe();
+  state = 'succeeded'; paths.length = 0; await next.flow.unifiedUpdate.observe();
+  assert.ok(paths.some((p) => p.startsWith('/api/jobs/')), `paths: ${paths.join(',')}`);
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
+});
 test('a stale error notice can be dismissed instead of blocking the app', async () => {
-  const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: true, record: null, error: 'stale read' });
+  const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: true, record: null, notice: 'stale read' });
   const tree = h.progress(); const sheet = nodes(tree).find((n) => n.type === 'Sheet'); assert.equal(sheet.props.dismissible, true);
   for (let i = 0; i < 10; i++) await Promise.resolve();
   h.flow.unifiedUpdate.clearError();
@@ -111,4 +127,54 @@ test('a successful managed job never calls the handoff done/cancel action while 
   const sheet = nodes(next.progress()).find((node) => node.type === 'JobSheet'); assert.ok(sheet);
   let called = false; sheet.props.onClose = () => { called = true; }; sheet.props.job.state = 'succeeded';
   assert.equal(called, false);
+});
+test('an unreadable saved update can be cleared instead of blocking the app', async () => {
+  const h = harness(); h.disk.set('winglet.unifiedUpdate.v1', { version: '0.10.8', key: '', stage: 'awaiting-app', message: 'corrupt' });
+  await assert.rejects(h.flow.unifiedUpdate.hydrate(), /cannot be read/);
+  assert.match(h.flow.useUnifiedUpdate.getState().notice, /cannot be read/i);
+  const tree = h.progress(); assert.equal(nodes(tree).find((n) => n.type === 'Sheet').props.title, 'Update unavailable');
+  await button(tree, 'Clear saved update')();
+  assert.equal(h.flow.useUnifiedUpdate.getState().record, null);
+  assert.equal(h.flow.useUnifiedUpdate.getState().notice, '');
+});
+test('an interrupted send is recovered from history by the exact release version', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')();
+  const next = harness(h.disk, update.version); const paths: string[] = [];
+  next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
+    ? { job: undefined }
+    : { version: '0.10.7', jobs: [{ id: 'job', kind: 'winglet_update', device_id: 'd', created_at: 1, updated_at: 2, state: 'succeeded', detail: { to: '0.10.8' } }] }; };
+  next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), stage: 'dispatching' });
+  await next.flow.unifiedUpdate.observe();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.jobId, 'job');
+  assert.ok(paths.includes('/api/system'));
+});
+test('an orphan dispatching or tracking notice can be cleared without the saved pairing', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')();
+  const next = harness(h.disk, update.version); next.api.api = async () => ({ version: '0.10.7', jobs: [] });
+  await next.flow.unifiedUpdate.observe();
+  next.change({ servers: [{ ...server, id: 'moved', deviceId: 'moved-device' }, server], selection: { serverId: 'moved' }, runtime: { moved: { status: 'online', me: { role: 'owner' } }, s: { status: 'online', me: { role: 'owner' } } } });
+  const tree = next.progress(); assert.match(text(tree), /no longer selected/i);
+  await button(tree, 'Clear saved update')();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record, null);
+});
+test('a non-owner can close a terminal server notice without acknowledging it', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')();
+  const next = harness(h.disk, update.version);
+  next.change({ runtime: { s: { status: 'online', me: { role: 'member' } } } });
+  next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), stage: 'complete', message: 'App and server are on 0.10.8.' });
+  await next.flow.unifiedUpdate.hydrate();
+  const tree = next.progress(); const done = nodes(tree).find((n) => n.props?.title === 'Done');
+  assert.equal(done.props.disabled, undefined);
+  await button(tree, 'Done')();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record, null);
+});
+test('a saved consent older than seven days is closed without sending a server command', async () => {
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')();
+  const next = harness(h.disk, update.version);
+  next.disk.set('winglet.unifiedUpdate.v1', { ...next.disk.get('winglet.unifiedUpdate.v1'), created: Date.now() - 8 * 24 * 60 * 60 * 1000 });
+  await next.flow.unifiedUpdate.observe();
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.message, 'The saved update consent expired. Start the update again.');
+  assert.equal(next.requests.length, 0);
 });

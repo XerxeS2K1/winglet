@@ -9,6 +9,8 @@ export const mergeJob = (old: Job | undefined, next: Job): Job => {
 export type UpdateRecord = { jobs: Job[]; acknowledged: string[]; pending?: Record<string, string>; uncertain?: boolean };
 const empty = (): UpdateRecord => ({ jobs: [], acknowledged: [] });
 const storageKey = (s: Server) => 'winglet.updateRecovery.' + Array.from(updateScope(s), (c) => c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+/** Older app versions keyed a child bot's recovery by its own id; the scope now uses its parent. */
+const legacyStorageKey = (s: Server) => 'winglet.updateRecovery.' + Array.from(updateScope({ ...s, parent: undefined }), (c) => c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
 
 /** Durable per-pairing results. Network replies merge; they never replace a newer or terminal result. */
 export class UpdateRecovery {
@@ -28,7 +30,7 @@ export class UpdateRecovery {
       const hydrated = this.records.has(key);
       let record = this.records.get(key);
       if (!record) {
-        const saved = await this.deps.read(storageKey(s));
+        const saved = await this.deps.read(storageKey(s)) ?? await this.deps.read(legacyStorageKey(s));
         record = saved && Array.isArray(saved.jobs) && Array.isArray(saved.acknowledged) ? saved : empty();
       }
       // Do not publish a change which has not been written durably.

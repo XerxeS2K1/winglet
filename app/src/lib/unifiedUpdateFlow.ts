@@ -16,7 +16,8 @@ const KEY = 'winglet.unifiedUpdate.v1';
 export function updateContext(): UpdateContext {
   const state = useApp.getState();
   const server = state.servers.find((s) => s.id === state.selection.serverId) ?? state.servers[0];
-  return { current: Constants.expoConfig?.version ?? '', server, role: server ? state.runtime[server.id]?.me?.role : undefined,
+  return { current: Constants.expoConfig?.version ?? '', server, servers: state.servers, runtime: state.runtime,
+    role: server ? state.runtime[server.id]?.me?.role : undefined,
     online: !!server && state.runtime[server.id]?.status === 'online', foreground: state.foreground, locked: useLock.getState().locked };
 }
 export const unifiedUpdate = new UnifiedUpdate({
@@ -24,7 +25,7 @@ export const unifiedUpdate = new UnifiedUpdate({
   context: updateContext, authenticate: unlock, key: idempotencyKey,
   install: (update, eligible) => useAppInstall.getState().install(update, eligible), abort: () => useAppInstall.getState().cancel(),
   system: (server) => api(server, '/api/system'), send: sendConsentedWingletUpdate,
-  recover: async (server, jobId) => {
+  recover: async (server, jobId, version) => {
     await updateRecovery.hydrate(server);
     // A saved handoff ID can outlive the in-memory ledger and the bounded history window.
     if (jobId && !updateRecovery.snapshot(server).jobs.some((job) => job.id === jobId)) {
@@ -34,7 +35,12 @@ export const unifiedUpdate = new UnifiedUpdate({
       } catch { /* Keep an explicit unknown result when the exact job cannot be recovered. */ }
     }
     await updateRecovery.refresh(server);
-    return updateRecovery.snapshot(server).jobs.find((job) => job.id === jobId);
+    const jobs = updateRecovery.snapshot(server).jobs;
+    if (jobId) return jobs.find((job) => job.id === jobId);
+    // No job ID survived (an interrupted send). History still names the exact release job.
+    const candidates = jobs.filter((job) => job.kind === 'winglet_update' && job.device_id === server.deviceId
+      && (!version || job.detail?.to === version));
+    return candidates.sort((a, b) => b.updated_at - a.updated_at)[0];
   },
   acknowledge: async (server, record) => {
     await updateRecovery.hydrate(server);
@@ -47,10 +53,10 @@ export const unifiedUpdate = new UnifiedUpdate({
     }
   },
 });
-export const useUnifiedUpdate = create<{ record: Handoff | null; loaded: boolean; working: boolean; error: string }>(() => ({
-  record: null, loaded: !appUpdateSupported, working: false, error: '',
+export const useUnifiedUpdate = create<{ record: Handoff | null; loaded: boolean; working: boolean; error: string; notice: string }>(() => ({
+  record: null, loaded: !appUpdateSupported, working: false, error: '', notice: '',
 }));
-unifiedUpdate.subscribe(() => useUnifiedUpdate.setState({ record: unifiedUpdate.record, loaded: unifiedUpdate.loaded, working: unifiedUpdate.working, error: unifiedUpdate.error }));
+unifiedUpdate.subscribe(() => useUnifiedUpdate.setState({ record: unifiedUpdate.record, loaded: unifiedUpdate.loaded, working: unifiedUpdate.working, error: unifiedUpdate.error, notice: unifiedUpdate.notice }));
 // Invalidate pending authentication/download/preflight on every pairing or role transition, including switch-back.
 const signature = () => { const c = updateContext(); return JSON.stringify([c.server ? updateScope(c.server) : null, c.role]); };
 let previous = signature();

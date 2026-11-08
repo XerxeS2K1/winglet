@@ -16,7 +16,7 @@ import { Button } from './ui';
 /** The one app+plugin handoff host; the ordinary job host yields only this pairing. */
 export function UnifiedUpdateHost() {
   const s = useStyles(), pathname = usePathname();
-  const { record, error, loaded } = useUnifiedUpdate();
+  const { record, error, notice, loaded } = useUnifiedUpdate();
   const server = useApp((state) => state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0]);
   const foreground = useApp((state) => state.foreground);
   const rt = useServerState(server?.id), locked = useLock((state) => state.locked);
@@ -31,6 +31,7 @@ export function UnifiedUpdateHost() {
     if (saved?.scope && current && current !== saved.scope && Constants.expoConfig?.version !== saved.version) {
       void unifiedUpdate.recoverOrphan();
     }
+    if (saved?.jobId && ['dispatching', 'tracking', 'unknown'].includes(saved.stage)) void unifiedUpdate.observe();
   }, [server, record?.key, record?.stage]);
   useEffect(() => {
     if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
@@ -40,8 +41,8 @@ export function UnifiedUpdateHost() {
   }, [server, rt?.status, rt?.me?.role, foreground, locked, pathname, record?.key, record?.stage, polling]);
   if (!appUpdateSupported || locked || pathname === '/pair' || pathname === '/scan') return null;
   if (!loaded) return null;
-  if (!record) return error ? <Sheet visible dismissible onClose={() => unifiedUpdate.clearError()} title="Update unavailable">
-    <Text style={s.error}>{error}</Text>
+  if (!record) return notice ? <Sheet visible dismissible onClose={() => unifiedUpdate.clearError()} title="Update unavailable">
+    <Text style={s.error}>{notice}</Text>
     <Button title="Check again" onPress={() => { unifiedUpdate.clearError(); void unifiedUpdate.observe(); }} />
     <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.resetUnreadable()} />
   </Sheet> : null;
@@ -59,7 +60,7 @@ export function UnifiedUpdateHost() {
       <View style={s.body}>
         <Text style={s.copy}>This saved update belongs to {record.serverName ? `${record.serverName} ` : ''}a connection that is no longer selected.</Text>
         <Text style={s.copy}>{started
-          ? 'The server step may still be running. Select that connection again to see its result.'
+          ? 'The server step may still be running. Clearing this notice does not stop it. Select that connection again to see its result.'
           : 'The server step was not started.'}</Text>
         {runningVersion
           ? <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.acknowledgeOrphan()} />
@@ -82,8 +83,8 @@ export function UnifiedUpdateHost() {
         <Button title="Cancel update" variant="secondary" onPress={() => unifiedUpdate.cancel()} />
       </> : <>
         <Button title="Check again" variant="secondary" onPress={() => unifiedUpdate.observe()} />
-        {['failed', 'complete', 'unknown'].includes(record.stage) ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} disabled={!owner} onPress={() => unifiedUpdate.done()} /> : null}
-        {!['awaiting-app', 'dispatching', 'tracking', 'unknown'].includes(record.stage) ? null : <Button title="Cancel update" variant="secondary" onPress={() => unifiedUpdate.cancel()} />}
+        {['failed', 'complete', 'unknown'].includes(record.stage) ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} onPress={() => unifiedUpdate.done()} /> : null}
+        {['dispatching', 'tracking'].includes(record.stage) ? <Button title="Discard notice" variant="secondary" onPress={() => unifiedUpdate.cancel()} /> : null}
       </>}
     </View>
   </Sheet>;
