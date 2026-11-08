@@ -127,13 +127,13 @@ export class UnifiedUpdate {
           if (orphan) return;
           if (context.current !== record.version) {
             if (versionOK(context.current) && compareVersions(context.current, record.version) > 0) {
-              await this.save({ ...record, stage: 'complete', message: 'A different app release is running. The saved server step was cancelled.' });
+              await this.save({ ...record, stage: 'complete', message: 'A different app release is running. The saved server step was cancelled.' }, record);
             }
             return;
           }
-          if (!record.scope) { await this.save({ ...record, stage: 'complete', message: `App ${record.version} is running. No server update was authorized.` }); return; }
+          if (!record.scope) { await this.save({ ...record, stage: 'complete', message: `App ${record.version} is running. No server update was authorized.` }, record); return; }
           if (!record.created || Date.now() - record.created > CONSENT_TTL) {
-            await this.save({ ...record, stage: 'complete', message: 'The saved update consent expired. No server command was sent.' });
+            await this.save({ ...record, stage: 'complete', message: 'The saved update consent expired. No server command was sent.' }, record);
             return;
           }
           if (!eligible()) return;
@@ -142,16 +142,16 @@ export class UnifiedUpdate {
           if (!versionOK(info.version)) throw new Error('The server version is unknown. No server command was sent.');
           if (compareVersions(info.version, record.version) >= 0) {
             await this.save({ ...record, stage: 'complete', message: info.version === record.version
-              ? `App and server are on ${record.version}.` : `App ${record.version} is running. The newer server (${info.version}) was left unchanged.` });
+              ? `App and server are on ${record.version}.` : `App ${record.version} is running. The newer server (${info.version}) was left unchanged.` }, record);
             return;
           }
           // This durable boundary comes BEFORE the network call: a crash here is unknown, never permission to resend.
           const dispatch = { ...record, stage: 'dispatching' as const, message: `App ${record.version} is running. Starting the matching server update…` };
-          await this.save(dispatch);
+          await this.save(dispatch, record);
           const canSend = () => epoch === this.epoch && this.record === dispatch && scope(this.deps.context()) === record.scope
             && this.deps.context().role === record.role && record.role === 'owner'
             && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
-          if (!canSend()) { await this.save({ ...dispatch, stage: 'failed', message: 'The connection or pairing changed. No server command was sent.' }); return; }
+          if (!canSend()) { await this.save({ ...dispatch, stage: 'failed', message: 'The connection or pairing changed. No server command was sent.' }, dispatch); return; }
           let job: Job | null = null;
           let failure: { status?: number; message?: string } | null = null;
           try {
@@ -165,10 +165,14 @@ export class UnifiedUpdate {
             await this.save({ ...dispatch, stage: 'tracking', jobId: job.id, message: 'Installing the matching server plugin. Restart waits for idle chats.' }, dispatch);
           } else if (failure) {
             const status = failure.status;
-            if (typeof status === 'number' && status > 0) {
+            // 5xx may mean the job was created; treat as unknown. 4xx is a definite failure.
+            const isServerError = typeof status === 'number' && status >= 500 && status < 600;
+            if (isServerError || interrupted) {
+              await this.save({ ...dispatch, stage: 'unknown', message: isServerError
+                ? 'The server returned an error; the job may have been created. Checking history.'
+                : 'The connection changed during the server step. The result is unknown; no new installation will be sent automatically.' }, dispatch);
+            } else if (typeof status === 'number' && status > 0) {
               await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' }, dispatch);
-            } else if (interrupted) {
-              await this.save({ ...dispatch, stage: 'unknown', message: 'The connection changed during the server step. The result is unknown; no new installation will be sent automatically.' }, dispatch);
             } else if (status === 0) {
               await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' }, dispatch);
             } else {
@@ -237,8 +241,16 @@ export class UnifiedUpdate {
     if (this.record && !['awaiting-app', 'dispatching', 'tracking', 'unknown'].includes(this.record.stage)) return;
     this.invalidate(); this.deps.abort();
     // Drop the in-memory record synchronously: a queued observer reply must not resurrect it.
+    const previous = this.record;
     this.record = null;
-    try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
+    try {
+      await this.save(null);
+      this.error = ''; this.emit();
+    } catch (e) {
+      // Restore the previous record so it is not lost; the error surfaces as notice.
+      this.record = previous;
+      this.error = (e as Error).message; this.emit();
+    }
   }
   async done() {
     const context = this.deps.context();
@@ -251,6 +263,8 @@ export class UnifiedUpdate {
     // A scoped server record must not be cleared locally before the owner role is known while the
     // server is reachable: doing so leaves the job in the ledger and the ordinary job host re-prompts
     // for it. Offline, the user must still be able to close the notice.
+    // Trade-off: offline close skips acknowledge, so the ledger job stays unacknowledged and the
+    // ordinary job host may prompt again once the server is back online. Accepted to avoid a dead end.
     if (record.scope && scope(context) === record.scope && context.role === undefined && context.online) return;
     try {
       // Only the owner pairing can acknowledge a server job; everyone can close a local notice.

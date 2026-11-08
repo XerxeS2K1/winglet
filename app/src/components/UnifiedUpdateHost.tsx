@@ -24,14 +24,6 @@ export function UnifiedUpdateHost() {
   const installer = useAppInstall();
   const polling = !!record && ['dispatching', 'tracking', 'unknown'].includes(record.stage);
   useEffect(() => {
-    // A consent written before its Android approval belongs to one selected pairing. Polling must
-    // not silently drop a record for an unselected pairing; the host shows it until the user clears it.
-    if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
-    const saved = unifiedUpdate.record;
-    if (saved?.jobId && ['dispatching', 'tracking', 'unknown'].includes(saved.stage)
-      && rt?.status === 'online') void unifiedUpdate.observe();
-  }, [server, record?.key, record?.stage, locked, foreground, rt?.status, appUpdateSupported, pathname]);
-  useEffect(() => {
     if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
     void unifiedUpdate.observe();
     const timer = polling ? setInterval(() => { void unifiedUpdate.observe(); }, 2000) : undefined;

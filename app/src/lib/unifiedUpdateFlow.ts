@@ -40,6 +40,9 @@ export const unifiedUpdate = new UnifiedUpdate({
     // No job ID survived (an interrupted send). History still names the exact release job.
     // The server stamps created_at in seconds; the saved consent uses Date.now() in milliseconds.
     // A 10-minute margin covers phone/server clock skew without adopting a much older job.
+    // Edge case: an earlier failed winglet_update to the same version within 10 min of consent
+    // would be linked. This is very unlikely because the same-version dispatch is skipped when
+    // the server is already on that version.
     const candidates = jobs.filter((job) => job.kind === 'winglet_update' && job.device_id === server.deviceId
       && (!version || job.detail?.to === version)
       && (!created || job.created_at * 1000 >= created - 10 * 60 * 1000));
