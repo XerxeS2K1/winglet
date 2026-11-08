@@ -32,9 +32,10 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   release. No separate auto-update setting, startup installation or second automatic server prompt.
 - Rejected implementation: local `feat/auto-update-server` commits `91b0b10` and `2164445` added an
   opt-in toggle. Those commits do **not** meet the requirement and were not released.
-- Coder owns the replacement app implementation in `/root/Code/winglet-autoupdate` on
-  `feat/auto-update-server`; Puppet Master owns documentation and generated web integration in
-  `/root/Code/winglet-unified-update` on `fix/unified-update-integration`, initially based on `2164445`.
+- The replacement app implementation is in `/root/Code/winglet-autoupdate` on
+  `feat/auto-update-server` (`bc97501` app code, `ea57741` doc corrections). Puppet Master owns
+  documentation and generated web integration in `/root/Code/winglet-unified-update` on
+  `fix/unified-update-integration`, initially based on `2164445`.
 - Status: the replacement app-only implementation is present locally on
   `feat/auto-update-server`, with one visible app Update action, durable one-release consent, exact
   owner pairing, one APK, server dispatch only after the matching app is running, no startup
