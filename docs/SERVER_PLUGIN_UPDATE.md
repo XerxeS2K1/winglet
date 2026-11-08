@@ -102,29 +102,22 @@ status and gates), [DEVICE_LINKING.md](DEVICE_LINKING.md) and
 Reviewer review, web freshness and phone approval are separate gates; none is a substitute for
 another, and none has been silently counted as a full pass.
 
-## Hands-off auto-update (owner opt-in)
+## Unified app update (local correction)
 
-When the owner enables **Auto-update server plugin** in Settings → App, the app
-installs each new release without a tap. The `ServerUpdatePrompt` component
-detects the preference and calls `updateServerWinglet(server, version,
-eligible, { skipUnlock: true })`, bypassing the per-tap biometric prompt. The
-consent is given once when enabling the setting (a biometric unlock is
-required to turn it on). The server still installs, waits for idle chats, then
-restarts. The setting can be turned off at any time; the manual prompt returns.
+The separate owner opt-in auto-update toggle was rejected and is not the intended product.
+One app Update action coordinates the APK and the matching pinned server-plugin release;
+there is no setting that installs server releases whenever they appear. Android still owns the
+required APK installation confirmation. The app must not report installation merely because it
+opened that confirmation, and cancellation/failure must remain distinguishable from success.
 
-The auto-update logic lives in `ServerUpdatePrompt.tsx`:
-- An effect watches `autoUpdate && available` and triggers the update.
-- The `visible` sheet computation excludes auto-update (`!autoUpdate`).
-- The `available` predicate already covers owner role, idle bots, Hermes
-  compatibility and no pending job.
-- Turning the setting on while the prompt is shown immediately triggers the
-  update without a tap.
+The server update remains a signed owner action bound to one pairing and exact release version.
+A member cannot update the server, an unrelated/newer release cannot be substituted, and a newer
+installed plugin cannot be downgraded. The explicit Server repair/status row remains available.
 
-Tests cover:
-- Auto-update installs with no tap and no biometric prompt.
-- Auto-update respects `requires_hermes_ok === false`.
-- Enabling auto-update after the prompt appears still updates without a tap.
-- Auto-update never runs for a member.
+The local implementation lives in `UnifiedUpdateHost.tsx`, `unifiedUpdate.ts` and
+`unifiedUpdateFlow.ts`; it is not yet merged or independently reviewed. Its exact stage
+ordering, failure/recovery semantics and phone behaviour are recorded in APP_PLAN and must be
+verified before release.
 
 ## Offline verification scope
 
