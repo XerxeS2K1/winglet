@@ -932,14 +932,30 @@ def begin_update(release, from_version, *, plugin_dir=None, db_path=None, home=N
             "folder": str(folder), "root": str(root)}
 
 
-def arm_deadline(prepared: dict, *, now=None) -> None:
+def arm_deadline(prepared: dict, *, now=None) -> bool:
     """The install is done and the gateway is about to restart: the new version now has a few minutes to confirm itself."""
     updater = _updater()
     folder = Path(prepared["folder"])
-    marker = updater.read_marker(folder)
-    if marker is not None:
+    with updater.marker_lock(folder):
+        marker = updater.read_marker(folder)
+        if not marker or marker.get('state') != 'pending' or marker.get('backup') != Path(prepared['backup']).name:
+            return False
         marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
         updater.write_marker(folder, marker)
+        return True
+
+
+def restart_update(prepared: dict):
+    """Authorize and request restart under the watch lock. None means the update has already gone."""
+    updater = _updater()
+    folder = Path(prepared['folder'])
+    with updater.marker_lock(folder):
+        marker = updater.read_marker(folder)
+        if not marker or marker.get('state') != 'pending' or marker.get('backup') != Path(prepared['backup']).name:
+            return None
+        marker['deadline'] = time.time() + updater.DEADLINE_SECONDS
+        updater.write_marker(folder, marker)
+        return spawn_restart()
 
 
 def hold_lease(prepared: dict, note: Optional[str] = None, *, now=None) -> bool:
@@ -949,14 +965,15 @@ def hold_lease(prepared: dict, note: Optional[str] = None, *, now=None) -> bool:
     watch tells Kraig on Telegram, once. False means the update is not pending any more (the watch already acted)."""
     updater = _updater()
     folder = Path(prepared["folder"])
-    marker = updater.read_marker(folder)
-    if not marker or marker.get("state") != "pending" or marker.get("backup") != Path(prepared["backup"]).name:
-        return False
-    marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
-    if isinstance(note, str) and note.strip() and "note" not in marker:
-        marker["note"] = "".join(ch for ch in " ".join(note.split()) if ch.isprintable())[:800]
-    updater.write_marker(folder, marker)
-    return True
+    with updater.marker_lock(folder):
+        marker = updater.read_marker(folder)
+        if not marker or marker.get("state") != "pending" or marker.get("backup") != Path(prepared["backup"]).name:
+            return False
+        marker["deadline"] = (time.time() if now is None else now) + updater.DEADLINE_SECONDS
+        if isinstance(note, str) and note.strip() and "note" not in marker:
+            marker["note"] = "".join(ch for ch in " ".join(note.split()) if ch.isprintable())[:800]
+        updater.write_marker(folder, marker)
+        return True
 
 
 def mark_started(current_version, *, home=None, now=None) -> bool:
@@ -966,12 +983,15 @@ def mark_started(current_version, *, home=None, now=None) -> bool:
     try:
         updater = _updater()
         folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
-        marker = updater.read_marker(folder)
-        if not marker or marker.get("state") != "pending" or marker.get("to") != current_version or updater._has_started(marker):
+        if not folder.exists():
             return False
-        marker["started"] = time.time() if now is None else now
-        updater.write_marker(folder, marker)
-        return True
+        with updater.marker_lock(folder):
+            marker = updater.read_marker(folder)
+            if not marker or marker.get("state") != "pending" or marker.get("to") != current_version or updater._has_started(marker):
+                return False
+            marker["started"] = time.time() if now is None else now
+            updater.write_marker(folder, marker)
+            return True
     except Exception as exc:
         logger.info("[winglet] could not record that the new version started: %s", exc)
         return False
@@ -987,6 +1007,11 @@ def cancel_update(prepared: dict, *, now=None) -> dict:
     code never ran, so the database is left alone. Does not restart anything."""
     updater = _updater()
     folder = Path(prepared["folder"])
+    with updater.marker_lock(folder):
+        return _cancel_update_locked(updater, prepared, folder, now)
+
+
+def _cancel_update_locked(updater, prepared, folder, now):
     try:
         report = updater.restore(Path(prepared["root"]), Path(prepared["backup"]), time.time() if now is None else now,
                                  with_database=False)
@@ -1015,6 +1040,13 @@ def settle_pending_update(current_version, *, home=None) -> Optional[dict]:
     stand the watch down. If the watch rolled it back, say so once. Otherwise leave it to the watch."""
     updater = _updater()
     folder = updater.hermes_root(Path(home) if home is not None else _home()) / "backups" / updater.BACKUP_FOLDER
+    if not folder.exists():
+        return None
+    with updater.marker_lock(folder):
+        return _settle_pending_locked(updater, folder, current_version)
+
+
+def _settle_pending_locked(updater, folder, current_version):
     try:
         marker = updater.read_marker(folder)
     except ValueError:
@@ -1053,13 +1085,41 @@ async def install_release(sha, timeout: float = UPDATE_INSTALL_WINDOW_SECONDS - 
     args = ("plugins", "install", f"{RELEASE_REPO}/plugin", "--ref", sha, "--force", "--no-enable", "--yes-deps")
     env = {**_install_environment(os.environ), "HERMES_HOME": str(_home()), "COLUMNS": "200"}
     proc = await _asyncio.create_subprocess_exec(*runtime_command(PROJECT_ROOT, args), env=env, stdin=_asyncio.subprocess.DEVNULL,
-                                                 stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT)
+                                                 stdout=_asyncio.subprocess.PIPE, stderr=_asyncio.subprocess.STDOUT,
+                                                 **({'start_new_session': True} if os.name != 'nt' else {}))
     try:
         out, _ = await _asyncio.wait_for(proc.communicate(), timeout)
     except _asyncio.TimeoutError:
-        proc.kill()
+        await _stop_installer_tree(proc)
         return -1, ["The install took too long and was stopped."]
+    except _asyncio.CancelledError:
+        await _stop_installer_tree(proc)
+        raise
     return proc.returncode, clean_output(out.decode("utf-8", errors="replace"))
+
+
+async def _stop_installer_tree(proc) -> None:
+    """Stop inherited PM workers and reap the launcher before rollback touches their files.
+
+    Cooperative process cleanup, not a sandbox against a dependency escaping the group.
+    """
+    import asyncio
+    import os
+    import signal
+    import subprocess
+
+    if os.name == 'nt':
+        taskkill = str(Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'taskkill.exe')
+        stopped = await asyncio.to_thread(subprocess.run, [taskkill, '/PID', str(proc.pid), '/T', '/F'],
+                                          stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+        if stopped.returncode and proc.returncode is None:
+            proc.kill()
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    await proc.wait()
 
 
 # What the install child may inherit: where programs are, who is running them, the language, and what git and TLS need to reach

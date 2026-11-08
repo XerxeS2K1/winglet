@@ -25,6 +25,7 @@ import shutil
 import sqlite3
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -208,6 +209,34 @@ def prune_backups(folder: Path, keep: int = KEEP_BACKUPS, protect: Optional[Path
 
 
 # -- the pending-update record ----------------------------------------------------------------------------------
+
+
+@contextmanager
+def marker_lock(folder: Path):
+    """Serialize watch rollback with lease renewal and the final restart decision, across processes."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    fd = os.open(folder / '.update.lock', os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        if os.name == 'nt':
+            import msvcrt
+            if os.fstat(fd).st_size == 0:
+                os.write(fd, b'0')
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == 'nt':
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 
 def write_marker(folder: Path, data: dict) -> None:
@@ -411,6 +440,16 @@ def _has_started(marker: dict) -> bool:
 
 
 def watch(home, now: float, out) -> int:
+    """One serialized watch tick; a concurrent restart decision cannot revive a rollback."""
+    folder = hermes_root(Path(home)) / 'backups' / BACKUP_FOLDER
+    # Normal scheduled checks with no pending update do not create directories.
+    if not folder.exists():
+        return 0
+    with marker_lock(folder):
+        return _watch_locked(home, now, out)
+
+
+def _watch_locked(home, now: float, out) -> int:
     """One cron tick. Silent unless an update is pending past its deadline (or its record cannot be read)."""
     root = hermes_root(Path(home))
     folder = root / "backups" / BACKUP_FOLDER

@@ -107,6 +107,10 @@ class FakeHermes:
 
     def arm_deadline(self, prepared):
         self.calls.append(("arm",))
+        return True
+
+    def restart_update(self, prepared):
+        return self.spawn_restart()
 
     def hold_lease(self, prepared, note=None):
         """While an installed update waits for a quiet moment: keep the rollback from firing. False if it already has."""

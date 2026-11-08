@@ -131,6 +131,10 @@ async def test_an_install_that_hangs_is_stopped_and_reported(monkeypatch, spawne
     async def fake_exec(*argv, **kw):
         return proc
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    async def stop_tree(child):
+        assert child is proc
+        child.kill()
+    monkeypatch.setattr(api, '_stop_installer_tree', stop_tree)
     code, lines = await api.install_release(SHA, timeout=0.05)
     assert code == -1 and proc.killed and "too long" in lines[0]
 

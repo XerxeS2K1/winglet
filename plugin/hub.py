@@ -3369,10 +3369,15 @@ class Hub:
                     last_snapshot = time.monotonic()
                     quiet = await self._is_quiet(h)  # a chat may have started while the copy was made
                 if quiet:
-                    await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
+                    if not await asyncio.to_thread(h.arm_deadline, prepared):
+                        await self._finish_gone(job_id)
+                        return
                     await self._job_event(self.store.update_job(job_id, phase="restarting", message="Installed. Restarting to load it…"))
                     await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
-                    pid = await asyncio.to_thread(h.spawn_restart)
+                    pid = await asyncio.to_thread(h.restart_update, prepared)
+                    if pid is None:
+                        await self._finish_gone(job_id)
+                        return
                     tries, asked = tries + 1, True
                     await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
                     if not await self._hold_through_restart(job_id, h, prepared):
@@ -3469,20 +3474,24 @@ class Hub:
             if kind == "restart":
                 await self._finish_job(job["id"], "succeeded", "Back online.")
             elif kind == "winglet_update":
-                previous = detail.get("from")
-                if outcome == "rolled_back":
+                previous, target = detail.get("from"), detail.get("to")
+                # A marker describes one update, not every job left by a previous process.
+                ours = settled and settled.get("from") == previous and settled.get("to") == target
+                if ours and outcome == "rolled_back":
                     state, message = "failed", (f"The new version did not start, so Winglet {settled.get('from')} was put back. "
                                                 f"Details were sent to your Telegram. Winglet did not restart the gateway.")
-                elif outcome == "rollback_failed":
+                elif ours and outcome == "rollback_failed":
                     state, message = "failed", ("The new version did not start, and I could not put the old one back automatically. "
                                                 "The backup is in the backups folder on the server; details were sent to your Telegram.")
-                elif not previous:
-                    state, message = "unknown", "The server restarted, but the starting Winglet version was not recorded."
+                elif not previous or not target:
+                    state, message = "unknown", "The server restarted, but the starting or requested Winglet version was not recorded."
                 elif previous == VERSION:
                     state, message = "failed", f"The server restarted, but Winglet is still at version {VERSION}."
+                elif target != VERSION:
+                    state, message = "failed", f"The server is running Winglet {VERSION}, not the requested version {target}."
                 else:
                     state, message = "succeeded", f"Updated to Winglet {VERSION}."
-                await self._finish_job(job["id"], state, message, to=VERSION)
+                await self._finish_job(job["id"], state, message, running_version=VERSION)
             elif kind == "hermes_update":
                 now = self.hermes_version() or ""
                 state, message, lines = "unknown", "The server restarted, but the update didn't report how it went.", []

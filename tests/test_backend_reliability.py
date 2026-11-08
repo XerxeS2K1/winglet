@@ -104,7 +104,7 @@ async def test_implicit_chats_remain_available(hub):
 
 @pytest.mark.parametrize("starting,expected", [(VERSION, "failed"), ("older-version", "succeeded"), ("", "unknown")])
 async def test_winglet_update_reconciliation_requires_version_change(hub, starting, expected):
-    job, _ = hub.store.create_job("winglet_update", detail={"boot": "old", "from": starting})
+    job, _ = hub.store.create_job("winglet_update", detail={"boot": "old", "from": starting, "to": VERSION})
     await hub.reconcile_jobs()
     result = hub.store.get_job(job["id"])
     assert result["state"] == expected

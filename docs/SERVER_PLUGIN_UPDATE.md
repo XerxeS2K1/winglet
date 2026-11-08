@@ -40,6 +40,11 @@ the gateway by itself. Neither half of a fix can be inferred from the other vers
    refreshes the database backup when necessary, arms the boot deadline and requests a
    restart. A fresh gateway reconciles the durable job and pending marker. Failed boot
    rollback does not restart the gateway: manual recovery remains the owner's decision.
+   Watch rollback, lease renewal, boot settlement and the final restart decision share an
+   OS file lock. The pending backup identity is checked again immediately before requesting
+   restart, so a rollback during the phone-event delay cannot be revived. Reconciliation
+   requires the actual running version to equal the requested target; it never overwrites
+   that target with an unrelated version.
 9. Existing read-only owner APIs `/api/system` (recent jobs), `/api/jobs` and
    `/api/jobs/{id}` recover progress across transport loss. A `system.job` event alone is
    not durable client tracking. The phone must retain its job/request identity and terminal
@@ -61,7 +66,10 @@ the gateway by itself. Neither half of a fix can be inferred from the other vers
 - The rollback watch is Hermes cron, which requires a running gateway ticker. It is not an
   independent systemd watchdog and cannot guarantee recovery from a completely dead gateway.
 - The installer has a bounded runtime and output returned to the phone is cleaned/capped.
-  The existing timeout kills the immediate installer process; it is not a process-tree sandbox.
+  On timeout or cancellation it stops the inherited process group and reaps the launcher
+  before returning to rollback (Windows uses taskkill /T). The process-group integration
+  tests ran on Linux; Windows tree termination/locking still need native verification.
+  A malicious dependency can deliberately escape an inherited group: this is not a sandbox.
   Real package/network execution and native phone lifecycle are separate acceptance tests.
 
 ## Currently live 0.10.5 bootstrap
@@ -95,6 +103,10 @@ is performed by this local repair.
   against the old command.
 - Signed HTTP tests cover owner/member/unsigned requests, release lookup and compatibility,
   idempotency, backup preparation, failures, restart waiting and boot reconciliation.
+- Cold-review safety probes were independently reproduced red before repair. Regressions
+  cover watch rollback before the first quiet check and during the event delay; serialized
+  restart/watch decisions; absent/wrong backup identity; timeout/cancellation with a real
+  benign descendant writer; mismatched version and unrelated boot markers.
 - `test_plugin_update_rehearsal.py` joins signed HTTP, real backup/SQLite and a real child
   process. Its installer **test double** uses the actual Hermes argument parser and
   active-plugin dependency-consent gate, but substitutes PM publication with sandbox writes.

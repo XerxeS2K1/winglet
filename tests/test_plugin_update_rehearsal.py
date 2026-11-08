@@ -84,6 +84,9 @@ def rehearsal(world, hub, monkeypatch):
     h.installed_version_is = lambda version: api.installed_version_is(version, plugin_dir=world.plugin)
     h.cancel_update = api.cancel_update
     h.arm_deadline = api.arm_deadline
+    # The real restart guard, with only its service-start hook replaced by FakeHermes.
+    monkeypatch.setattr(api, 'spawn_restart', h.spawn_restart)
+    h.restart_update = api.restart_update
     h.settle_pending_update = lambda version: api.settle_pending_update(version, home=world.root)
     return world, calls, original
 
