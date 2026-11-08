@@ -178,7 +178,19 @@ test('a running historical job is linked so its progress is visible', async () =
 });
 test('a scoped record is not cleared locally while the owner role is unknown', async () => {
   const h = harness(); await h.controller.start(update); h.disk.value.stage = 'failed';
-  h.context({ current: update.version, role: undefined });
-  await h.controller.done(); assert.equal(h.disk.value.stage, 'failed');
+  const next = harness(h.disk); next.context({ current: update.version, role: undefined, online: true });
+  await next.controller.done(); assert.equal(next.disk.value.stage, 'failed');
+});
+test('a scoped record can be closed locally when the server is unreachable', async () => {
+  const h = harness(); await h.controller.start(update); h.disk.value.stage = 'failed';
+  const next = harness(h.disk); next.context({ current: update.version, role: undefined, online: false });
+  await next.controller.done(); assert.equal(next.disk.value, null);
+});
+test('a transient read failure does not overwrite a valid saved handoff', async () => {
+  const h = harness(); await h.controller.start(update); h.disk.value.stage = 'tracking'; h.disk.value.jobId = 'job';
+  const next = harness(h.disk); let reads = 0;
+  next.deps.read = async () => { reads += 1; if (reads === 1) throw new Error('transient'); return structuredClone(next.disk.value); };
+  await next.controller.start(update); assert.equal(reads, 2); assert.equal(next.disk.value.stage, 'tracking');
+  assert.match(next.controller.error, /Finish or cancel/);
 });
 

@@ -26,10 +26,11 @@ export function UnifiedUpdateHost() {
   useEffect(() => {
     // A consent written before its Android approval belongs to one selected pairing. Polling must
     // not silently drop a record for an unselected pairing; the host shows it until the user clears it.
+    if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
     const saved = unifiedUpdate.record;
     if (saved?.jobId && ['dispatching', 'tracking', 'unknown'].includes(saved.stage)
-      && !locked && foreground && rt?.status === 'online') void unifiedUpdate.observe();
-  }, [server, record?.key, record?.stage, locked, foreground, rt?.status]);
+      && rt?.status === 'online') void unifiedUpdate.observe();
+  }, [server, record?.key, record?.stage, locked, foreground, rt?.status, appUpdateSupported, pathname]);
   useEffect(() => {
     if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
     void unifiedUpdate.observe();
@@ -45,9 +46,10 @@ export function UnifiedUpdateHost() {
   </Sheet> : null;
   const orphan = !!record.scope && (!server || record.scope !== updateScope(server));
   const owner = !record.scope || rt?.me?.role === 'owner';
-  // A scoped record must not be closed before the owner role is known: clearing it locally would
-  // leave the job in the ledger and the ordinary job host would prompt for it again.
-  const rolePending = !!record.scope && rt?.me?.role === undefined;
+  // A scoped record must not be closed before the owner role is known while the server is
+  // reachable: clearing it locally would leave the job in the ledger and the ordinary job host
+  // would prompt for it again. Offline, the user must still be able to close the notice.
+  const rolePending = !!record.scope && rt?.status === 'online' && rt?.me?.role === undefined;
   const runningVersion = Constants.expoConfig?.version === record.version;
   const job = owner && record.jobId ? jobs?.jobs.find((item) => item.id === record.jobId) : undefined;
   if (orphan && job && record.stage !== 'complete' && record.stage !== 'failed') {

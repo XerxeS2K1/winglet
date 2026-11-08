@@ -39,8 +39,10 @@ export class UnifiedUpdate {
   subscribe = (fn: () => void) => { this.listeners.add(fn); return () => { this.listeners.delete(fn); }; };
   snapshot = () => this.record;
   private emit() { this.listeners.forEach((fn) => fn()); }
-  private save(record: Handoff | null) {
+  /** `expected` closes the cancel race: a queued write for a record that was just discarded is dropped. */
+  private save(record: Handoff | null, expected?: Handoff) {
     const op = this.queue.catch(() => {}).then(async () => {
+      if (expected && this.snapshot() !== expected) return;
       await this.deps.write(record); this.record = record; if (!record) this.unreadable = null; this.notice = ''; this.emit();
     });
     this.queue = op; return op;
@@ -67,8 +69,11 @@ export class UnifiedUpdate {
     const eligible = () => epoch === this.epoch && visible() && scope(this.deps.context()) === scope(original)
       && (!original.server || this.deps.context().role === original.role);
     try {
-      // An unreadable saved handoff must not block a fresh, explicitly consented update.
-      try { await this.hydrate(); } catch { /* a fresh consent replaces it */ }
+      // An unreadable saved handoff must not block a fresh, explicitly consented update. A transient
+      // storage failure is retried first so a valid record holding a running job is not overwritten.
+      try { await this.hydrate(); } catch {
+        try { await this.hydrate(); } catch { /* persistent failure: a fresh consent replaces it */ }
+      }
       if (this.record) throw new Error('Finish or cancel the current update first.');
       if (!versionOK(update.version) || !versionOK(original.current) || compareVersions(update.version, original.current) <= 0) throw new Error('Only a newer published release can be installed.');
       if (!update.apk) { await this.deps.install(update, eligible); return; }
@@ -157,28 +162,28 @@ export class UnifiedUpdate {
           const interrupted = epoch !== this.epoch;
           if (job) {
             // The job was sent before the pairing changed; link it so the owner can still inspect it.
-            await this.save({ ...dispatch, stage: 'tracking', jobId: job.id, message: 'Installing the matching server plugin. Restart waits for idle chats.' });
+            await this.save({ ...dispatch, stage: 'tracking', jobId: job.id, message: 'Installing the matching server plugin. Restart waits for idle chats.' }, dispatch);
           } else if (failure) {
             const status = failure.status;
-            if (interrupted) {
-              await this.save({ ...dispatch, stage: 'unknown', message: 'The connection changed during the server step. The result is unknown; no new installation will be sent automatically.' });
-            } else if (typeof status === 'number' && status > 0) {
-              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' });
+            if (typeof status === 'number' && status > 0) {
+              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' }, dispatch);
+            } else if (interrupted) {
+              await this.save({ ...dispatch, stage: 'unknown', message: 'The connection changed during the server step. The result is unknown; no new installation will be sent automatically.' }, dispatch);
             } else if (status === 0) {
-              await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' });
+              await this.save({ ...dispatch, stage: 'unknown', message: 'The server reply was lost. Checking history; no new installation will be sent automatically.' }, dispatch);
             } else {
-              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' });
+              await this.save({ ...dispatch, stage: 'failed', message: failure.message || 'The server update could not be started.' }, dispatch);
             }
           } else {
             await this.save({ ...dispatch, stage: 'failed', message: interrupted
               ? 'The connection or pairing changed. No server command was sent.'
-              : 'The server step was cancelled before sending.' });
+              : 'The server step was cancelled before sending.' }, dispatch);
           }
         } else if (eligible() || (!!record.jobId && ['dispatching', 'tracking', 'unknown'].includes(record.stage))) {
           if (record.stage === 'dispatching') {
             // An interrupted send on an unselected pairing is left for the user to reselect and inspect.
             if (orphan) return;
-            await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' });
+            await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' }, record);
           }
           const current = this.record;
           if (!current) return;
@@ -186,12 +191,15 @@ export class UnifiedUpdate {
           if (this.snapshot() !== current) return;
           if (job) {
             const stage = job.state === 'succeeded' ? 'complete' : job.state === 'failed' ? 'failed' : 'tracking';
-            await this.save({ ...current, stage, jobId: job.id,
-              message: job.state === 'succeeded' ? `App and server are on ${current.version}.`
-                : job.state === 'failed' ? (job.detail?.message || 'The server update failed.')
-                : 'Installing the matching server plugin. Restart waits for idle chats.' });
+            const message = job.state === 'succeeded' ? `App and server are on ${current.version}.`
+              : job.state === 'failed' ? (job.detail?.message || 'The server update failed.')
+              : 'Installing the matching server plugin. Restart waits for idle chats.';
+            // A running job is polled every 2s; do not rewrite an identical tracking record each time.
+            if (current.stage !== stage || current.jobId !== job.id || current.message !== message) {
+              await this.save({ ...current, stage, jobId: job.id, message }, current);
+            }
           } else if (current.jobId && current.stage !== 'unknown') {
-            await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' });
+            await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' }, current);
           }
         }
       } catch (e) { this.error = (e as Error).message; }
@@ -228,14 +236,22 @@ export class UnifiedUpdate {
   async cancel() {
     if (this.record && !['awaiting-app', 'dispatching', 'tracking', 'unknown'].includes(this.record.stage)) return;
     this.invalidate(); this.deps.abort();
+    // Drop the in-memory record synchronously: a queued observer reply must not resurrect it.
+    this.record = null;
     try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
   async done() {
-    const record = this.record, context = this.deps.context();
+    const context = this.deps.context();
+    // Hydrate if we don't have an in-memory record but there might be one on disk.
+    if (!this.record) {
+      try { await this.hydrate(); } catch { /* no record or unreadable: nothing to do */ }
+    }
+    const record = this.record;
     if (!record || record.stage === 'awaiting-app' || record.stage === 'dispatching') return;
-    // A scoped server record must not be cleared locally before the owner role is known:
-    // doing so leaves the job in the ledger and the ordinary job host re-prompts for it.
-    if (record.scope && scope(context) === record.scope && context.role === undefined) return;
+    // A scoped server record must not be cleared locally before the owner role is known while the
+    // server is reachable: doing so leaves the job in the ledger and the ordinary job host re-prompts
+    // for it. Offline, the user must still be able to close the notice.
+    if (record.scope && scope(context) === record.scope && context.role === undefined && context.online) return;
     try {
       // Only the owner pairing can acknowledge a server job; everyone can close a local notice.
       if (record.scope && scope(context) === record.scope && context.role === 'owner') {

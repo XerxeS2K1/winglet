@@ -39,9 +39,10 @@ export const unifiedUpdate = new UnifiedUpdate({
     if (jobId) return jobs.find((job) => job.id === jobId);
     // No job ID survived (an interrupted send). History still names the exact release job.
     // The server stamps created_at in seconds; the saved consent uses Date.now() in milliseconds.
+    // A 10-minute margin covers phone/server clock skew without adopting a much older job.
     const candidates = jobs.filter((job) => job.kind === 'winglet_update' && job.device_id === server.deviceId
       && (!version || job.detail?.to === version)
-      && (!created || job.created_at * 1000 >= created));
+      && (!created || job.created_at * 1000 >= created - 10 * 60 * 1000));
     return candidates.sort((a, b) => b.updated_at - a.updated_at)[0];
   },
   acknowledge: async (server, record) => {
