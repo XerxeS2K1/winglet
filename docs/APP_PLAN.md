@@ -35,9 +35,14 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - Coder owns the replacement app implementation in `/root/Code/winglet-autoupdate` on
   `feat/auto-update-server`; Puppet Master owns documentation and generated web integration in
   `/root/Code/winglet-unified-update` on `fix/unified-update-integration`, initially based on `2164445`.
-- Status: implementation and verification in progress. A passing test count for the rejected toggle
-  is not evidence that the unified flow works. Final app commit, review, parent-rerun results and web
-  freshness will be recorded here before completion.
+- Status: the replacement app-only implementation is present locally on
+  `feat/auto-update-server`, with one visible app Update action, durable one-release consent, exact
+  owner pairing, one APK, server dispatch only after the matching app is running, no startup
+  installer, no separate server prompt and explicit terminal acknowledgement. It is not merged or
+  independently reviewed. Its app suite passed 705 tests and TypeScript was clean; the v0.10.7
+  plugin's focused update suite passed 313 tests with 22 skips. Those are code checks only. Final
+  integration, cold review, parent-rerun results, a matching release and web freshness remain
+  required before completion.
 - Safety: owner signing and exact release pinning remain. No silent downgrade, upgrade of another
   pairing or claim that merely opening Android's installer proves the APK was installed. Android's
   required package-install confirmation cannot be bypassed.
@@ -66,8 +71,8 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   was intermittent and passed isolated reruns on both trees. This was not a clean full-suite pass.
 - The final v0.10.7 updater delta review was completed; it confirmed the authority fix and the
   restart/child-cleanup safety fixes. That verdict does not cover this new unified app flow.
-- Next: finish the replacement, independently rerun app tests/typecheck, obtain a cold review of
-  the exact integrated diff, audit affected Markdown and rebuild/freshness-check `plugin/web`.
+- Next: finish integration, independently rerun app tests/typecheck, obtain a cold review of the
+  exact integrated diff, audit affected Markdown and rebuild/freshness-check `plugin/web`.
 - Publication and live deployment require their own approvals. A new release, not a rewritten
   0.10.7 tag, is needed to deliver this change. Record APK installation and server running version
   separately, then exercise cancellation, relaunch/reconnect, lost replies and retained failures
