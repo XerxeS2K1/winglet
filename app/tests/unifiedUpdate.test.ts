@@ -49,6 +49,16 @@ for (const context of [{ server: { ...server, url: 'https://moved.invalid' } }, 
   const h = harness(); await h.controller.start(update); const next = harness(h.disk); next.context({ current: update.version, ...context });
   await next.controller.observe(); assert.equal(next.sent.length, 0); assert.equal(next.disk.value.stage, 'awaiting-app');
 });
+test('saved consent never uses a role acquired after the one-tap consent', async () => {
+  const h = harness(); h.context({ role: 'member' }); await h.controller.start(update);
+  assert.equal(h.disk.value.scope, undefined);
+  const next = harness(h.disk); next.context({ role: 'owner', current: update.version });
+  await next.controller.observe(); assert.equal(next.sent.length, 0); assert.equal(next.disk.value.stage, 'complete');
+});
+test('a handoff saved with a server scope and no owner role is rejected as unreadable', async () => {
+  const h = harness(); h.disk.value = { version: update.version, key: 'consented-key', scope: 'saved-scope', stage: 'awaiting-app', message: 'saved' };
+  await assert.rejects(() => h.controller.hydrate(), /cannot be read/);
+});
 test('double taps share one authentication and download; switching away and back during auth invalidates it', async () => {
   const h = harness(); let resolve: any; h.deps.authenticate = () => new Promise((r) => { resolve = r; });
   const pending = h.controller.start(update); for (let i = 0; i < 10; i++) await Promise.resolve();

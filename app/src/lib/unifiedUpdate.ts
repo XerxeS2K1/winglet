@@ -4,7 +4,7 @@ import { updateScope } from './updateRecovery';
 import { compareVersions } from './version';
 
 type Stage = 'awaiting-app' | 'dispatching' | 'tracking' | 'unknown' | 'failed' | 'complete';
-export type Handoff = { version: string; key: string; scope?: string; serverName?: string; stage: Stage; message: string; jobId?: string };
+export type Handoff = { version: string; key: string; scope?: string; serverName?: string; role?: string; stage: Stage; message: string; jobId?: string };
 export type UpdateContext = { current: string; server?: Server; role?: string; online: boolean; foreground: boolean; locked: boolean };
 type Deps = {
   read: () => Promise<Handoff | null>; write: (value: Handoff | null) => Promise<void>;
@@ -39,7 +39,7 @@ export class UnifiedUpdate {
   }
   hydrate() {
     return this.loading ??= this.deps.read().then((saved) => {
-      if (saved && (!versionOK(saved.version) || !saved.key || !['awaiting-app', 'dispatching', 'tracking', 'unknown', 'failed', 'complete'].includes(saved.stage))) {
+      if (saved && (!versionOK(saved.version) || !saved.key || (saved.scope && saved.role !== 'owner') || !['awaiting-app', 'dispatching', 'tracking', 'unknown', 'failed', 'complete'].includes(saved.stage))) {
         throw new Error('The saved update cannot be read. No server command was sent.');
       }
       this.record = saved; this.loaded = true; this.emit();
@@ -61,7 +61,7 @@ export class UnifiedUpdate {
       if (!(await this.deps.authenticate('Update Winglet')) || !eligible()) return;
       const owner = original.role === 'owner' && !!original.server;
       const record: Handoff = { version: update.version, key: this.deps.key(), stage: 'awaiting-app',
-        ...(owner ? { scope: scope(original), serverName: original.server!.bot.title } : {}),
+        ...(owner ? { scope: scope(original), serverName: original.server!.bot.title, role: original.role } : {}),
         message: 'Confirm installation in Android, then reopen Winglet. The server has not been changed.' };
       await this.save(record);
       if (!eligible()) { await this.save(null); return; }
@@ -81,7 +81,8 @@ export class UnifiedUpdate {
       const record = this.record, context = this.deps.context();
       if (!record || record.stage === 'failed' || record.stage === 'complete') return;
       const eligible = () => epoch === this.epoch && this.record === record && scope(this.deps.context()) === record.scope
-        && this.deps.context().role === 'owner' && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
+        && this.deps.context().role === record.role && record.role === 'owner'
+        && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
       if (record.stage === 'awaiting-app') {
         if (context.current !== record.version) {
           if (versionOK(context.current) && compareVersions(context.current, record.version) > 0) {
@@ -103,7 +104,8 @@ export class UnifiedUpdate {
         const dispatch = { ...record, stage: 'dispatching' as const, message: `App ${record.version} is running. Starting the matching server update…` };
         await this.save(dispatch);
         const canSend = () => epoch === this.epoch && this.record === dispatch && scope(this.deps.context()) === record.scope
-          && this.deps.context().role === 'owner' && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
+          && this.deps.context().role === record.role && record.role === 'owner'
+          && this.deps.context().online && this.deps.context().foreground && !this.deps.context().locked;
         if (!canSend()) { await this.save({ ...dispatch, stage: 'failed', message: 'The connection or pairing changed. No server command was sent.' }); return; }
         try {
           const job = await this.deps.send(context.server!, { target: 'winglet', version: record.version, idempotency_key: record.key }, canSend);
