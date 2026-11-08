@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Routine execution history — implementation handoff
 
 For Codex orchestrator review. **Code implemented; automated checks and rendered web evidence passed. MOBILE VALIDATION PENDING.**

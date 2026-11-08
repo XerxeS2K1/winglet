@@ -1,5 +1,9 @@
 # Stability fixes — 22 October 2026
 
+> **Historical snapshot.** This pass records the 0.5.1-era state and its validation counts. It is
+> kept as history, not as current test evidence. For present status and gates see
+> [APP_PLAN.md](APP_PLAN.md).
+
 This pass addresses the reported model selection, incorrect model labels, excessive notifications,
 and inconsistent server settings pages. The bundled web app includes the repaired UI.
 

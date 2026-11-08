@@ -36,9 +36,13 @@ the plugin. Accept its dependency preparation prompt. You do not need a separate
 Hermes's package manager. If Hermes needs a fresh process after preparing them, setup tells
 you to rerun it and does not report success prematurely.
 
-For an existing installation, run `hermes plugins update winglet` before setup so Hermes can
-read the new dependency declaration. Restart the gateway after updating. Updating the plugin
-does not update an installed Android APK; install a newer APK separately when available.
+For an existing installation, the owner app's Server screen can offer a stable pinned plugin
+release. The APK and server plugin install separately; follow the progress and final result on
+the phone. A copied/pinned install must not rely on `hermes plugins update winglet` to discover
+a release. See [server-plugin update, safety and bootstrap](../docs/SERVER_PLUGIN_UPDATE.md)
+for the full path and the one-time manual repair required by the 0.10.5/0.10.6 updater.
+A terminal install that replaces an active plugin non-interactively also needs `--yes-deps`
+to authorize its declared Python dependencies; `--no-enable` does not bypass that consent.
 Re-running setup preserves a saved connection mode and older direct installs with paired phones.
 To switch those installs to automatic HTTPS, use `hermes winglet setup --connection quick` and
 re-pair existing phones. Fresh and previously unpaired installs default to automatic HTTPS.

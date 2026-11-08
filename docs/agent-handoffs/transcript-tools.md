@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Quoted questions and transcript tools
 
 Status: implemented and locally reviewed; exact-head CI and Android interaction validation pending.

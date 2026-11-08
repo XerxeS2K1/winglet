@@ -9,6 +9,7 @@ export function actionHarness() {
   const requests: any[] = [], prompts: string[] = [];
   class ApiError extends Error { status: number; data: any; constructor(message: string, status: number, data?: any) { super(message); this.status = status; this.data = data; } }
   const modules: any = {
+    './updateJobs': { updateRecovery: { begin: async () => {}, track: async () => {}, clearPending: async () => {}, markUnknown: async () => {} } },
     './appLock': { unlock: (prompt: string) => { prompts.push(prompt); return new Promise<boolean>((resolve) => { answer = resolve; }); } },
     './api': { ApiError, signedApi: async (...args: any[]) => { requests.push(args); if (failure) throw failure; return { job: { id: 'job-1' } }; }, api: async () => ({ winglet: {} }) },
     './control': { idempotencyKey: () => 'request-key' },

@@ -20,13 +20,16 @@ plugin/   Hermes Agent companion plugin (Python)
 ## Pull requests
 
 Work lands on `integration/dev-all`. A release is a pull request from there to `main`, and the version tag goes on
-`main`, which is what people install.
+`main`, which is what people install. (The pending updater/linking integration uses a topic branch off
+current `main`; see `docs/APP_PLAN.md`.)
 
 1. Fork the repo and create a branch from `integration/dev-all`, and open your pull request against that branch.
 2. Keep each PR focused on one thing.
 3. Describe what changed and how you tested it. Screenshots or a short clip help a lot for UI changes.
 4. Update the docs in the same pull request if behaviour or screens changed (README, `docs/FEATURES.md`, `docs/BOTS.md`,
-   `docs/DESIGN.md`). The pull request template has a checklist.
+   `docs/DESIGN.md`, plus `docs/APP_PLAN.md`, `docs/SERVER_PLUGIN_UPDATE.md` and `docs/DEVICE_LINKING.md` where
+   relevant). The pull request template has a checklist. Local integration and rebuild evidence is not
+   approval to publish, install or restart.
 5. Make sure it builds and any existing checks pass.
 
 ## Ground rules

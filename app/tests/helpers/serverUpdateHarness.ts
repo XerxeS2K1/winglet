@@ -35,8 +35,10 @@ export function network() {
   let release: any, failure: any, preflight = updates; const requests: any[] = [], prompts: string[] = [], checks: string[] = [];
   class ApiError extends Error { status: number; data: any; constructor(message: string, status: number, data?: any) { super(message); this.status = status; this.data = data; } }
   const api = { ApiError, api: async (_s: any, path: string) => { checks.push(path); return path.startsWith('/api/system/updates') ? preflight : { jobs: [] }; },
-    signedApi: async (...args: any[]) => { requests.push(args); if (failure) throw failure; return { job: { id: 'job', kind: 'winglet_update', state: 'running', detail: {} } }; } };
-  const core = load('lib/serverUpdates.ts', { './api': api, './appLock': { unlock: (prompt: string) => { prompts.push(prompt); return new Promise((r) => { release = r; }); } }, './control': { idempotencyKey: () => 'key' },
-    zustand: { create: (init: any) => { let state: any; const store: any = (select: any) => select(state); state = init((p: any) => { state = { ...state, ...(typeof p === 'function' ? p(state) : p) }; }); store.getState = () => state; return store; } } });
-  return { core, api, requests, prompts, checks, setUpdates: (value: any) => { preflight = value; }, resolve: (ok: boolean) => release(ok), fail: (status: number, message: string, data?: any) => { failure = new ApiError(message, status, data); } };
+    signedApi: async (...args: any[]) => { requests.push(args); if (failure) throw failure; return { job: { id: 'job', kind: 'winglet_update', device_id: 'd', created_at: 1, updated_at: 1, state: 'running', detail: {} } }; } };
+  const disk = new Map();
+  const zustand = { create: (init: any) => { let state: any; const store: any = (select: any) => select(state); const set = (p: any) => { state = { ...state, ...(typeof p === 'function' ? p(state) : p) }; }; state = init(set); store.getState = () => state; store.setState = set; return store; } };
+  const jobs = load('lib/updateJobs.ts', { zustand, './api': api, './cache': { cacheGet: async (key: string, fallback: any) => disk.get(key) ?? fallback, cacheSetStrict: async (key: string, value: any) => { disk.set(key, value); } }, './updateRecovery': load('lib/updateRecovery.ts', {}) });
+  const core = load('lib/serverUpdates.ts', { './updateJobs': jobs, './api': api, './appLock': { unlock: (prompt: string) => { prompts.push(prompt); return new Promise((r) => { release = r; }); } }, './control': { idempotencyKey: () => 'key' }, zustand });
+  return { core, jobs, disk, api, requests, prompts, checks, setUpdates: (value: any) => { preflight = value; }, resolve: (ok: boolean) => release(ok), fail: (status: number, message: string, data?: any) => { failure = new ApiError(message, status, data); } };
 }

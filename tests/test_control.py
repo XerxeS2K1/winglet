@@ -41,8 +41,8 @@ class FakeHermes:
         self.install_result = (0, ["Installed winglet"])
         self.installed_ok = True
         self.settled = None
-        self.release = {"version": "0.10.7", "tag": "v0.10.7", "sha": "a" * 40, "notes": "What is new",
-                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.7", "requires_hermes": ">=0.22.7"}
+        self.release = {"version": "0.10.8", "tag": "v0.10.8", "sha": "a" * 40, "notes": "What is new",
+                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.8", "requires_hermes": ">=0.22.7"}
 
     def system_stats(self):
         return {"system": "Linux", "cpu_count": 4, "cpu_percent": 12.5,
@@ -107,6 +107,10 @@ class FakeHermes:
 
     def arm_deadline(self, prepared):
         self.calls.append(("arm",))
+        return True
+
+    def restart_update(self, prepared):
+        return self.spawn_restart()
 
     def hold_lease(self, prepared, note=None):
         """While an installed update waits for a quiet moment: keep the rollback from firing. False if it already has."""
@@ -253,7 +257,7 @@ async def test_restart_is_a_job_a_retry_does_not_repeat(client, hub):
     assert hub.store.get_job(job["id"])["detail"]["pid"] == 4242
     # Something already running blocks a different request.
     hub.hermes_version = lambda: "0.23.0"
-    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "version": "0.10.7", "idempotency_key": "k2"})
+    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "version": "0.10.8", "idempotency_key": "k2"})
     assert busy.status == 409 and "already in progress" in (await busy.json())["error"]
     assert not any(call[0] in ("begin", "install") for call in hub.hermes.calls)
 

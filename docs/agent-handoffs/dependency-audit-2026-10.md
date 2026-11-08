@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Dependency audit — October 2026
 
 Scope: A4a only, based on the 2026-10-28 production npm audit and a new audit on 2026-10-29. This changes dependency versions only: no routes, policies, storage contracts or app screens change. The web bundle in `plugin/web/` was not rebuilt here.

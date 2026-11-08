@@ -108,7 +108,7 @@ def spawned(monkeypatch):
 async def test_the_install_is_exactly_the_command_used_by_hand_at_the_release_commit(spawned):
     code, lines = await api.install_release(SHA)
     assert code == 0 and lines[-1] == "Done"
-    assert spawned[0]["argv"][3:] == ["plugins", "install", "XerxeS2K1/winglet/plugin", "--ref", SHA, "--force", "--no-enable"]
+    assert spawned[0]["argv"][3:] == ["plugins", "install", "XerxeS2K1/winglet/plugin", "--ref", SHA, "--force", "--no-enable", "--yes-deps"]
     assert spawned[0]["stdin"] == asyncio.subprocess.DEVNULL     # it can never wait for an answer
 
 
@@ -131,6 +131,10 @@ async def test_an_install_that_hangs_is_stopped_and_reported(monkeypatch, spawne
     async def fake_exec(*argv, **kw):
         return proc
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    async def stop_tree(child):
+        assert child is proc
+        child.kill()
+    monkeypatch.setattr(api, '_stop_installer_tree', stop_tree)
     code, lines = await api.install_release(SHA, timeout=0.05)
     assert code == -1 and proc.killed and "too long" in lines[0]
 

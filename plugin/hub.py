@@ -44,7 +44,7 @@ from .store import ROLES, Store, new_id
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.10.6"
+VERSION = "0.10.7"
 # Wire protocol: bumped only for breaking changes. The app compares these to its own and asks for
 # whichever side is out of date to be updated.
 PROTOCOL = 2
@@ -137,6 +137,9 @@ class Forbidden(PermissionError):
 #   signed        any verified device, with a signed request
 #   owner_signed  an owner's verified device, with a signed request: every control action
 ROUTE_POLICY = {
+    "h_device_link_create": "public", "h_device_link_claim": "public",
+    "h_device_link_preview": "owner_signed", "h_device_link_approve": "owner_signed",
+    "h_device_link_deny": "owner_signed",
     "h_wear_links": "device", "h_wear_link_create": "signed", "h_wear_link_delete": "signed", "h_wear_relay": "public",
     "h_encrypted_push_get": "device", "h_encrypted_push_put": "signed", "h_encrypted_push_delete": "signed",
     "h_phone_tools": "device", "h_phone_tools_put": "signed", "h_phone_tools_revoke": "signed",
@@ -274,6 +277,8 @@ class Hub:
         self._pushed_messages: Dict[str, None] = {}
         self._typing: Set[str] = set()
         self._pair_failures: Dict[str, List[float]] = {}
+        from .device_links import DeviceLinks
+        self.device_links = DeviceLinks(self)
         self._alive_cache: Dict[str, tuple] = {}
         self.connection = {"mode": "direct", "url": None}
         # Set by the adapter for the Connection screen: the automatic tunnel (its .status), the address
@@ -379,6 +384,7 @@ class Hub:
         r.add_get("/api/phone-tools/log", self.h_phone_tools_log)
         r.add_get("/api/info", self.h_info)
         r.add_post("/api/pair", self.h_pair)
+        self.device_links.register(app)
         r.add_get("/api/ws", self.h_ws)
         r.add_get("/api/me", self.h_me)
         r.add_get("/api/connection", self.h_connection)
@@ -763,6 +769,9 @@ class Hub:
             return BAD_SIGNATURE
         if not self.store.use_nonce(nonce, keys.CLOCK_SKEW_SECONDS):
             return "This request was already used."
+        # Remember which key actually validated this request: the key was read before the body, so a
+        # rotation during that read must not let the revoked key's request be blessed by the new one.
+        request["verified_sign_key"] = sign_key
         return None
 
     # -- who sees what -------------------------------------------------------------------
@@ -928,7 +937,7 @@ class Hub:
                 "chat_approval_bypass": self.chat_approval_bypass is not None,
                 "wear_relay": True, "wear_reply": True, "encrypted_push": True, "webpush": True, "ntfy": True, "approvals": True, "questions": True, "uploads": True, "voice": True,
                 "replies": True, "export": True, "mute": True, "status_updates": True, "roles": True,
-                "signed_actions": True, "ws_auth": True, "pickers": True, "agent": self.hermes is not None,
+                "signed_actions": True, "device_linking": True, "ws_auth": True, "pickers": True, "agent": self.hermes is not None,
                 "control": self.hermes is not None, "goals": self.chat_goal is not None, "search": True, "files": True,
                 "abilities": self.hermes is not None, "commands": self.commands_provider is not None,
                 "sessions": self.hermes is not None and self._has(self.hermes, "sessions_available"),
@@ -3226,6 +3235,16 @@ class Hub:
         self._spawn(self._run_hermes_update(job["id"], h))
         return _json({"job": job}, status=202)
 
+    async def _fresh_owner(self, request: web.Request, device: Dict[str, Any]) -> Optional[web.Response]:
+        """Re-check authority after every awaited step, binding the signature to the key that is still current."""
+        sign_key = request.get("verified_sign_key")
+        current = self.store.get_device(device["id"])
+        if (current is None or current.get("role") != "owner" or not current.get("verified")
+                or sign_key is None or sign_key != self.store.device_sign_key(current["id"])):
+            self.store.add_audit("refused", device=device, summary="POST /api/system/update: authority changed before the job", outcome="refused")
+            return _error(403, "Your device no longer has owner authority. Nothing was changed.")
+        return None
+
     async def _start_winglet_update(self, request: web.Request, device: Dict[str, Any], h: Any, body: Dict[str, Any]) -> web.Response:
         """The phone names a version and nothing else. The server accepts it only if it is exactly the newest published
         release and newer than the one running; the repository and the commit come from its own GitHub lookup."""
@@ -3236,7 +3255,10 @@ class Hub:
                 return _json({"job": existing}, status=202) if existing["kind"] == "winglet_update" else _key_in_use()
         version = body.get("version")
         if not isinstance(version, str) or h.parse_version(version) is None:
-            return _error(400, "Say which Winglet version to install, like 0.10.6.")
+            return _error(400, "Say which Winglet version to install, like 0.10.7.")
+        refusal = await self._fresh_owner(request, device)
+        if refusal is not None:
+            return refusal
         try:
             release = await asyncio.to_thread(h.latest_release, True)  # looked up afresh: never trust a ten-minute-old answer here
         except Exception as exc:
@@ -3251,6 +3273,9 @@ class Hub:
         needs = release.get("requires_hermes")
         if h.hermes_supports(needs, self.hermes_version()) is False:
             return _error(409, f"Winglet {version} needs Hermes {needs}, and this server runs {self.hermes_version()}. Update Hermes first.")
+        refusal = await self._fresh_owner(request, device)
+        if refusal is not None:
+            return refusal
         detail = {"from": VERSION, "to": version, "message": "Backing up before the update…"}
         job = await self._begin_job(request, device, "winglet_update", detail, body=body)
         if isinstance(job, web.Response):
@@ -3369,10 +3394,15 @@ class Hub:
                     last_snapshot = time.monotonic()
                     quiet = await self._is_quiet(h)  # a chat may have started while the copy was made
                 if quiet:
-                    await asyncio.to_thread(h.arm_deadline, prepared)  # the new version now has a few minutes to confirm itself
+                    if not await asyncio.to_thread(h.arm_deadline, prepared):
+                        await self._finish_gone(job_id)
+                        return
                     await self._job_event(self.store.update_job(job_id, phase="restarting", message="Installed. Restarting to load it…"))
                     await asyncio.sleep(RESTART_DELAY_SECONDS)  # let the job event reach the phone
-                    pid = await asyncio.to_thread(h.spawn_restart)
+                    pid = await asyncio.to_thread(h.restart_update, prepared)
+                    if pid is None:
+                        await self._finish_gone(job_id)
+                        return
                     tries, asked = tries + 1, True
                     await self._job_event(self.store.update_job(job_id, pid=pid, message="Restarting. Back in a moment…"))
                     if not await self._hold_through_restart(job_id, h, prepared):
@@ -3469,20 +3499,24 @@ class Hub:
             if kind == "restart":
                 await self._finish_job(job["id"], "succeeded", "Back online.")
             elif kind == "winglet_update":
-                previous = detail.get("from")
-                if outcome == "rolled_back":
+                previous, target = detail.get("from"), detail.get("to")
+                # A marker describes one update, not every job left by a previous process.
+                ours = settled and settled.get("from") == previous and settled.get("to") == target
+                if ours and outcome == "rolled_back":
                     state, message = "failed", (f"The new version did not start, so Winglet {settled.get('from')} was put back. "
                                                 f"Details were sent to your Telegram. Winglet did not restart the gateway.")
-                elif outcome == "rollback_failed":
+                elif ours and outcome == "rollback_failed":
                     state, message = "failed", ("The new version did not start, and I could not put the old one back automatically. "
                                                 "The backup is in the backups folder on the server; details were sent to your Telegram.")
-                elif not previous:
-                    state, message = "unknown", "The server restarted, but the starting Winglet version was not recorded."
+                elif not previous or not target:
+                    state, message = "unknown", "The server restarted, but the starting or requested Winglet version was not recorded."
                 elif previous == VERSION:
                     state, message = "failed", f"The server restarted, but Winglet is still at version {VERSION}."
+                elif target != VERSION:
+                    state, message = "failed", f"The server is running Winglet {VERSION}, not the requested version {target}."
                 else:
                     state, message = "succeeded", f"Updated to Winglet {VERSION}."
-                await self._finish_job(job["id"], state, message, to=VERSION)
+                await self._finish_job(job["id"], state, message, running_version=VERSION)
             elif kind == "hermes_update":
                 now = self.hermes_version() or ""
                 state, message, lines = "unknown", "The server restarted, but the update didn't report how it went.", []

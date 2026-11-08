@@ -1,11 +1,11 @@
 # Releasing Winglet
 
-Pushing a tag like `v0.1.1` or `v0.2.0-beta.1` builds the Android APKs and the plugin bundle and publishes them as a
+Replace `VERSION` below with the release version (for example `0.10.7`). Pushing a tag like `vVERSION` builds the Android APKs and the plugin bundle and publishes them as a
 GitHub Release. There is one APK per CPU, `winglet-<version>-arm64-v8a.apk` (nearly every phone) and
 `winglet-<version>-armeabi-v7a.apk` (older 32-bit phones), about 61 MB and 52 MB against 81 MB for a universal one. Both share
 the release's versionCode, and the app's update check downloads the one that fits the phone.
 
-The tag sets the app version: `v0.1.1` becomes version `0.1.1`, Android versionCode
+The tag sets the app version: `vVERSION` becomes version `VERSION`, Android versionCode
 `101` (major × 10000 + minor × 100 + patch), so every release installs as an update over the last.
 
 The release workflow checks both APKs' package name, versionName and versionCode,
@@ -34,6 +34,13 @@ yourself first. Pull requests and manual runs do not run it.
 Rebuild once, after the final merge into the release line, not on every feature branch: the bundle's file names change
 with every build, so two branches that each rebuild always conflict. A feature branch that changes `app/` leaves the
 bundle stale, and that is expected until the release is prepared.
+
+The release candidate is not ready when this file's version numbers are merely changed. Complete the audit in
+[APP_PLAN.md](APP_PLAN.md): every affected tracked Markdown file is updated; the combined server/app tests and
+typecheck are rerun and their known/uncertain failures recorded honestly; the generated web bundle and both
+`check_web_bundle.py` checks match; a Reviewer cold review of the final combined commit has no blocker. A local
+test double or sandbox rollback is not a real install, gateway restart or phone verification. Rebuilding and
+committing `plugin/web` does not publish it, and neither grants permission to install or restart the gateway.
 
 ## One-time setup: your signing key
 
@@ -69,6 +76,12 @@ and the key proves the APK came from you. CI refuses to publish a release withou
 Releases are cut from `main`. Day-to-day work lands on `integration/dev-all`; a release is a pull request from there to
 `main`, and the version tag goes on `main`. Every feature pull request already updates the docs it affects (the
 pull request template has the checklist), so at release time only the release notes and the README banner are left to write.
+
+The documented `integration/dev-all` convention is historical for this fork's current branches. For the pending
+updater and linking integration, a new branch is `fix/plugin-update-combined`, based on current `main` (`7b47f12`);
+the old `feat/device-link-*` branches are source inputs, not release branches. Do not invent that they have been
+merged to `main` or released. Version selection, integration/rebase order and release mechanics require Kraig's
+explicit approval; do not overwrite an existing release tag or reuse a published version's number.
 
 1. **Prepare on `integration/dev-all`.** Set the same version in `plugin/plugin.yaml`, `plugin/hub.py` (`VERSION`),
    `app/app.json` and `app/package.json`. Write `docs/releases/v<version>.md`; its first line must be `# Winglet v<version>`.

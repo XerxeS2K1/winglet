@@ -243,7 +243,7 @@ def _references_in(function: ast.AST):
             yield node.id, node.lineno
 
 
-RESTARTS = ("spawn_restart", "_restart_soon", "h_restart")
+RESTARTS = ("spawn_restart", "restart_update", "_restart_soon", "h_restart")
 
 
 def test_the_failure_code_in_the_hub_cannot_restart_anything():
@@ -271,15 +271,15 @@ def test_the_failure_code_in_the_hub_cannot_restart_anything():
 # -- starting up as the new (or old) version ------------------------------------------------------------------------
 
 
-async def reconcile(hub, from_version, settled):
-    job, _ = hub.store.create_job("winglet_update", detail={"boot": "old", "from": from_version, "to": NEXT})
+async def reconcile(hub, from_version, settled, target=NEXT):
+    job, _ = hub.store.create_job("winglet_update", detail={"boot": "old", "from": from_version, "to": target})
     hub.hermes.settled = settled
     await hub.reconcile_jobs()
     return hub.store.get_job(job["id"])
 
 
 async def test_the_new_version_settling_makes_the_job_succeed(hub):
-    done = await reconcile(hub, "0.0.1", {"outcome": "succeeded", "from": "0.0.1", "to": VERSION})
+    done = await reconcile(hub, "0.0.1", {"outcome": "succeeded", "from": "0.0.1", "to": VERSION}, target=VERSION)
     assert done["state"] == "succeeded" and ("settle", VERSION) in hub.hermes.calls
 
 

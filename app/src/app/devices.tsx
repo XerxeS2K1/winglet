@@ -65,9 +65,15 @@ function Devices({ server }: { server: Server }) {
 
       {owner ? (
         <>
-          <SectionHeader title="Paired" right={me?.verified ? (
-            <Button size="sm" variant="tonal" title="Add a device" icon={<UserPlus size={15} color={t.colors.textSecondary} />} onPress={() => setAdding(true)} />
-          ) : null} />
+          {me?.verified ? <>
+            <SectionHeader title="Link a device" />
+            <ListGroup>
+              <ListRow title="Add a device" icon={<UserPlus size={18} color={t.colors.textSecondary} />} onPress={() => setAdding(true)} />
+              {Platform.OS !== 'web' ? <ListRow title="Scan browser QR" icon={<QrIcon size={18} color={t.colors.textSecondary} />} onPress={() => router.push('/scan')} /> : null}
+            </ListGroup>
+            <Footnote>Add a device shows a pairing code. Scan browser QR approves a browser waiting to sign in.</Footnote>
+          </> : null}
+          <SectionHeader title="Paired" />
           {devices === null ? (error ? <LoadError message={error} onRetry={load} /> : (
             <View style={{ gap: 10 }}>{[0, 1].map((i) => <Skeleton key={i} height={64} radius={18} />)}</View>
           )) : (

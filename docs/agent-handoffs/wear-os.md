@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Wear OS companion — implementation and validation
 
 Separate native `wear/` application, Android/Wear Data Layer20.0.1, same package/signature as the paired phone. Existing SDK36/AGP8.12/Kotlin2.1.20/Gradle9.3.1 toolchain is reused. No Expo app is run on the watch and no production signing/release workflow is changed. A Dev build must use the existing Winglet Dev certificate on both peers.

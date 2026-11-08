@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Older audit recheck
 
 Scope: `AUDIT.md` F01–F15 and `PR1_REVIEW.md` R1–R4, including the original-audit disposition. Those reports and `PR1_FIXES.md` were read without modification. This recheck is against the supplied worktree based on main after PRs #70–#73. No production behavior is changed here. FIXED means the reported code path is addressed, not that a physical device or production release was exercised.

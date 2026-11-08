@@ -11,7 +11,7 @@ function harness(options: any = {}) {
   const modules: any = {
     react: new Proxy({}, { get: (_t, name) => (host.react as any)[name] }), 'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { Text: 'Text', View: 'View' },
-    '../lib/serverUpdates': net.core, '../lib/api': net.api,
+    '../lib/serverUpdates': net.core, '../lib/updateJobs': net.jobs, '../lib/api': net.api,
     '../lib/store': { useApp, useServerState: () => state.runtime.s },
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },
     '../lib/storage': { getJSON: async (key: string, fallback: any) => storage.get(key) ?? fallback, setJSON: async (key: string, value: any) => { storage.set(key, value); } },
@@ -38,7 +38,10 @@ for (const winglet of [{ update_available: false }, { update_available: null }, 
 test('startup fetches update metadata and displays versions, clamped notes and restart/backup copy', async () => {
   const h = harness(), tree = await ready(h); assert.ok(h.checks.includes('/api/system/updates'));
   assert.equal(offer(tree).props.visible, true); assert.match(text(tree), /0\.10\.5.*→.*0\.10\.6/);
-  assert.match(text(tree), /30 seconds/); assert.match(text(tree), /backup.*rolls back/i);
+  assert.match(text(tree), /authorizes.*pinned.*release.*declared Python dependencies/i);
+  assert.match(text(tree), /installs first.*restarts when chats are idle/i);
+  assert.doesNotMatch(text(tree), /30 seconds/i);
+  assert.match(text(tree), /backup.*rollback/i);
   assert.equal(nodes(tree).find((n) => n.props.children === 'Release details')?.props.numberOfLines, 6);
 });
 test('Later survives remounts in this run but reoffers on the next app run', async () => {
@@ -65,7 +68,8 @@ test('prompt action uses real awaited authentication, preserves version and open
   const h = harness(), tree = await ready(h); const pending = button(tree, 'Update server')(); await tick();
   assert.equal(h.requests.length, 0); assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); await pending;
   assert.equal(h.requests[0][3].version, '0.10.6'); assert.equal(h.requests[0][3].idempotency_key, 'key');
-  assert.equal(nodes(h.render()).find((n) => n.type === 'JobSheet')?.props.job.id, 'job');
+  assert.equal(h.jobs.updateRecovery.snapshot(server).jobs[0]?.id, 'job');
+  assert.ok(!nodes(h.render()).some((n) => n.type === 'JobSheet'));
 });
 test('prompt authentication cancellation and a role change while authenticating send nothing', async () => {
   const h = harness(); let pending = button(await ready(h), 'Update server')(); h.resolve(false); await pending; assert.equal(h.requests.length, 0);

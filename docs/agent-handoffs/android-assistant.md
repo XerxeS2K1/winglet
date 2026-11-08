@@ -1,3 +1,7 @@
+> **Historical handoff.** This records a past assignment's state and is kept as history. Its
+> validation claims, version numbers and file paths may be stale. For current status, gates and
+> next actions see [APP_PLAN.md](../APP_PLAN.md).
+
 # Android assistant
 
 Optional Android29+ assistant role using system user-consent UI and BIND_VOICE_INTERACTION-protected service/session APIs. No hotword listener, microphone service or accessibility workaround. A recognizer declaration is a non-listening compatibility stub; Winglet's existing voice stack remains separate.

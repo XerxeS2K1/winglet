@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFileSync } from 'node:fs';
-import { load, hooks, jsx, anything, nodes, button, tick, server, updates, network } from './helpers/serverUpdateHarness.ts';
+import { load, hooks, jsx, anything, nodes, text, button, tick, server, updates, network } from './helpers/serverUpdateHarness.ts';
 function harness(data: any = updates) {
   const net = network(), host = hooks(); net.setUpdates(data);
   const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role: 'owner' } } } }, toasts: any[] = [];
@@ -15,14 +15,31 @@ function harness(data: any = updates) {
     '../components/VerifyPhone': { VerifyNotice: 'VerifyNotice' }, '../lib/agent': { agoText: () => '' }, '../lib/api': net.api,
     '../lib/control': { bytes: () => '', duration: () => '', idempotencyKey: () => 'key' }, '../lib/haptics': { haptic: { error: () => {}, success: () => {} } },
     '../lib/motion': { spring: {}, useReducedMotion: () => true }, '../lib/store': { useApp, useServerState: () => state.runtime.s, isOwner: (rt: any) => rt?.me?.role === 'owner' },
-    '../lib/themeContext': { useTheme: () => anything, makeStyles: () => () => anything }, '../lib/serverUpdates': net.core,
+    '../lib/themeContext': { useTheme: () => anything, makeStyles: () => () => anything }, '../lib/serverUpdates': net.core, '../lib/updateJobs': net.jobs,
   };
   const exports = load('app/server.tsx', modules, { setInterval: () => 0, clearInterval: () => {} });
   const render = () => host.render(exports.default);
   const start = async () => { render(); await tick(); const row = nodes(render()).find((n) => n.props?.name === 'Winglet'); assert.ok(row); row.props.onUpdate();
     const confirm = nodes(render()).find((n) => n.props?.what === 'winglet'); assert.ok(confirm); return { run: confirm.props.onConfirm }; };
-  return { ...net, render, start, toasts, focus: host.focus, blur: host.blur, unmount: host.unmount };
+  return { ...net, render, start, toasts, pairing: (next: any) => { state.servers = [next]; state.selection.serverId = next.id; }, focus: host.focus, blur: host.blur, unmount: host.unmount };
 }
+test('Server screen ignores old history arriving after the paired server changes', async () => {
+  const h = harness(); let answer: any; const original = h.api.api;
+  h.api.api = ((_s: any, path: string) => path === '/api/system' ? new Promise((resolve) => { answer = resolve; }) : original(_s, path)) as any;
+  h.render(); h.focus(); assert.ok(answer);
+  h.pairing({ ...server, deviceId: 'new', url: 'https://new.invalid' }); h.render();
+  answer({ version: 'old', jobs: [{ id: 'old', kind: 'winglet_update', state: 'failed', detail: { message: 'Old pairing result' } }] }); await tick();
+  assert.ok(!nodes(h.render()).some((n) => n.props?.subtitle === 'Old pairing result'));
+});
+test('Server Winglet confirmation authorizes pinned release and declared dependencies, then idle restart', async () => {
+  const h = harness(); await h.start();
+  const confirm = nodes(h.render()).find((n) => n.props?.what === 'winglet'); assert.ok(confirm);
+  const tree = confirm.type(confirm.props);
+  assert.match(text(tree), /authorizes.*pinned.*release.*declared Python dependencies/i);
+  assert.match(text(tree), /installs first.*restarts when chats are idle/i);
+  assert.doesNotMatch(text(tree), /30 seconds|pause for a few seconds/i);
+  assert.ok(button(tree, 'Update server'));
+});
 test('Server Winglet row awaits unlock then sends the release version and key', async () => {
   const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick(); h.focus();
   assert.equal(h.requests.length, 0); assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); await pending;
@@ -31,6 +48,11 @@ test('Server Winglet row awaits unlock then sends the release version and key', 
 test('Server Winglet row sends nothing when the screen loses focus during unlock', async () => {
   const h = harness(), action = await h.start(); const pending = action.run('winglet'); await tick(); h.focus();
   assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); h.blur(); await pending;
+  assert.equal(h.requests.length, 0);
+});
+test('Server update eligibility remains invalid after leaving and returning during unlock', async () => {
+  const h = harness(), action = await h.start(); h.focus();
+  const pending = action.run('winglet'); await tick(); h.blur(); h.focus(); h.resolve(true); await pending;
   assert.equal(h.requests.length, 0);
 });
 test('Server Winglet row sends nothing after unlock cancellation', async () => {

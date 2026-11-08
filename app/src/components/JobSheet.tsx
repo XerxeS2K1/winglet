@@ -24,33 +24,43 @@ const SLOW_MS = 3 * 60 * 1000;
  * A restart, update or install, start to finish. A restart takes the server away partway through, so
  * the sheet keeps asking until a new process answers for the same job.
  */
-export function JobSheet({ server, job: initial, onClose, onDone }: {
-  server: Server; job: Job | null; onClose: () => void; onDone?: (job: Job) => void;
+export function JobSheet({ server, job: initial, onClose, onDone, managed = false, notice }: {
+  server: Server; job: Job | null; onClose: () => void; onDone?: (job: Job) => void; managed?: boolean; notice?: string;
 }) {
   const t = useTheme();
   const s = useStyles();
-  const [job, setJob] = useState<Job | null>(initial);
+  const [stored, setJob] = useState<Job | null>(initial);
   const [lost, setLost] = useState(false);
   const [slow, setSlow] = useState(false);
   const live = useApp((st) => st.runtime[server.id]?.job);
   const reduced = useReducedMotion();
   const reported = useRef<string | null>(null);
 
-  if (initial && initial.id !== job?.id) { setJob(initial); setLost(false); setSlow(false); }
+  const latest = useRef(stored);
+  const scope = `${server.id}:${server.url}:${server.deviceId}`;
+  const currentScope = useRef(scope); currentScope.current = scope;
+  const accept = (next: Job) => {
+    const old = latest.current;
+    if (old?.id === next.id && ((old.state !== 'running' && next.state === 'running') || next.updated_at < old.updated_at)) return;
+    latest.current = next; setJob(next);
+  };
+  if (initial && (initial.id !== latest.current?.id || initial.updated_at > (latest.current?.updated_at ?? -1))) accept(initial);
+  const job = managed ? initial : latest.current;
 
   // Live events while connected; polling across the restart, when there's no socket.
-  useEffect(() => { if (live && job && live.id === job.id && live.updated_at >= job.updated_at) setJob(live); }, [live]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!managed && live && job && live.id === job.id) accept(live); }, [live]); // eslint-disable-line react-hooks/exhaustive-deps
   const running = job?.state === 'running';
   useEffect(() => {
-    if (!job || !running) return;
+    if (!job || !running || managed) return;
+    let active = true;
     const id = setInterval(() => {
       api<{ job: Job }>(server, `/api/jobs/${job.id}`)
-        .then((r) => { setLost(false); setJob(r.job); })
-        .catch(() => setLost(true));
+        .then((r) => { if (active && currentScope.current === scope && r.job.id === job.id) { setLost(false); accept(r.job); } })
+        .catch(() => { if (active && currentScope.current === scope) setLost(true); });
     }, 2000);
     const slowTimer = setTimeout(() => setSlow(true), Math.max(0, SLOW_MS - (Date.now() - job.created_at * 1000)));
-    return () => { clearInterval(id); clearTimeout(slowTimer); };
-  }, [job?.id, running]); // eslint-disable-line react-hooks/exhaustive-deps
+    return () => { active = false; clearInterval(id); clearTimeout(slowTimer); };
+  }, [job?.id, running, scope, managed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!job || running || reported.current === job.id) return;
@@ -73,7 +83,7 @@ export function JobSheet({ server, job: initial, onClose, onDone }: {
     : job.state === 'unknown' ? t.colors.warningSoft : t.colors.accentSoft;
 
   return (
-    <Sheet visible={!!initial} onClose={onClose} title={TITLES[job.kind]}>
+    <Sheet visible={!!initial} dismissible={false} onClose={() => {}} title={TITLES[job.kind]}>
       <View style={{ gap: 16, paddingHorizontal: 4 }} accessibilityLiveRegion="polite">
         <View style={s.hero}>
           <View style={[s.badge, { backgroundColor: soft }]}>
@@ -115,8 +125,8 @@ export function JobSheet({ server, job: initial, onClose, onDone }: {
             <Text selectable style={s.logText}>{d.lines.join('\n')}</Text>
           </ScrollView>
         ) : null}
-        <Button title={running ? 'Hide' : 'Done'} variant={running ? 'secondary' : 'primary'} onPress={onClose} />
-        {running ? <Footnote>Keeps running while hidden.</Footnote> : null}
+        {notice ? <Text style={[s.sub, { color: t.colors.danger }]} accessibilityRole="alert">{notice}</Text> : null}
+        {!running ? <Button title="Done" onPress={onClose} /> : <Footnote>Keep this open until the server reports the result.</Footnote>}
       </View>
     </Sheet>
   );
