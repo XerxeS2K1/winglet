@@ -6,7 +6,9 @@ the gateway by itself. Neither half of a fix can be inferred from the other vers
 
 ## End-to-end path
 
-1. The APK updater (`appUpdate.ts` / `AppUpdate.tsx`) installs the phone package separately.
+1. The APK and plugin remain distinct installations. The unified app-update correction coordinates
+   them from one app Update action; its exact stage ordering and local-only status are recorded
+   below and in APP_PLAN.md. The released 0.10.7 APK updater handled them separately.
 2. `ServerUpdatePrompt` and the Server screen check `/api/system/updates`. For Winglet,
    `Hub._winglet_release_status` asks the hard-coded `XerxeS2K1/winglet` releases API, not
    Hermes's Git-provenance checker. Subdirectory installs have no `.git` and that checker
@@ -72,9 +74,9 @@ the gateway by itself. Neither half of a fix can be inferred from the other vers
   A malicious dependency can deliberately escape an inherited group: this is not a sandbox.
   Real package/network execution and native phone lifecycle are separate acceptance tests.
 
-## Currently live 0.10.5 bootstrap
+## Historical failure and bootstrap for 0.10.5/0.10.6
 
-Observed state on 2026-11-08: APK 0.10.6 (owner-reported), live plugin manifest 0.10.5,
+Before the bootstrap on 2026-11-08: APK 0.10.6 (owner-reported), live plugin manifest 0.10.5,
 Hermes 0.23.0. Job `44f2e0e22339415b` failed because the live installer omitted
 `--yes-deps`. Backup `plugin-0.10.5-pre-0.10.6-20261108-085709` is named in its
 record. The refusal explicitly says the installed plugin and active environment were unchanged;
@@ -93,8 +95,11 @@ owner controls restart approval. Only after repaired server code is loaded can a
 phone-triggered update exercise the repaired self-update path. Do not retry the broken
 0.10.5 updater and expect a new APK to supply a CLI flag.
 
-No bootstrap, plugin installation, gateway restart, APK deployment, push, tag or publication
-is performed by this local repair.
+For this server the bootstrap was completed from released v0.10.7 at commit `f33a2c1`; the owner
+restarted the gateway at 11:45 on 2026-11-08, then `/api/info` reported 0.10.7 and the phone
+reconnected. That dated verification does not prove which APK is installed. Other machines still
+running the broken 0.10.5/0.10.6 updater need the one-time bootstrap above. The new unified-flow
+correction is local only and does not perform another install, restart or publication.
 
 Related: [DESIGN.md](DESIGN.md) (job and sheet behaviour), [APP_PLAN.md](APP_PLAN.md) (current
 status and gates), [DEVICE_LINKING.md](DEVICE_LINKING.md) and
@@ -102,29 +107,19 @@ status and gates), [DEVICE_LINKING.md](DEVICE_LINKING.md) and
 Reviewer review, web freshness and phone approval are separate gates; none is a substitute for
 another, and none has been silently counted as a full pass.
 
-## Hands-off auto-update (owner opt-in)
+## Unified app update — local correction
 
-When the owner enables **Auto-update server plugin** in Settings → App, the app
-installs each new release without a tap. The `ServerUpdatePrompt` component
-detects the preference and calls `updateServerWinglet(server, version,
-eligible, { skipUnlock: true })`, bypassing the per-tap biometric prompt. The
-consent is given once when enabling the setting (a biometric unlock is
-required to turn it on). The server still installs, waits for idle chats, then
-restarts. The setting can be turned off at any time; the manual prompt returns.
+The separate owner opt-in auto-update toggle was rejected and is not the intended product.
+One app Update action must coordinate the APK and the matching pinned server-plugin release;
+there is no setting that installs server releases whenever they appear. Android still owns the
+required APK installation confirmation. The app must not report installation merely because it
+opened that confirmation, and cancellation/failure must remain distinguishable from success.
 
-The auto-update logic lives in `ServerUpdatePrompt.tsx`:
-- An effect watches `autoUpdate && available` and triggers the update.
-- The `visible` sheet computation excludes auto-update (`!autoUpdate`).
-- The `available` predicate already covers owner role, idle bots, Hermes
-  compatibility and no pending job.
-- Turning the setting on while the prompt is shown immediately triggers the
-  update without a tap.
-
-Tests cover:
-- Auto-update installs with no tap and no biometric prompt.
-- Auto-update respects `requires_hermes_ok === false`.
-- Enabling auto-update after the prompt appears still updates without a tap.
-- Auto-update never runs for a member.
+The server update remains a signed owner action bound to one pairing and exact release version.
+A member cannot update the server, an unrelated/newer release cannot be substituted, and a newer
+installed plugin cannot be downgraded. The explicit Server repair/status row remains available.
+See [APP_PLAN.md](APP_PLAN.md) for the exact implementation commit, flow ordering, recovery
+behaviour and verification state. This correction is not yet published or phone-verified.
 
 ## Offline verification scope
 

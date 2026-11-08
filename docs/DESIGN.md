@@ -100,7 +100,7 @@ explicitly untested visual/device states. Source and harness checks are not an a
 
 ## Server plugin updates
 
-- Plugin updates and APK installation are separate operations. Label the persistent Server row "Server plugin update".
+- The APK and server plugin are distinct installations coordinated by one app Update action. Label the persistent Server repair/status row "Server plugin update"; retain separate version and failure reporting.
 - Both plugin update entry points share concise consent: the tap authorizes the pinned release and its declared Python dependencies. Installation happens first; restart waits for chats to be idle. Do not promise an immediate restart or a fixed 30-second completion.
 - Running JobSheets have no Hide action. Backdrop taps, back/Escape and drag gestures cannot dismiss progress or results.
 - Success, failure and unknown outcomes stay until the user presses Done. Do not auto-hide a result on a timer or on reconnection.
@@ -108,4 +108,4 @@ explicitly untested visual/device states. Source and harness checks are not an a
 - Rehydrate on remount and consult the existing `/api/system` job history and `/api/jobs/:id` lookup across a restart. A late running observation must not replace a terminal result. Never send a fresh installation automatically on relaunch.
 - A history result does not acknowledge a separate unresolved request. Unknown requests need their own explicit, request-bound acknowledgement; preserve other saved results independently. Poll only while work is running or a request is unresolved, observing history on mount/reconnect rather than running an idle/terminal timer. Unchanged observations must not rewrite durable data.
 - An ambiguous request keeps an explicit unknown-result notice, not invented success or failure. The existing server history is bounded; if both POST replies are lost and the job is no longer in history, explain that its result is unconfirmed and require explicit acknowledgement.
-- **Auto-update (owner opt-in).** When the owner enables **Auto-update server plugin** in Settings → App, the app installs each new release without a tap. The prompt never appears; the biometric consent is given once when enabling the setting. The server still installs, waits for idle chats, then restarts. The setting can be turned off at any time; the manual prompt returns.
+- **Unified app update.** One app Update action coordinates the APK and matching pinned server-plugin release. Do not add a separate auto-update toggle, a startup installer or a second automatic server prompt. Preserve owner authorization and show truthful per-stage status. Android's package-install confirmation remains OS-owned; opening it is not installation success. See APP_PLAN.md for the local implementation and verification state.

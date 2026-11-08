@@ -37,8 +37,10 @@ Hermes's package manager. If Hermes needs a fresh process after preparing them, 
 you to rerun it and does not report success prematurely.
 
 For an existing installation, the owner app's Server screen can offer a stable pinned plugin
-release. The APK and server plugin install separately; follow the progress and final result on
-the phone. A copied/pinned install must not rely on `hermes plugins update winglet` to discover
+release. The APK and server plugin are distinct installations; the local unified-update change
+coordinates them from one app Update action, without a separate auto-update toggle. Follow the
+progress and final result on the phone; see [the app plan](../docs/APP_PLAN.md) for publication and
+phone-test status. A copied/pinned install must not rely on `hermes plugins update winglet` to discover
 a release. See [server-plugin update, safety and bootstrap](../docs/SERVER_PLUGIN_UPDATE.md)
 for the full path and the one-time manual repair required by the 0.10.5/0.10.6 updater.
 A terminal install that replaces an active plugin non-interactively also needs `--yes-deps`
