@@ -11,7 +11,7 @@ function harness(options: any = {}) {
   const modules: any = {
     react: new Proxy({}, { get: (_t, name) => (host.react as any)[name] }), 'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { Text: 'Text', View: 'View' },
-    '../lib/serverUpdates': net.core, '../lib/api': net.api,
+    '../lib/serverUpdates': net.core, '../lib/updateJobs': net.jobs, '../lib/api': net.api,
     '../lib/store': { useApp, useServerState: () => state.runtime.s },
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },
     '../lib/storage': { getJSON: async (key: string, fallback: any) => storage.get(key) ?? fallback, setJSON: async (key: string, value: any) => { storage.set(key, value); } },
@@ -65,7 +65,8 @@ test('prompt action uses real awaited authentication, preserves version and open
   const h = harness(), tree = await ready(h); const pending = button(tree, 'Update server')(); await tick();
   assert.equal(h.requests.length, 0); assert.deepEqual(h.prompts, ['Update the server']); h.resolve(true); await pending;
   assert.equal(h.requests[0][3].version, '0.10.6'); assert.equal(h.requests[0][3].idempotency_key, 'key');
-  assert.equal(nodes(h.render()).find((n) => n.type === 'JobSheet')?.props.job.id, 'job');
+  assert.equal(h.jobs.updateRecovery.snapshot(server).jobs[0]?.id, 'job');
+  assert.ok(!nodes(h.render()).some((n) => n.type === 'JobSheet'));
 });
 test('prompt authentication cancellation and a role change while authenticating send nothing', async () => {
   const h = harness(); let pending = button(await ready(h), 'Update server')(); h.resolve(false); await pending; assert.equal(h.requests.length, 0);

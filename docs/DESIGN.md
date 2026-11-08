@@ -97,3 +97,12 @@ explicitly untested visual/device states. Source and harness checks are not an a
 - **Queue sheet**: owner-only and read-only, titled "<Bot> queue". It never admits, cancels or reorders work. A footnote
   says what it shows and what it does not, and empty or unavailable states say so in one line.
 - **Hand-off notices** are status, not conversation: a short muted line, never a reply that wakes a bot.
+
+## Server plugin updates
+
+- Plugin updates and APK installation are separate operations. Label the persistent Server row "Server plugin update".
+- Running JobSheets have no Hide action. Backdrop taps, back/Escape and drag gestures cannot dismiss progress or results.
+- Success, failure and unknown outcomes stay until the user presses Done. Do not auto-hide a result on a timer or on reconnection.
+- One global plugin JobSheet serves both the startup offer and the Server screen. Keep its progress and acknowledgement in durable storage, scoped to server ID, address and paired device. The Server row reopens the same tracked result.
+- Rehydrate on remount and consult the existing `/api/system` job history and `/api/jobs/:id` lookup across a restart. A late running observation must not replace a terminal result. Never send a fresh installation automatically on relaunch.
+- An ambiguous request keeps an explicit unknown-result notice, not invented success or failure. The existing server history is bounded; if both POST replies are lost and the job is no longer in history, explain that its result is unconfirmed and require explicit acknowledgement.

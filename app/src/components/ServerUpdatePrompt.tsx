@@ -7,8 +7,8 @@ import { getJSON, setJSON } from '../lib/storage';
 import { useApp, useServerState } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
 import { router, usePathname } from 'expo-router';
-import type { Job, Server } from '../lib/types';
-import { JobSheet } from './JobSheet';
+import type { Server } from '../lib/types';
+import { useUpdateJobs, updateScope } from '../lib/updateJobs';
 import { Sheet } from './Sheet';
 import { Button } from './ui';
 
@@ -33,7 +33,7 @@ export function ServerPrompt({ server }: { server: Server }) {
   const [skipped, setSkipped] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState('');
   const [starting, setStarting] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
+  const tracking = useUpdateJobs((state) => state.byScope[updateScope(server)]);
   const [, rerender] = useState(0);
   const active = useRef(true);
   const sending = useRef(false);
@@ -68,16 +68,16 @@ export function ServerPrompt({ server }: { server: Server }) {
     sending.current = true; setStarting(true); setError('');
     try {
       const next = await updateServerWinglet(server, version, eligible);
-      if (next && eligible()) { setJob(next); later(); }
+      if (next && eligible()) later();
     } catch (e) {
       if (active.current) {
         setError((e as Error).message);
         useApp.getState().toast({ serverId: server.id, title: "Couldn't update the server", body: (e as Error).message });
-        if (e instanceof ApiError && e.status === 409 && e.data?.job) { setJob(e.data.job as Job); later(); }
+        if (e instanceof ApiError && e.status === 409 && e.data?.job) { later(); }
       }
     } finally { sending.current = false; if (active.current) setStarting(false); }
   };
-  const visible = rt?.me?.role === 'owner' && !locked && w?.update_available === true && !!release
+  const visible = !tracking?.pending && !tracking?.jobs.length && rt?.me?.role === 'owner' && !locked && w?.update_available === true && !!release
     && skipped !== undefined && version !== skipped && !putOff.has(runKey);
   return <>
     <Sheet visible={visible} onClose={later} title="Update the server?" scrollable>
@@ -94,7 +94,6 @@ export function ServerPrompt({ server }: { server: Server }) {
         <Button title="Skip this version" variant="ghost" onPress={skip} />
       </View>
     </Sheet>
-    <JobSheet server={server} job={job} onClose={() => setJob(null)} onDone={() => { void checkServerUpdates(server).catch(() => undefined); }} />
   </>;
 }
 

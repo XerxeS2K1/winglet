@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { JobSheet } from '../components/JobSheet';
+import { updateRecovery, updateScope, useUpdateJobs } from '../lib/updateJobs';
 import {
   CalendarClock, Check, CircleAlert, CircleArrowUp, CirclePause, CircleHelp, RefreshCw, RotateCw, ScrollText, ShieldCheck,
 } from '../components/icons';
@@ -37,8 +38,13 @@ function ServerScreen() {
   const reduced = useReducedMotion();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const rt = useServerState(server?.id);
-  const [info, setInfo] = useState<SystemInfo | null>(null);
-  const [updates, setUpdates] = useState<UpdatesInfo | null>(null);
+  const tracking = useUpdateJobs((state) => server ? state.byScope[updateScope(server)] : undefined);
+  const scope = server ? updateScope(server) : '';
+  const currentScope = useRef(scope); currentScope.current = scope;
+  const [infoSnapshot, setInfo] = useState<{ scope: string; value: SystemInfo } | null>(null);
+  const [updateSnapshot, setUpdates] = useState<{ scope: string; value: UpdatesInfo } | null>(null);
+  const info = infoSnapshot?.scope === scope ? infoSnapshot.value : null;
+  const updates = updateSnapshot?.scope === scope ? updateSnapshot.value : null;
   const [checking, setChecking] = useState(false);
   const [error, setError] = useState('');
   const [confirm, setConfirm] = useState<Confirm | null>(null);
@@ -46,18 +52,24 @@ function ServerScreen() {
   const [pausing, setPausing] = useState(false);
   const active = useRef(true);
   const focused = useRef(true);
+  const focusGeneration = useRef(0);
   const updatingWinglet = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const load = useCallback(() => {
     if (!server) return;
-    api<SystemInfo>(server, '/api/system').then((d) => { setInfo(d); setError(''); }).catch((e) => setError((e as Error).message));
+    const requestedScope = updateScope(server);
+    api<SystemInfo>(server, '/api/system').then((d) => {
+      if (active.current && currentScope.current === requestedScope) { setInfo({ scope: requestedScope, value: d }); setError(''); }
+    }).catch((e) => { if (active.current && currentScope.current === requestedScope) setError((e as Error).message); });
   }, [server]);
   const check = useCallback((force = false) => {
     if (!server) return;
     setChecking(true);
-    checkServerUpdates(server, force).then(setUpdates)
-      .catch(() => undefined).finally(() => setChecking(false));
+    const requestedScope = updateScope(server);
+    checkServerUpdates(server, force).then((value) => {
+      if (active.current && currentScope.current === requestedScope) setUpdates({ scope: requestedScope, value });
+    }).catch(() => undefined).finally(() => { if (active.current && currentScope.current === requestedScope) setChecking(false); });
   }, [server]);
 
   // Health is live: refresh while the screen is open, and again when the server comes back.
@@ -65,7 +77,7 @@ function ServerScreen() {
     focused.current = true;
     load();
     const id = setInterval(load, 15000);
-    return () => { focused.current = false; clearInterval(id); };
+    return () => { focused.current = false; focusGeneration.current++; clearInterval(id); };
   }, [load]));
   useEffect(() => { check(); }, [check]);
   const online = rt?.status === 'online';
@@ -94,20 +106,21 @@ function ServerScreen() {
     if (what === 'winglet') {
       if (updatingWinglet.current || updates?.winglet.requires_hermes_ok === false) return;
       updatingWinglet.current = true;
+      const generation = focusGeneration.current;
       const eligible = () => {
         const state = useApp.getState();
         const current = state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0];
-        return active.current && focused.current && !!current && current.id === server.id && current.deviceId === server.deviceId
+        return active.current && focused.current && focusGeneration.current === generation && !!current && current.id === server.id && current.deviceId === server.deviceId
           && current.url === server.url && isOwner(state.runtime[server.id]);
       };
       try {
         const next = await updateServerWinglet(server, updates?.winglet.latest_release?.version ?? updates?.winglet.latest, eligible);
-        if (next && eligible()) setJob(next);
+        if (next && eligible()) load();
       } catch (e) {
         if (active.current) {
           haptic.error();
           useApp.getState().toast({ serverId: server.id, title: "Couldn't start", body: (e as Error).message });
-          if (e instanceof ApiError && e.status === 409 && e.data?.job) setJob(e.data.job as Job);
+          // Shared tracking retains any update job returned with a conflict.
         }
       } finally { updatingWinglet.current = false; }
       return;
@@ -167,6 +180,14 @@ function ServerScreen() {
           onPress={() => setConfirm('restart')} />
       </ListGroup>
 
+      {isOwner(rt) && (tracking?.jobs.length || tracking?.pending) ? <>
+        <SectionHeader title="Server plugin update" />
+        <ListGroup>
+          {tracking.jobs.map((current) => <ListRow key={current.id} title="Server plugin update" value={current.state}
+            subtitle={current.detail.message || 'Checking progress…'} onPress={() => { void updateRecovery.reopen(server, current).catch((e) => setError((e as Error).message)); }} />)}
+          {tracking.pending && !tracking.jobs.length ? <ListRow title="Server plugin update" subtitle="Result not confirmed. Checking job history." /> : null}
+        </ListGroup>
+      </> : null}
       <SectionHeader title="Updates" right={(
         <Button size="sm" variant="ghost" title={checking ? 'Checking…' : 'Check now'} disabled={checking}
           icon={<RefreshCw size={14} color={t.colors.textSecondary} />} onPress={() => check(true)} />
@@ -174,7 +195,7 @@ function ServerScreen() {
       <ListGroup>
         <UpdateRow name="Hermes" version={info?.hermes_version || updates?.hermes.current_version} {...hermesUpdate(updates)}
           onUpdate={() => setConfirm('hermes')} />
-        <UpdateRow name="Winglet" version={info?.version ?? updates?.winglet.version} {...wingletUpdate(updates)}
+        <UpdateRow name="Winglet" version={info?.version ?? updates?.winglet.version} {...wingletUpdate(updates)} available={isOwner(rt) && wingletUpdate(updates).available}
           onUpdate={() => setConfirm('winglet')} />
       </ListGroup>
 
@@ -198,14 +219,14 @@ function ServerScreen() {
                   : j.state === 'failed' ? <CircleAlert size={18} color={t.colors.danger} />
                   : j.state === 'running' ? <RotateCw size={18} color={t.colors.textSecondary} /> : <CircleHelp size={18} color={t.colors.warning} />}
                 iconColor={j.state === 'succeeded' ? t.colors.success : j.state === 'failed' ? t.colors.danger : undefined}
-                onPress={() => setJob(j)} />
+                onPress={() => { if (j.kind === 'winglet_update') { if (!isOwner(rt)) return; void updateRecovery.reopen(server, j).catch((e) => setError((e as Error).message)); } else setJob(j); }} />
             ))}
           </ListGroup>
         </>
       ) : null}
 
       <ConfirmSheet what={confirm} bot={server.bot.title} onCancel={() => setConfirm(null)} onConfirm={start} />
-      <JobSheet server={server} job={job} onClose={() => setJob(null)} onDone={() => { load(); check(); }} />
+      <JobSheet key={updateScope(server)} server={server} job={job?.kind !== 'winglet_update' ? job : null} onClose={() => setJob(null)} onDone={() => { load(); check(); }} />
     </Screen>
   );
 }

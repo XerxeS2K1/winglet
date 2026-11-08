@@ -17,9 +17,9 @@ const LEAVE = { ...spring.snappy, overshootClamping: true };
  * A bottom sheet: a solid pane that slides up over a fading scrim, drags down to dismiss, closes on
  * the backdrop or the back button. On wide screens it becomes a centred dialog.
  */
-export function Sheet({ visible, onClose, onDismiss, title, children, scrollable = false }: {
+export function Sheet({ visible, onClose, onDismiss, title, children, scrollable = false, dismissible = true }: {
   visible: boolean; onClose: () => void; onDismiss?: () => void; title?: string; children: ReactNode;
-  scrollable?: boolean;
+  scrollable?: boolean; dismissible?: boolean;
 }) {
   const t = useTheme();
   const s = useStyles();
@@ -48,12 +48,14 @@ export function Sheet({ visible, onClose, onDismiss, title, children, scrollable
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
+  const close = dismissible ? onClose : () => {};
   const pan = Gesture.Pan()
+    .enabled(dismissible)
     .activeOffsetY(8)
     .failOffsetX([-20, 20])
-    .onUpdate((e) => { y.value = Math.max(0, e.translationY); })
+    .onUpdate((e) => { if (dismissible) y.value = Math.max(0, e.translationY); })
     .onEnd((e) => {
-      if (e.translationY > 120 || e.velocityY > 900) runOnJS(onClose)();
+      if (dismissible && (e.translationY > 120 || e.velocityY > 900)) runOnJS(close)();
       else y.value = withSpring(0, spring.soft);
     })
     .onFinalize((_e, success) => { if (!success) y.value = withSpring(0, spring.soft); });
@@ -68,10 +70,10 @@ export function Sheet({ visible, onClose, onDismiss, title, children, scrollable
   // A native modal sits above the lock screen: unmount it while locked. An open sheet comes back on unlocking.
   if (!mounted || locked) return null;
   return (
-    <Modal visible transparent animationType="none" onRequestClose={onClose} statusBarTranslucent navigationBarTranslucent>
+    <Modal visible transparent animationType="none" onRequestClose={close} statusBarTranslucent navigationBarTranslucent>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: t.colors.overlay }, backdrop]}>
-          <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button" accessibilityLabel="Close sheet" onPress={onClose} />
+          <Pressable style={StyleSheet.absoluteFill} accessibilityRole="button" accessibilityLabel="Close sheet" onPress={close} />
         </Animated.View>
         <View style={[s.host, wide && s.hostWide, keyboard ? { paddingBottom: keyboard } : null]} pointerEvents="box-none">
           <Animated.View style={[s.panel, { maxHeight: Math.max(0, height - Math.max(insets.top, 12) - 12 - keyboard) }, wide && s.panelWide, panel]} accessibilityViewIsModal>
@@ -81,10 +83,10 @@ export function Sheet({ visible, onClose, onDismiss, title, children, scrollable
                   {wide ? null : <View style={s.grabber} />}
                   <View style={s.heading}>
                     <Text style={s.title} accessibilityRole="header" numberOfLines={2}>{title}</Text>
-                    <Tap accessibilityRole="button" accessibilityLabel="Close sheet" hitSlop={6} scaleTo={0.9} feedback="selection" onPress={onClose}
+                    {dismissible ? <Tap accessibilityRole="button" accessibilityLabel="Close sheet" hitSlop={6} scaleTo={0.9} feedback="selection" onPress={onClose}
                       style={({ pressed, hovered }) => [s.close, (pressed || hovered) && { backgroundColor: t.colors.pressed }]}>
                       <X size={16} color={t.colors.textSecondary} strokeWidth={2.4} />
-                    </Tap>
+                    </Tap> : null}
                   </View>
                 </View>
               </GestureDetector>
