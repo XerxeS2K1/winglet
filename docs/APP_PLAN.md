@@ -104,8 +104,11 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
   was intermittent and passed isolated reruns on both trees. This was not a clean full-suite pass.
 - The final v0.10.7 updater delta review was completed; it confirmed the authority fix and the
   restart/child-cleanup safety fixes. That verdict does not cover this new unified app flow.
-- Next: obtain a cold review of the corrected third-review diff, finish integration, independently
-  rerun app tests/typecheck, audit affected Markdown and rebuild/freshness-check `plugin/web`.
+- Fifth cold review (deleg_39e99c95) of diff 6496095..a77cef8: FIX-FIRST (small); 4 new MED findings
+  and 1 LOW; all fixes committed locally and merged into unified worktree. App suite 730/730
+  passing, TypeScript clean.
+- Next: merge unified worktree into main, publish v0.10.7 release, independently rerun app tests/typecheck,
+  audit affected Markdown and rebuild/freshness-check `plugin/web`.
 - Publication and live deployment require their own approvals. A new release, not a rewritten
   0.10.7 tag, is needed to deliver this change. Record APK installation and server running version
   separately, then exercise cancellation, relaunch/reconnect, lost replies and retained failures
