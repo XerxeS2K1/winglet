@@ -3,6 +3,12 @@ import { test } from 'node:test';
 import { load, network, server, hooks, jsx, anything, nodes, text, button, tick } from './helpers/serverUpdateHarness.ts';
 
 const update = { version: '0.10.8', apk: 'https://example.invalid/update.apk', page: 'https://example.invalid/release' };
+class MockTimers {
+  #interval: ReturnType<typeof setInterval>;
+  constructor() { this.#interval = setInterval(() => {}, 2000); }
+  async tick(ms: number) { await new Promise((r) => setTimeout(r, ms)); }
+  restore() { clearInterval(this.#interval); }
+}
 function harness(disk = new Map(), current = '0.10.7') {
   const net = network(), events: any[] = [], contextListeners = new Set<() => void>();
   let state: any = { ready: true, foreground: true, servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role: 'owner' } } } };
@@ -58,14 +64,26 @@ test('a relaunched app recovers the saved job ID directly when its in-memory led
   next.api.api = async (_server: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/') ? { job } : { version: update.version, jobs: [] }; };
   await next.flow.unifiedUpdate.observe(); assert.ok(paths.includes('/api/jobs/job'));
   assert.equal(next.jobs.updateRecovery.snapshot(server).jobs[0]?.state, 'succeeded');
-  const tree = next.progress(); const sheet = nodes(tree).find((node) => node.type === 'JobSheet'); assert.ok(sheet);
-  await sheet.props.onClose(); assert.equal(next.flow.useUnifiedUpdate.getState().record, null);
+  const tree = next.progress(); assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
+  await button(tree, 'Done')(); assert.equal(next.flow.useUnifiedUpdate.getState().record, null);
 });
 test('one managed job sheet owns unified progress, excluding the ordinary global plugin host', async () => {
   const h = harness(); await button(h.render(), 'Update to 0.10.8')(); const next = harness(h.disk, update.version);
   next.api.api = async () => ({ version: '0.10.7', jobs: [] }); await next.flow.unifiedUpdate.observe();
   const tree = next.progress(); assert.equal(nodes(tree).filter((n) => n.type === 'JobSheet').length, 1);
   const ordinary = load('components/UpdateJobHost.tsx', next.modules); const view = hooks(); assert.equal(view.render(() => ordinary.UpdateJobHost()), null);
+});
+test('a tracking job is refreshed while it is running and settles at its terminal result', async () => {
+  let state = 'running'; const paths: string[] = [];
+  const h = harness(); await button(h.render(), 'Update to 0.10.8')(); const next = harness(h.disk, update.version);
+  next.api.api = async (_s: any, path: string) => { paths.push(path); return path.startsWith('/api/jobs/')
+    ? { job: { id: 'job', kind: 'winglet_update', device_id: 'd', state, detail: {}, updated_at: 2, created_at: 1 } }
+    : { version: '0.10.7', jobs: [] }; };
+  await next.flow.unifiedUpdate.observe(); assert.equal(next.flow.useUnifiedUpdate.getState().record.jobId, 'job');
+  const tree = next.progress(); assert.ok(nodes(tree).find((n) => n.type === 'JobSheet'));
+  const timers = new MockTimers(); try { state = 'succeeded'; paths.length = 0; await timers.tick(2000); } finally { timers.restore(); }
+  assert.ok(paths.some((p) => p.startsWith('/api/jobs/')), `paths: ${paths.join(',')}`);
+  assert.equal(next.flow.useUnifiedUpdate.getState().record.stage, 'complete');
 });
 test('a stale error notice can be dismissed instead of blocking the app', async () => {
   const h = harness(); h.flow.useUnifiedUpdate.setState({ loaded: true, record: null, error: 'stale read' });

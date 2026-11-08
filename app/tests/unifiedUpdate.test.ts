@@ -83,9 +83,10 @@ test('an orphaned saved consent can be cleared so the app stays updateable', asy
   assert.equal(h.controller.record.stage, 'awaiting-app');
   await h.controller.recoverOrphan(); assert.equal(h.controller.record, null); assert.equal(h.disk.value, null);
 });
-test('an orphan is not cleared once the consented app version is actually running', async () => {
+test('an orphan can be acknowledged once the consented app version is actually running', async () => {
   const h = harness(); await h.controller.start(update); h.context({ current: update.version, server: { ...server, id: 'moved' } });
   await h.controller.recoverOrphan(); assert.equal(h.controller.record.stage, 'awaiting-app');
+  await h.controller.acknowledgeOrphan(); assert.equal(h.controller.record, null);
 });
 test('double taps share one authentication and download; switching away and back during auth invalidates it', async () => {
   const h = harness(); let resolve: any; h.deps.authenticate = () => new Promise((r) => { resolve = r; });

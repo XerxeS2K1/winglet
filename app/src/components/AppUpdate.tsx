@@ -30,6 +30,7 @@ export function UpdatePrompt() {
   const locked = useLock((st) => st.locked);
   const downloading = useAppInstall((st) => st.phase === 'downloading');
   const unified = useUnifiedUpdate((st) => st);
+  const busy = downloading || unified.working;
   const [skipped, setSkipped] = useState<string | null | undefined>(undefined);
   const [, rerender] = useState(0);
   useEffect(() => {
@@ -58,12 +59,12 @@ export function UpdatePrompt() {
     later();
   };
   return (
-    <Sheet visible={visible} dismissible={!unified.working} onClose={later} title="Update available">
+    <Sheet visible={visible} dismissible={!busy} onClose={later} title="Update available">
       <View style={s.body}>
         <Text style={s.lead}>Winglet {update.version} is out. You have {Constants.expoConfig?.version}.</Text>
         {update.notes ? <Text style={s.notes} numberOfLines={6}>{update.notes}</Text> : null}
         <InstallButton update={update} />
-        {downloading ? null : (
+        {busy ? null : (
           <>
             <Button title="Later" variant="secondary" onPress={later} />
             <Button title="Skip this version" variant="ghost" onPress={skip} />
@@ -93,7 +94,6 @@ export function InstallButton({ update }: { update: AppUpdate }) {
       icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
       onPress={() => unifiedUpdate.start(update, eligible)} />
     <Text style={s.caption}>{consent}</Text>
-    {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
   </View>;
 }
 

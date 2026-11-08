@@ -67,9 +67,18 @@ review found orphaned pairing consent, an undismissable error notice, mislabeled
 failures, silent authentication failures, an enabled Later/Skip control, failed hydration, strict read
 failures and a danger-styled success notice. The local fixes add orphan recovery, dismissible notices,
 truthful messages, explicit authentication errors, active-control gating, strict reads and terminal-job
-rendering. The app suite then passed 716 tests and TypeScript was clean; the v0.10.7 plugin's focused
-update suite passed 313 tests with 22 skips. Those are code checks only. Final integration, a
-corrected-diff cold review, a matching release and web freshness remain required before release.
+rendering. A second cold review then found eleven further contract gaps: an unguarded empty-server
+render, a permanent orphan notice once the consented app version is running, a tracking job that was
+never refreshed, dead cancel controls, danger styling on a succeeded job, bot-id-based scope cancelling
+consent when switching child bots, an unreadable record with no recovery, Later/Skip during
+authentication, duplicated authentication errors, orphan cleanup that ignored active stages, and an
+`unknown` record that could not link a historical job. The local fixes guard the empty-server render,
+add orphan acknowledgement and a reset path, refresh tracking jobs on polling, gate cancel correctly,
+render succeeded jobs safely, scope consent to the parent pairing, gate Later/Skip during work, and
+recover historical terminal jobs. The app suite then passed 717 tests and TypeScript was clean; the
+v0.10.7 plugin's focused update suite passed 313 tests with 22 skips. Those are code checks only. Final
+integration, a corrected-diff cold review, a matching release and web freshness remain required before
+release.
 
 ### Bootstrap and next actions
 

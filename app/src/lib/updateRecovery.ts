@@ -1,6 +1,6 @@
 import type { Job, Server } from './types';
 
-export const updateScope = (s: Server) => JSON.stringify([s.id, s.url, s.deviceId]);
+export const updateScope = (s: Server) => JSON.stringify([s.parent ?? s.id, s.url, s.deviceId]);
 export const mergeJob = (old: Job | undefined, next: Job): Job => {
   if (!old || old.id !== next.id) return next;
   if (old.state !== 'running' && next.state === 'running') return old;

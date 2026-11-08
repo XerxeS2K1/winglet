@@ -125,7 +125,7 @@ export function JobSheet({ server, job: initial, onClose, onDone, managed = fals
             <Text selectable style={s.logText}>{d.lines.join('\n')}</Text>
           </ScrollView>
         ) : null}
-        {notice ? <Text style={[s.sub, { color: running ? t.colors.textSecondary : t.colors.danger }]} accessibilityRole={running ? undefined : 'alert'}>{notice}</Text> : null}
+        {notice ? <Text style={[s.sub, { color: running || job.state === 'succeeded' ? t.colors.textSecondary : t.colors.danger }]} accessibilityRole={running || job.state === 'succeeded' ? undefined : 'alert'}>{notice}</Text> : null}
         {!running ? <Button title="Done" onPress={onClose} /> : <Footnote>Keep this open until the server reports the result.</Footnote>}
       </View>
     </Sheet>

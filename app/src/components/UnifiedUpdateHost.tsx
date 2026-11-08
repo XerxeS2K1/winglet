@@ -23,11 +23,11 @@ export function UnifiedUpdateHost() {
   const jobs = useUpdateJobs((state) => server ? state.byScope[updateScope(server)] : undefined);
   const installer = useAppInstall();
   const savedJob = record?.jobId ? jobs?.jobs.find((item) => item.id === record.jobId) : undefined;
-  const polling = !!record && !record.jobId && ['dispatching', 'tracking', 'unknown'].includes(record.stage);
+  const polling = !!record && ['dispatching', 'tracking', 'unknown'].includes(record.stage);
   useEffect(() => {
     // A consent written before its Android approval belongs to one selected pairing. Once a different
     // app release is actually running, that stale pairing is irrelevant; clear it before the app offer.
-    const saved = unifiedUpdate.record, current = updateScope(server);
+    const saved = unifiedUpdate.record, current = server ? updateScope(server) : undefined;
     if (saved?.scope && current && current !== saved.scope && Constants.expoConfig?.version !== saved.version) {
       void unifiedUpdate.recoverOrphan();
     }
@@ -43,18 +43,32 @@ export function UnifiedUpdateHost() {
   if (!record) return error ? <Sheet visible dismissible onClose={() => unifiedUpdate.clearError()} title="Update unavailable">
     <Text style={s.error}>{error}</Text>
     <Button title="Check again" onPress={() => { unifiedUpdate.clearError(); void unifiedUpdate.observe(); }} />
+    <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.resetUnreadable()} />
   </Sheet> : null;
   const orphan = !!record.scope && (!server || record.scope !== updateScope(server));
   const owner = !record.scope || rt?.me?.role === 'owner';
-  if (orphan && !record.jobId) return <Sheet visible dismissible={false} onClose={() => {}} title={`Winglet ${record.version} update`}>
-    <View style={s.body}>
-      <Text style={s.copy}>This saved update belongs to {record.serverName ? `${record.serverName} ` : ''}a connection that is no longer selected. The server step was not started.</Text>
-      <Text style={s.copy}>Select that connection again to finish it, or clear this notice to update the app without it.</Text>
-      <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.recoverOrphan()} />
-    </View>
-  </Sheet>;
+  const runningVersion = Constants.expoConfig?.version === record.version;
   const job = owner && record.jobId ? jobs?.jobs.find((item) => item.id === record.jobId) : undefined;
-  if (job && record.stage !== 'complete' && record.stage !== 'failed') return <JobSheet managed server={server!} job={job} notice={error ? undefined : `App ${record.version} is running.`}
+  if (orphan && job && record.stage !== 'complete' && record.stage !== 'failed') {
+    return <JobSheet managed server={server!} job={job} notice={error || (job.state === 'succeeded' ? `App ${record.version} is running.` : undefined)}
+      onClose={() => unifiedUpdate.done()} />;
+  }
+  if (orphan) {
+    const started = ['dispatching', 'tracking', 'unknown'].includes(record.stage);
+    return <Sheet visible dismissible={false} onClose={() => {}} title={`Winglet ${record.version} update`}>
+      <View style={s.body}>
+        <Text style={s.copy}>This saved update belongs to {record.serverName ? `${record.serverName} ` : ''}a connection that is no longer selected.</Text>
+        <Text style={s.copy}>{started
+          ? 'The server step may still be running. Select that connection again to see its result.'
+          : 'The server step was not started.'}</Text>
+        {runningVersion
+          ? <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.acknowledgeOrphan()} />
+          : <Button title="Clear saved update" variant="secondary" onPress={() => unifiedUpdate.recoverOrphan()} />}
+      </View>
+    </Sheet>;
+  }
+  if (job && record.stage !== 'complete' && record.stage !== 'failed') return <JobSheet managed server={server!} job={job}
+    notice={error || (job.state === 'succeeded' ? `App ${record.version} is running.` : undefined)}
     onClose={() => unifiedUpdate.done()} />;
   return <Sheet visible dismissible={false} onClose={() => {}} title={`Winglet ${record.version} update`}>
     <View style={s.body}>

@@ -43,7 +43,7 @@ export class UnifiedUpdate {
       if (saved && (!versionOK(saved.version) || !saved.key || (saved.scope && saved.role !== 'owner') || !['awaiting-app', 'dispatching', 'tracking', 'unknown', 'failed', 'complete'].includes(saved.stage))) {
         throw new Error('The saved update cannot be read. No server command was sent.');
       }
-      this.record = saved; this.loaded = true; this.emit();
+      this.record = saved; this.loaded = true; this.error = ''; this.emit();
     }).catch((e) => { this.loading = undefined; this.loaded = true; this.error = (e as Error).message; this.emit(); throw e; });
   }
   /** Selection changes invalidate in-flight authentication/download/preflight, even after switch-back. */
@@ -131,8 +131,15 @@ export class UnifiedUpdate {
       } else if (eligible()) {
         if (record.stage === 'dispatching') await this.save({ ...record, stage: 'unknown', message: 'The server request was interrupted. Checking history; no new installation will be sent automatically.' });
         const job = await this.deps.recover(context.server!, record.jobId);
-        if (this.snapshot() === record && record.jobId && !job && record.stage !== 'unknown') {
+        if (this.snapshot() !== record) return;
+        if (job && job.state !== 'running') {
+          await this.save({ ...record, stage: job.state === 'succeeded' ? 'complete' : 'failed', jobId: job.id,
+            message: job.state === 'succeeded' ? `App and server are on ${record.version}.` : (job.detail?.message || 'The server update failed.') });
+        } else if (record.jobId && !job && record.stage !== 'unknown') {
           await this.save({ ...record, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' });
+        } else if (!record.jobId && job && job.state !== 'running') {
+          await this.save({ ...record, stage: job.state === 'succeeded' ? 'complete' : 'failed', jobId: job.id,
+            message: job.state === 'succeeded' ? `App and server are on ${record.version}.` : (job.detail?.message || 'The server update failed.') });
         }
       }
     } catch (e) { this.error = (e as Error).message; }
@@ -147,14 +154,29 @@ export class UnifiedUpdate {
   async recoverOrphan() {
     const record = this.record, context = this.deps.context();
     if (!record || record.scope === undefined || scope(context) === record.scope) return;
-    // Only a consent whose app was never installed is dead. If this phone is running the consented
-    // version, the host still needs it to decide whether the matching server step is required.
+    // A record whose Android consent was never installed is dead. If the consented version is
+    // running, the host still needs it to decide whether the matching server step is required.
     if (context.current === record.version) return;
+    // Never discard a notice that may still be running or has an unresolved server result.
+    if (['dispatching', 'tracking', 'unknown'].includes(record.stage)) return;
     this.invalidate(); this.deps.abort();
     try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
+  /**
+   * A consent bound to a pairing that is no longer selected can be discarded once the matching app
+   * version is running. The server step cannot be resumed without the original pairing, so the
+   * notice must not be a dead end.
+   */
+  async acknowledgeOrphan() {
+    const record = this.record, context = this.deps.context();
+    if (!record || record.scope === undefined || scope(context) === record.scope) return;
+    if (context.current !== record.version) return;
+    if (['dispatching', 'tracking'].includes(record.stage)) return;
+    if (record.scope && context.server && scope({ ...context, server: context.server }) === record.scope) return;
+    try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
+  }
   async cancel() {
-    if (this.record && !['awaiting-app', 'failed', 'complete'].includes(this.record.stage)) return;
+    if (this.record && !['awaiting-app', 'dispatching', 'tracking', 'unknown'].includes(this.record.stage)) return;
     this.invalidate(); this.deps.abort();
     try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
@@ -168,5 +190,11 @@ export class UnifiedUpdate {
       }
       await this.save(null); this.error = ''; this.emit();
     } catch (e) { this.error = (e as Error).message; this.emit(); }
+  }
+  /** Discard an unreadable or hopeless handoff so the app can still be updated. */
+  async resetUnreadable() {
+    const record = this.record;
+    if (!record || ['awaiting-app', 'dispatching', 'tracking'].includes(record.stage)) return;
+    try { await this.save(null); this.error = ''; this.emit(); } catch (e) { this.error = (e as Error).message; this.emit(); }
   }
 }
