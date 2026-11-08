@@ -1,11 +1,83 @@
-# Winglet app plan: v0.1.3 → v0.7
+# Winglet app plan and integration status
 
 **Goal: everything you normally do with Hermes, from your phone, without opening the server, and
 without making the server easier to misuse.**
 
-This is the working plan for the next releases. It covers the look and feel, the features, the
-server-side work each feature needs, and the security model that server control depends on. Every
-item has a priority, every milestone is split into small PRs, and every PR has acceptance criteria.
+## Current checkpoint — 2026-11-08
+
+This is the cross-chat and cross-device progress record. **Local implementation, review,
+publication, installation and phone verification are separate states.** The historical milestone
+plan below is retained for design context; it is not a current missing-feature list or deployment record.
+Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIGN.md),
+[SERVER_PLUGIN_UPDATE.md](SERVER_PLUGIN_UPDATE.md) and [DEVICE_LINKING.md](DEVICE_LINKING.md).
+
+### Integration being prepared
+
+- Branch: `fix/plugin-update-combined`, based on current `main` at `7b47f12`.
+- Integrated implementation snapshot: `c34bc28`; subsequent documentation and generated-web
+  commits do not by themselves change the tested source. Check the branch's latest log before continuing.
+- Server updater: `b385f14` plus safety follow-up `8ec49a4`.
+- App progress/recovery: `17ce9a1`, consent `d1aa215`, recovery-edge follow-up `0e2e869`.
+- Device linking: existing `feat/device-link-server` at `d5f6e99`, merged onto this newer main
+  rather than releasing its older base. Source branches are retained; nothing is merged into main here.
+- Existing phone app: **0.10.6** (owner-reported). Live server plugin: **0.10.5** (source inspected).
+  Hermes: **0.23.0**. None has been changed by this local integration. Versions are not bumped yet.
+
+| Work | Local implementation | Remaining gate |
+| --- | --- | --- |
+| Non-interactive plugin update | Pinned installer adds `--yes-deps`; owner signature, source restrictions and Hermes admission remain | Final cold review and an approved real install |
+| Update safety | Restart/watch lock, pending-backup recheck, descendant cleanup on timeout/cancel, exact-target reconciliation | Native Windows verification; approved live update/rollback |
+| Progress and result retention | Shared owner-only tracker; no backdrop/back/gesture dismissal; explicit durable Done acknowledgement; reconnect/relaunch recovery | Actual Android touch, process-kill/relaunch and native-storage checks |
+| Lost update reply | One retry with the same request key; unresolved intent stays separate from old jobs; no automatic reinstall on relaunch | Physical reconnect/relaunch check; bounded-history ambiguity remains explicit |
+| One-step phone pairing | Paste or scan a fingerprint-bearing link to pair and verify; existing pairing is not silently duplicated | Current integrated build on a phone |
+| Trusted-phone browser sign-in | Browser QR/check code; verified owner approves an explicit owner/member role; browser receives its own identity | Final integrated review and real camera/phone flow |
+| Documentation and web UI | All tracked Markdown is being audited; web assets rebuilt from combined app source | Complete inventory/crosslinks/freshness gates; publication requires approval |
+
+### Verification at this checkpoint
+
+- Parent-rerun combined app suite: **683 passed, 0 failed**; TypeScript typecheck exit **0**.
+- New updater safety regressions: **12 passed**. Signed-route/install/rollback/restart coverage
+  also passed locally using sandbox files, SQLite and test-double publication, not real package installation.
+- Final combined server suite and final Reviewer verdict are pending. An earlier updater-only
+  full run had two existing Rooms production-data-guard failures and one context-preflight timeout.
+  The timeout passed three isolated reruns on both unchanged base and repaired source; it is
+  not silently counted as a clean full-suite run. Never bypass the production-data guard.
+- Earlier device-linking loopback/CI evidence describes `d5f6e99`, not this new combined snapshot.
+  Reusing that feature is not proof that this integration was phone-tested.
+- No push, tag, release, plugin install, gateway restart, live pairing or phone installation is
+  authorised by this local work. Phone APKs use the in-app updater, **never adb**.
+
+### Bootstrap and next actions
+
+The already-running **0.10.5** updater and the published **0.10.6** updater omit `--yes-deps`.
+**A new APK alone cannot repair that loaded command.** A separately approved manual pinned
+repaired-plugin bootstrap and gateway restart is required once. Do not retry the broken updater
+expecting the phone package to change its Python command. The signed owner's update tap consents
+only to the pinned trusted release and its declared Python dependencies, not arbitrary packages.
+
+1. Finish the integrated server/app tests, Markdown audit, web rebuild/freshness checks and
+   Reviewer cold review; record exact evidence and unresolved findings here.
+2. Obtain explicit approval before any push, version/tag/release, server-plugin installation or restart.
+   Do not overwrite an existing release tag; choose a new release version when publication is approved.
+3. Bootstrap the repaired server only with that approval, then use the in-app APK updater for an
+   approved phone build. APK and plugin are separate installs, with independent version verification.
+4. Run the phone checklist: backdrop/back/drag while running; success/failure until Done; dropped
+   connection and lost POST replies; app close/kill/reopen; Server history reopen; trusted pairing and
+   browser check-code approval. Record what actually ran, not what a unit-test harness simulates.
+5. After every change, update this checkpoint and affected Markdown; rebuild `plugin/web` and run
+   both asset-reference and `--fresh` gates when app source changes. Keep dated releases as history.
+
+## Historical roadmap — original v0.1.3 to v0.7 proposal
+
+The rest of this document preserves the original design and milestone IDs. Statements such as
+"works today", gaps, proposed dependencies, draft APIs and uncompleted milestones below describe
+that earlier planning baseline, **not today's implementation or outstanding work**. In particular,
+job lookup by idempotency key was proposed, not shipped; current recovery uses existing job IDs
+and bounded history and retains an explicitly unknown result when correlation is impossible.
+Use the current checkpoint and linked feature/security documents when resuming work.
+
+The proposal covers look and feel, features, server-side work and the security model. Every item
+has a priority, milestones are split into small PRs, and each PR has acceptance criteria.
 
 Priorities used throughout:
 

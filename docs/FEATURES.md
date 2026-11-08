@@ -41,6 +41,12 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   opens Android's own battery-exemption dialog; that system dialog does not use Winglet's palette. Not now, dismissal,
   Back, lock, backgrounding, navigation or unmount safely cancel the explanation. It is remembered once; the web app
   never shows it.
+- **One-step verified pairing.** Scan or paste the whole fingerprint-bearing pairing link. It pairs and verifies the
+  server key in one step, and reports the resulting Owner or Member access. An existing pairing is verified rather
+  than silently duplicated. Address/code-only access stays visibly limited until verification.
+- **Trusted-phone browser sign-in.** An unpaired browser shows a QR and check code. A verified owner phone previews
+  the request, compares the code, chooses Member (default) or Owner, confirms, and approves. The browser receives
+  its own signing key and verified identity. See [pairing and browser sign-in](DEVICE_LINKING.md).
 
 ## It asks, you answer
 
@@ -95,7 +101,11 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
 ## Your server
 
 - **Control center.** Processor, memory and disk at a glance. Pause new work, restart, and update Hermes and
-  Winglet with progress that carries on across the restart.
+  Winglet with progress that carries on across the restart. While a plugin update runs, the sheet cannot be dismissed
+  by the backdrop, back button, Escape, or a downward drag; success or failure stays on screen until **Done** is
+  pressed. The Server screen keeps a reopenable row for unacknowledged results, and relaunch recovers them from
+  device-scoped storage plus the existing server job history. An unconfirmed request never silently starts another
+  installation. See [server update safety](SERVER_PLUGIN_UPDATE.md).
 - **Schedule.** Routines in plain words ("weekdays at 9am", "every 2h"), with their results in the Updates chat.
 - **Logs** from Hermes, with keys and tokens hidden.
 - **Sessions:** every conversation your agent has had, in any app or routine. Search what was said and read
@@ -104,8 +114,8 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
 ## Safe by default
 
 - **Owners and members.** Share your agent with someone without sharing your chats or the controls.
-- **Verified pairing** from a QR code, **signed owner actions**, an **activity log** of who changed what,
-  and an optional **app lock** on Android.
+- **Verified pairing** from a QR or full link, **trusted-phone browser approval**, **signed owner actions**, an
+  **activity log** of who changed what, and an optional **app lock** on Android.
 
 ## Looks good everywhere
 

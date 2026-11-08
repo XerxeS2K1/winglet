@@ -36,9 +36,9 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.6](docs/releases/v0.10.6.md):** the app now offers to update the server plugin itself, with a fresh fingerprint check, an idempotency key so retries are safe, and a request that is dropped if the screen loses focus during unlock.
-> Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and
-> which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
+> **New in [v0.10.6](docs/releases/v0.10.6.md):** the app offers the server-plugin update, with fingerprint verification, a safe idempotency key and focus gating. That release is historical; the live plugin updater it loads still omits Hermes's Python-dependency consent, so it must be repaired before another in-app update is expected to work.
+> **Local integration (not released):** progress and results stay visible until acknowledged, with reconnect/relaunch recovery; the pinned server installer is being repaired; and trusted-phone browser sign-in plus one-step pairing are merged locally. Exact status, evidence and next gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md). Do not read this text as a published release.
+> Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
 ## Why Winglet?
 
@@ -69,15 +69,15 @@ Winglet brings that to Hermes Agent, the open-source agent by Nous Research, wit
 **1. On your Hermes machine**, with the Hermes messaging gateway installed:
 
 ```bash
-hermes plugins install XerxeS2K1/winglet/plugin --force   # --force: see the note below
+hermes plugins install XerxeS2K1/winglet/plugin --yes-deps   # --yes-deps: consent to its declared Python dependencies
 hermes plugins enable winglet
 hermes winglet setup          # sets up HTTPS, starts the gateway, shows a QR code
 ```
 
-> **Why `--force`?** Hermes's install scanner rates community plugins that contain minified JavaScript (the bundled web app),
-> a subprocess call, or a downloaded binary as "caution" and blocks them. Winglet has all three: the compiled web app, and a
-> Cloudflare tunnel helper that downloads `cloudflared` and checks its SHA-256. The original Winglet plugin is blocked the same
-> way. Read the source first (`plugin/`), then use `--force` if you are happy with it.
+> **Why `--yes-deps`?** Hermes asks separately for consent to a plugin's declared Python dependencies. The
+> in-app updater supplies this non-interactively; a manual install must supply it too, otherwise the replacement
+> is refused. `--yes-deps` is not consent to arbitrary packages, capability grants, or gateway activation.
+> A pinned, reviewed release and server-side owner authorization remain required.
 
 Setup gives you a free HTTPS address through Cloudflare. You don't need an account, a domain or any open ports.
 
@@ -89,7 +89,7 @@ Setup gives you a free HTTPS address through Cloudflare. You don't need an accou
 
 **3. Say hello.** Your bot is on the landing screen, ready for a message.
 
-The QR code carries your server key's fingerprint, so the phone checks it's really your server before pairing.
+The QR code or full link carries your server key's fingerprint, so the phone checks it's really your server before pairing.
 You can also choose **Paste pairing link** for the same one-step verification. A link for an existing connection
 verifies that device instead of creating another one. Address/code-only access stays visibly limited until verified.
 
@@ -98,6 +98,9 @@ owner phone: **Devices → Link a device → Scan browser QR**, compare the chec
 explicitly approve. The browser receives its own keys and identity. Older servers keep the manual fallback.
 See [pairing and browser sign-in](docs/DEVICE_LINKING.md) for the trust checks, expiry, storage recovery and local-only test status.
 For Tailscale or your own domain, notifications and updates, see the **[setup guide](docs/SETUP.md)**. Which Hermes versions work, and what an older one loses: [compatibility](docs/HERMES_COMPATIBILITY.md).
+Current integration status, the 0.10.5 updater bootstrap limitation, and approval gates are recorded in
+[the app plan](docs/APP_PLAN.md). Server-update command and trust limits are in
+[SERVER_PLUGIN_UPDATE.md](docs/SERVER_PLUGIN_UPDATE.md).
 
 <a id="notifications"></a>
 

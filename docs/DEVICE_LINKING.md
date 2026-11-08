@@ -3,6 +3,8 @@
 This describes the new app flow. It requires the matching device-linking server API; an older
 server keeps pairing-link and address/code access, without the browser QR option. This local
 app slice is not a released build and has not been checked on a phone or against a live gateway.
+This text now describes the local branch merged with the updater-repair integration; source-level
+documentation is not a deployment record. See [APP_PLAN.md](APP_PLAN.md) for current status.
 
 ## Connect the first phone
 
