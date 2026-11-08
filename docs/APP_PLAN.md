@@ -115,8 +115,14 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - Next: push the merged unified-update branch to origin (done at commit 9c7a81d), publish the
   release carrying the unified update flow, independently rerun app tests/typecheck on main,
   audit affected Markdown and rebuild/freshness-check `plugin/web`.
-- Publication and live deployment require their own approvals. A new release, not a rewritten
-  0.10.7 tag, is needed to deliver this change. Record APK installation and server running version
+- **v0.10.8 released 2026-11-08.** The unified update flow shipped in v0.10.8: version cut at
+  commit 4f3e204 (plugin.yaml, app.json, package.json, hub.py `VERSION`, README banner,
+  `docs/releases/v0.10.8.md`, refreshed `plugin/web`). Release workflow green (APKs + plugin zip
+  published), CI green on main. App suite 732/732, server suite 1434 passed / 192 skipped,
+  `check_release_docs.py --tag v0.10.8` and `check_web_bundle.py --fresh` both pass.
+- Publication and live deployment require their own approvals. Record APK installation and server
+  running version after the phone updates; the live server plugin is 0.10.7 until the phone-side
+  unified update installs 0.10.8.
   separately, then exercise cancellation, relaunch/reconnect, lost replies and retained failures
   on a physical phone before claiming phone verification.
 
