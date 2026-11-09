@@ -96,6 +96,10 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const pluginBehind = !!pluginVersion;
   // The plugin job has its own in-flight guard and error: the unified-update store only tracks the app flow.
   const pluginBusy = useRef(false);
+  // The retry loop can outlive the screen (the owner backs out mid-restart), so nothing may be set
+  // on a component that is gone.
+  const alive = useRef(true);
+  useEffect(() => () => { alive.current = false; }, []);
   const [pluginWorking, setPluginWorking] = useState(false);
   const [pluginError, setPluginError] = useState('');
   const [pluginNotice, setPluginNotice] = useState('');
@@ -119,6 +123,7 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
     : 'Server plugin updates require an owner connection.';
   const startPluginUpdate = async () => {
     if (pluginBusy.current || !pluginVersion) return;
+    alive.current = true;
     pluginBusy.current = true;
     setPluginWorking(true);
     setPluginError('');
@@ -139,21 +144,22 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
       // instead of showing "Server returned 502" for the update the owner just asked for.
       setPluginNotice('Installing. The server restarts to finish, which takes about half a minute.');
       for (let attempt = 0; attempt < 12; attempt++) {
+        if (!alive.current) return;
         try {
           await checkServerUpdates(server, true);
-          setPluginNotice('');
+          if (alive.current) setPluginNotice('');
           return;
         } catch (e) {
           if (!isTransientServerError(e)) throw e;
           await new Promise((resolve) => setTimeout(resolve, 5000));
         }
       }
-      setPluginNotice('The server is still restarting. Reopen this screen in a minute to see the result.');
+      if (alive.current) setPluginNotice('The server is still restarting. Reopen this screen in a minute to see the result.');
     } catch (e) {
-      setPluginError((e as Error).message);
+      if (alive.current) setPluginError((e as Error).message);
     } finally {
       pluginBusy.current = false;
-      setPluginWorking(false);
+      if (alive.current) setPluginWorking(false);
     }
   };
   return <View style={{ gap: 8 }}>

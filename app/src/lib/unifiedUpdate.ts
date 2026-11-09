@@ -22,6 +22,7 @@ const CONSENT_TTL = 7 * 24 * 60 * 60 * 1000;
 const RESTART_PATIENCE = 90_000;
 const RESTART_STAGES: Stage[] = ['awaiting-app', 'dispatching', 'tracking', 'unknown'];
 const RESTART_NOTICE = 'The server is restarting to finish the update. Waiting for it to come back…';
+const RESTART_GAVE_UP = 'The server has not answered since the update started. Check that it is running, then tap Check again.';
 
 /** A one-tap, release-bound consent, not a general permission to update servers on startup. */
 export class UnifiedUpdate {
@@ -215,6 +216,7 @@ export class UnifiedUpdate {
         // The server answered: whatever restart was in flight is over.
         this.transientSince = 0;
         if (this.notice === RESTART_NOTICE) this.notice = '';
+        if (this.error === RESTART_GAVE_UP) this.error = '';
       } catch (e) {
         // The plugin install restarts the gateway, so the first polls after a job starts fail with a
         // 502 from whatever fronts it. That is the update working, not an error to show.
@@ -225,8 +227,10 @@ export class UnifiedUpdate {
             this.error = '';
             this.notice = RESTART_NOTICE;
           } else {
-            this.transientSince = 0;
-            this.error = 'The server has not answered since the update started. Check that it is running, then tap Check again.';
+            // Keep the start of the window: resetting it re-armed the patience, so a server that
+            // stayed down alternated between "restarting" and an error forever.
+            this.notice = '';
+            this.error = RESTART_GAVE_UP;
           }
         } else {
           this.transientSince = 0;

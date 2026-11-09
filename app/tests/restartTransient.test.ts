@@ -51,11 +51,15 @@ test('only a front-of-gateway 5xx counts as transient', () => {
 const update = { version: '0.10.9', page: 'https://github.com/XxeS2K1/winglet/releases/tag/v0.10.9', apk: 'https://example.invalid/winglet.apk' };
 const transient = () => Object.assign(new Error('Server returned 502'), { status: 502 });
 
-function harness(disk = { value: null as any }, recover: ((...args: any[]) => Promise<any>) = async () => undefined) {
+function harness(disk = { value: null as any }, recover: ((...args: any[]) => Promise<any>) = async () => undefined,
+                 clock = { now: 1_000_000 }) {
   let context: any = { server, role: 'owner', online: true, foreground: true, locked: false, current: '0.10.8' };
   let pluginVersion = '0.10.8';
+  // The 90s patience is measured with Date.now(), so the test owns that clock.
+  class Clock extends Date { static now() { return clock.now; } }
   const { UnifiedUpdate } = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}),
-    './updateRecovery': load('lib/updateRecovery.ts', {}), './api': { isTransientServerError: (e: any) => !!e && [502, 503, 504].includes(e.status) } });
+    './updateRecovery': load('lib/updateRecovery.ts', {}), './api': { isTransientServerError: (e: any) => !!e && [502, 503, 504].includes(e.status) } },
+  { Date: Clock });
   const state = { recover };
   const deps: any = {
     read: async () => structuredClone(disk.value), write: async (value: any) => { disk.value = structuredClone(value); },
@@ -98,4 +102,33 @@ test('a definite failure is still reported as an error while the job runs', asyn
   await h.controller.observe();
   assert.equal(h.controller.notice, '', 'only a restart is softened');
   assert.match(h.controller.error, /400/);
+});
+
+test('a server that stays down reports an error and never falls back to the restart notice', async () => {
+  const clock = { now: 1_000_000 };
+  const h = harness(undefined, undefined, clock);
+  await h.controller.start(update);
+  h.context({ current: update.version });
+  await h.controller.observe();
+  assert.equal(h.disk.value.stage, 'tracking');
+
+  h.setRecover(async () => { throw transient(); });
+  await h.controller.observe();
+  assert.match(h.controller.notice, /restarting to finish the update/i);
+
+  clock.now += 91_000;
+  await h.controller.observe();
+  assert.equal(h.controller.notice, '', 'patience expired: stop claiming a restart');
+  assert.match(h.controller.error, /has not answered/i);
+
+  // The regression the reviewer found: the window used to re-arm here and the notice came back.
+  clock.now += 1_000;
+  await h.controller.observe();
+  assert.equal(h.controller.notice, '', 'the window must not start again');
+  assert.match(h.controller.error, /has not answered/i);
+
+  // When the server answers, the error clears and the next restart starts a fresh window.
+  h.setRecover(async () => ({ id: 'job', kind: 'winglet_update', device_id: 'd', state: 'running', detail: {}, updated_at: 2, created_at: 1 }));
+  await h.controller.observe();
+  assert.equal(h.controller.error, '');
 });
