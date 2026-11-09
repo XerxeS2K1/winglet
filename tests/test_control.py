@@ -41,8 +41,8 @@ class FakeHermes:
         self.install_result = (0, ["Installed winglet"])
         self.installed_ok = True
         self.settled = None
-        self.release = {"version": "0.10.11", "tag": "v0.10.11", "sha": "a" * 40, "notes": "What is new",
-                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.11", "requires_hermes": ">=0.22.7"}
+        self.release = {"version": "0.10.12", "tag": "v0.10.12", "sha": "a" * 40, "notes": "What is new",
+                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.10.12", "requires_hermes": ">=0.22.7"}
 
     def system_stats(self):
         return {"system": "Linux", "cpu_count": 4, "cpu_percent": 12.5,

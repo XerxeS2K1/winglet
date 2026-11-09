@@ -181,3 +181,6 @@ app/dist-replay-*/
 
 # local test venv
 .venv-test/
+
+# A worktree may symlink the real install; never ship it.
+/app/node_modules
