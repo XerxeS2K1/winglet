@@ -85,5 +85,5 @@ test('startup uses one app update offer and unified handoff host, retaining stan
   const root = readFileSync(new URL('../src/app/_layout.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(root, /<ServerUpdatePrompt\s*\/>/); assert.match(root, /<UnifiedUpdateHost\s*\/>/); assert.match(root, /<UpdatePrompt\s*\/>/);
   const about = readFileSync(new URL('../src/app/about.tsx', import.meta.url), 'utf8');
-  assert.match(about, /app can update the server/i); assert.match(about, /no phone paired/i);
+  assert.match(about, /Winglet is behind/i); assert.doesNotMatch(about, /app can update the server/i);
 });

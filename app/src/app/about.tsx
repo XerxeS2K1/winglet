@@ -62,8 +62,7 @@ export default function AboutScreen() {
                 <Text style={s.warn}>Update this app to connect to {srv.bot.title}.</Text>
               ) : compat === 'update-server' || behind ? (
                 <Text style={s.warn}>
-                  {compat ? 'Update needed' : 'Update available'}: this app can update the server from Server → Updates.
-                  {' '}On a server with no phone paired, run <Text style={s.mono}>hermes plugins update winglet</Text>, then restart the gateway.
+                  {compat ? 'Update needed' : 'Update available'}: Winglet is behind.
                 </Text>
               ) : null}
             </Card>
