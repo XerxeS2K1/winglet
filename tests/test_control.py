@@ -255,9 +255,10 @@ async def test_restart_is_a_job_a_retry_does_not_repeat(client, hub):
     await settle(hub)
     assert hub.hermes.restarts == 1
     assert hub.store.get_job(job["id"])["detail"]["pid"] == 4242
-    # Something already running blocks a different request.
+    # Something already running blocks a different request. Ask for the newest release so this
+    # exercises the in-progress guard rather than the version gate.
     hub.hermes_version = lambda: "0.23.0"
-    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "version": "0.10.9", "idempotency_key": "k2"})
+    busy = await post_signed(client, owner, "/api/system/update", {"target": "winglet", "version": hub.hermes.release["version"], "idempotency_key": "k2"})
     assert busy.status == 409 and "already in progress" in (await busy.json())["error"]
     assert not any(call[0] in ("begin", "install") for call in hub.hermes.calls)
 
