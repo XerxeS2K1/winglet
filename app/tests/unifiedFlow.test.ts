@@ -30,6 +30,7 @@ function harness(disk = new Map(), current = '0.10.7') {
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: (select: any) => select({ update }) }, '../lib/appLock': { useLock: lock }, '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
     '../lib/storage': { getJSON: async () => null }, '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) }, '../lib/store': { useApp, useServerState: () => state.runtime.s }, '../lib/updateJobs': net.jobs,
     '../lib/serverUpdates': { serverUpdateKey: () => 's', checkServerUpdates: async () => {}, updateServerWinglet: async () => {}, useServerUpdates: () => () => ({}) },
+    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything }, './icons': {}, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' }, './JobSheet': { JobSheet: 'JobSheet' },
     'expo-router': { usePathname: () => '/' },
   };

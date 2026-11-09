@@ -18,7 +18,7 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
     '../components/AgentFace': () => null, '../components/icons': anything, '../components/Logo': () => null, '../components/Screen': ({ children }: any) => children,
     '../components/ui': { Button: 'Button', Card: 'Card', Footnote: () => null, ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Toggle: 'Toggle' },
     '../lib/agent': { agoText: () => 'just now' },
-    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: () => ({ update: opts.appBehind ? appUpdate : null, checking: false, checkedAt: null, failed: false, check: async () => { checked = true; } }) },
+    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: opts.appBehind ? appUpdate : null, checking: false, checkedAt: null, failed: false, check: async () => { checked = true; } }), { getState: () => ({ forget: () => { forgotten = true; } }) }) },
     '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
     '../lib/cache': { checkCacheStatus: async () => {}, getCacheStatus: () => 'available', subscribeCacheStatus: () => () => {} },
     '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true }, update: () => {} }) },
@@ -30,7 +30,7 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
       useServerUpdates: (select: any) => select({ byServer: { s: updatesState } }),
     },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
-    '../lib/version': { compareVersions: () => 0 },
+    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
   };
   const { AppUpdateCard } = load('app/about.tsx', modules);
   return { host, installButton, render: () => host.render(() => AppUpdateCard({ appVersion: opts.appVersion ?? '0.10.7' })), checked: () => checked, serverChecked: () => serverChecked };
@@ -51,13 +51,14 @@ function installButtonHarness(pluginData: any = null, role = 'owner', opts: { ap
       updateContext: () => ({ server, role }),
     },
     '../lib/appInstall': { useAppInstall: () => ({ phase: 'ready' }) },
-    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: () => ({ update: null }) },
+    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: null }), { getState: () => ({ forget: () => { forgotten = true; } }) }) },
     '../lib/appLock': { useLock: (select: any) => select({ locked: false }) },
     '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
     '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
     '../lib/storage': { getJSON: async () => null },
     '../lib/store': { useApp, useServerState: () => state.runtime.s },
     '../lib/updateJobs': { updateScope: () => 's' },
+    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
     '../lib/serverUpdates': {
       serverUpdateKey: () => 's',
       checkServerUpdates: async () => { refreshCalls++; if (refreshCalls <= (opts.refreshTransient ?? 0)) throw Object.assign(new Error('Server returned 502'), { status: 502 }); },

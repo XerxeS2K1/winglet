@@ -4,6 +4,7 @@ import { Text, View } from 'react-native';
 import type { AppUpdate } from '../lib/appUpdate';
 import { useAppInstall } from '../lib/appInstall';
 import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
+import { compareVersions } from '../lib/version';
 import { useLock } from '../lib/appLock';
 import { usePrefs } from '../lib/prefs';
 import { isTransientServerError } from '../lib/api';
@@ -49,7 +50,11 @@ export function UpdatePrompt() {
     }
   }, [unified.record?.key, unified.record?.stage]);
   // Unmount the native modal immediately when locked; Sheet otherwise animates closed over the lock.
-  if (!appUpdateSupported || !enabled || !update || skipped === undefined || locked || !unified.loaded || unified.record) return null;
+  // Stale offer: once Android has installed the release the process can still be the old build, so the
+  // sheet used to say "0.10.10 is out. You have 0.10.9" on a phone that already had 0.10.10.
+  const running = Constants.expoConfig?.version ?? '';
+  const stale = !!update && !!running && compareVersions(update.version, running) <= 0;
+  if (!appUpdateSupported || !enabled || !update || stale || skipped === undefined || locked || !unified.loaded || unified.record) return null;
   const visible = update.version !== skipped && !putOff.has(update.version);
   // The shared handoff host takes over once the one-tap consent is persisted.
   const later = () => {
@@ -104,15 +109,24 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const [pluginError, setPluginError] = useState('');
   const [pluginNotice, setPluginNotice] = useState('');
   if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
-  if (update) {
-    const consent = update.apk && server && role === 'owner'
-      ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
-      : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
+  // Same stale-offer rule as the sheet: a release this build already has is not an update.
+  const running = Constants.expoConfig?.version ?? '';
+  const offer = update && (!running || compareVersions(update.version, running) > 0) ? update : null;
+  const start = async () => {
+    await unifiedUpdate.start(offer!, eligible);
+    const record = unifiedUpdate.record;
+    // The install has been handed to Android, so stop advertising it; the record carries the result.
+    if (record && (record.stage === 'tracking' || record.stage === 'dispatching' || record.stage === 'complete')) useAppUpdate.getState().forget();
+  };
+  if (offer) {
+    const consent = offer.apk && server && role === 'owner'
+      ? `Update this app and ${server.bot.title}'s server plugin to ${offer.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
+      : offer.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
     return <View style={{ gap: 8 }}>
       {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
-      <Button title={update.apk ? `Update to ${update.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
-        icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
-        onPress={() => unifiedUpdate.start(update, eligible)} />
+      <Button title={offer.apk ? `Update to ${offer.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
+        icon={offer.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
+        onPress={() => start()} />
       <Text style={s.caption}>{consent}</Text>
     </View>;
   }

@@ -16,6 +16,8 @@ type State = {
   failed: boolean;
   /** Looks on GitHub at most twice a day unless forced. Android only: the web app comes from the server. */
   check: (force?: boolean) => Promise<void>;
+  /** The offer is done: drop it and its cache so an install that has been handed to Android stops asking. */
+  forget: () => void;
 };
 
 // Development builds can have a different package and signing key. A public release cannot safely
@@ -27,6 +29,10 @@ export const useAppUpdate = create<State>((set, get) => ({
   update: null,
   checking: false,
   failed: false,
+  forget: () => {
+    set({ update: null, checkedAt: undefined, failed: false });
+    void setJSON(KEY, null).catch(() => {});
+  },
   check: async (force = false) => {
     const current = Constants.expoConfig?.version ?? '';
     if (!appUpdateSupported || !current || get().checking) return;
