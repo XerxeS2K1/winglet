@@ -62,26 +62,44 @@ export function isTicking(snapshot: FallbackSnapshot | null, now: number): boole
 
 export type StripText = { title: string; countdown: string; detail: string | null };
 
-/** The strip's words. The reason is Hermes's own, tidied onto one line; the view cuts it with "…" if it must. */
+/** Hermes's reason words become the phrase the owner would use out loud. Anything unrecognised is kept. */
+const REASON_WORDS: Record<string, string> = {
+  'rate limit': 'rate limited', 'rate-limited': 'rate limited', 'rate_limited': 'rate limited',
+  'provider unavailable': 'unavailable', 'unavailable': 'unavailable', 'overloaded': 'overloaded',
+  'request timeout': 'timed out', 'timeout': 'timed out',
+  'authentication failed': 'not signed in', 'auth failed': 'not signed in', 'unauthorised': 'not signed in',
+  'server error': 'erroring',
+};
+
+/** `Claude` for a Claude model (the family is what the owner recognises), otherwise the model's own name. */
+function primaryName(from: string): string | null {
+  if (!from) return null;
+  return /^claude/i.test(from) ? 'Claude' : modelName(from);
+}
+
+/** The strip's words: who is in trouble, what is being used instead, and the countdown when there is one. */
 export function stripText(snapshot: FallbackSnapshot | null, now: number): StripText | null {
   if (!snapshot) return null;
   const { fallback, model } = snapshot;
-  const reason = typeof fallback.reason === 'string' ? fallback.reason.split(/\s+/).filter(Boolean).join(' ') : '';
+  const raw = typeof fallback.reason === 'string' ? fallback.reason.split(/\s+/).filter(Boolean).join(' ') : '';
+  const word = REASON_WORDS[raw.toLowerCase()] ?? raw;
   const left = secondsLeft(fallback, snapshot.arrivedAt, now);
-  let detail: string | null = null;
-  if (model) {
-    detail = `Using ${modelName(model)}`;
-    if (left === null) {
-      const from = typeof fallback.from_model === 'string' ? fallback.from_model : '';
-      // The approved mock-up says "Claude is tried again", so a Claude model is named by its family.
-      const primary = !from ? 'The main model' : /^claude/i.test(from) ? 'Claude' : modelName(from);
-      detail += ` \u00b7 ${primary} is tried again when you send`;
-    }
-  }
-  // No cooldown is not "next message": with nothing to count, the strip says only what it knows,
-  // and the second line explains that the next message tries the main model again.
+  const primary = primaryName(typeof fallback.from_model === 'string' ? fallback.from_model : '');
+  const using = model ? modelName(model) : '';
+
+  // "Claude rate limited — using GPT-6.1 Sol": who, what went wrong, what is answering instead.
+  const known = primary && word ? `${primary} ${word}` : word || primary || '';
+  const lead = known ? known[0].toUpperCase() + known.slice(1) : '';
+  const title = !lead ? (using ? `Using ${using}` : 'Fallback') : using ? `${lead} — using ${using}` : lead;
+
+  // The right-hand side is a timer or nothing at all: no cooldown means no number to show.
   const countdown = left === null ? '' : formatCountdown(left);
-  return { title: reason ? `Fallback \u00b7 ${reason}` : 'Fallback', countdown, detail };
+  const who = primary ?? 'The main model';
+  // Nothing known beyond the model in use: the title already says it, so there is no second line.
+  const detail = !using || !lead ? null
+    : countdown ? `${who} is tried again in ${countdown}`
+    : `No retry time from the server; sending again tries ${who === 'The main model' ? 'it' : who}`;
+  return { title, countdown, detail };
 }
 
 /** One line while the keyboard is up or the window is short, two otherwise. An unknown size is not "short". */

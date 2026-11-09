@@ -53,39 +53,51 @@ test('remaining time comes from the arrival time on an injected monotonic clock'
 const rate = { active: true, reason: 'rate limit', retry_in_s: 6912, from_model: 'claude-sonnet-5-5', from_provider: 'anthropic' };
 const snap = (fallback: any, model = 'reflection/beam-1.0-501b-a23b:free', arrivedAt = 1000) => snapshotOf({ model, fallback }, arrivedAt);
 
-test('strip text for a rate limit shows the reason, the countdown and the model in use', () => {
+test('a rate limit names who is limited, what is answering, and the countdown', () => {
   const text = stripText(snap(rate), 1000);
-  assert.deepEqual({ ...text }, { title: 'Fallback · rate limit', countdown: '1 h 56 min', detail: 'Using beam 1.0 501b a23b:free' });
+  assert.deepEqual({ ...text }, {
+    title: 'Claude rate limited — using beam 1.0 501b a23b:free',
+    countdown: '1 h 56 min',
+    detail: 'Claude is tried again in 1 h 56 min',
+  });
+  // Once the cooldown is spent the primary is retried on the next message, and the strip says so.
   assert.equal(stripText(snap(rate), 1000 + 6912_000).countdown, 'next message');
 });
 
-test('without a cooldown the strip never claims a countdown, it names what is tried again', () => {
+test('without a cooldown the strip shows no timer and says there is none', () => {
   const text = stripText(snap({ active: true, reason: 'authentication failed', retry_in_s: null, from_model: 'claude-sonnet-5-5' }, 'claude-haiku-5-5'), 5000);
-  assert.equal(text.title, 'Fallback · authentication failed');
+  assert.equal(text.title, 'Claude not signed in — using Claude Haiku 5.5');
   assert.equal(text.countdown, '', 'no cooldown means no timer to show');
-  assert.equal(text.detail, 'Using Claude Haiku 5.5 · Claude is tried again when you send');
+  assert.equal(text.detail, 'No retry time from the server; sending again tries Claude');
   const unknown = stripText(snap({ active: true, reason: 'request timeout' }, 'x-1'), 0);
+  assert.equal(unknown.title, 'Timed out — using x 1');
   assert.equal(unknown.countdown, '');
-  assert.equal(unknown.detail, 'Using x 1 · The main model is tried again when you send');
+  assert.equal(unknown.detail, 'No retry time from the server; sending again tries it');
 });
 
 test('an empty or untidy reason never leaves a dangling separator', () => {
-  assert.equal(stripText(snap({ active: true, reason: '', retry_in_s: 60 }), 1000).title, 'Fallback');
-  assert.equal(stripText(snap({ active: true, retry_in_s: 60 }), 1000).title, 'Fallback');
-  assert.equal(stripText(snap({ active: true, reason: '  \n\t ', retry_in_s: 60 }), 1000).title, 'Fallback');
-  assert.equal(stripText(snap({ active: true, reason: 'rate\n  limit', retry_in_s: 60 }), 1000).title, 'Fallback · rate limit');
+  for (const fallback of [{ active: true, reason: '', retry_in_s: 60 }, { active: true, retry_in_s: 60 },
+    { active: true, reason: '  \n\t ', retry_in_s: 60 }]) {
+    const text = stripText(snap(fallback), 1000);
+    assert.equal(text.title, 'Using beam 1.0 501b a23b:free');
+    assert.equal(text.detail, null, 'nothing is known beyond the model in use');
+  }
+  assert.equal(stripText(snap({ active: true, reason: 'rate\n  limit', retry_in_s: 60 }), 1000).title,
+    'Rate limited — using beam 1.0 501b a23b:free');
   const long = 'provider overloaded after many retries '.repeat(10);
   const title = stripText(snap({ active: true, reason: long, retry_in_s: 60 }), 1000).title;
-  assert.ok(title.startsWith('Fallback · provider overloaded') && !/\n/.test(title)); // one line; the view truncates it
+  assert.ok(title.startsWith('Provider overloaded') && !/\n/.test(title)); // one line; the view truncates it
 });
 
-test('long model ids stay one line of text and an unknown model hides the second line', () => {
+test('long model ids stay one line and an unknown model leaves just the lead', () => {
   for (const id of ['reflection/beam-1.0-501b-a23b:free', 'nvidia/nemotron-3-ultra-500b-a50b-reasoning']) {
-    const detail = stripText(snap(rate, id), 1000).detail;
-    assert.ok(detail.startsWith('Using ') && !/\n/.test(detail), detail);
+    const text = stripText(snap(rate, id), 1000);
+    assert.ok(text.title.endsWith(`using ${text.title.split('using ')[1]}`) && !/\n/.test(text.title), text.title);
   }
-  assert.equal(stripText(snap(rate, 'nvidia/nemotron-3-ultra-500b-a50b-reasoning'), 1000).detail, 'Using nemotron 3 ultra 500b a50b reasoning');
-  assert.equal(stripText(snap(rate, ''), 1000).detail, null);
+  const light = stripText(snap(rate, ''), 1000);
+  assert.equal(light.title, 'Claude rate limited');
+  assert.equal(light.countdown, '1 h 56 min');
+  assert.equal(light.detail, null);
 });
 
 test('only an explicit active fallback shows anything; an old server or a missing key shows nothing', () => {

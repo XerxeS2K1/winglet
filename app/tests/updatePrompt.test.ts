@@ -23,6 +23,7 @@ test('locking immediately unmounts the update modal instead of animating it over
     '../lib/unifiedUpdateFlow': { useUnifiedUpdate: (fn: any) => fn({ loaded: true, record: null }), unifiedUpdate: { record: null, recoverOrphan: async () => {} }, updateContext: () => ({ server: undefined }) },
     '../lib/appInstall': { useAppInstall: (select: any) => select({ phase: 'idle' }) },
     '../lib/updateJobs': { updateScope: () => undefined },
+    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: (select: any) => select({ update: { version: '0.3.0' } }) },
     '../lib/appLock': { useLock: (select: any) => select({ locked }) },
     '../lib/prefs': { usePrefs: (select: any) => select({ prefs: { updateCheck: true } }) },
