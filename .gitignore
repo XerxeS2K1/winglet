@@ -178,3 +178,6 @@ app/dist-phone-*/
 # Event replay private validation outputs
 .pytest-replay-*/
 app/dist-replay-*/
+
+# local test venv
+.venv-test/
