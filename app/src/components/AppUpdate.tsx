@@ -1,5 +1,5 @@
 import Constants from 'expo-constants';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import type { AppUpdate } from '../lib/appUpdate';
 import { useAppInstall } from '../lib/appInstall';
@@ -7,7 +7,7 @@ import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { useLock } from '../lib/appLock';
 import { usePrefs } from '../lib/prefs';
 import { useApp, useServerState } from '../lib/store';
-import { serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
+import { checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
 import { unifiedUpdate, useUnifiedUpdate, updateContext } from '../lib/unifiedUpdateFlow';
 import { updateScope } from '../lib/updateJobs';
 import { getJSON, setJSON } from '../lib/storage';
@@ -88,8 +88,14 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const role = rt?.me?.role;
   const eligible = () => { const current = updateContext(); return (current.server ? updateScope(current.server) : undefined) === offeredScope && current.role === role; };
   const serverUpdates = useServerUpdates((st) => (server ? st.byServer[serverUpdateKey(server)] : undefined));
-  const pluginBehind = serverUpdates?.winglet?.update_available && serverUpdates.winglet.latest_release;
-  const pluginVersion = pluginBehind ? serverUpdates.winglet.latest_release!.version : undefined;
+  const pluginVersion = serverUpdates?.winglet?.update_available
+    ? serverUpdates.winglet.latest_release?.version ?? serverUpdates.winglet.latest
+    : null;
+  const pluginBehind = !!pluginVersion;
+  // The plugin job has its own in-flight guard and error: the unified-update store only tracks the app flow.
+  const pluginBusy = useRef(false);
+  const [pluginWorking, setPluginWorking] = useState(false);
+  const [pluginError, setPluginError] = useState('');
   if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
   if (update) {
     const consent = update.apk && server && role === 'owner'
@@ -108,17 +114,27 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const consent = role === 'owner'
     ? `Update ${server.bot.title}'s server plugin to ${pluginVersion}, including its declared Python dependencies. The server restarts when chats are idle. A backup is made first, with rollback if startup fails.`
     : 'Server plugin updates require an owner connection.';
+  const startPluginUpdate = async () => {
+    if (pluginBusy.current || !pluginVersion) return;
+    pluginBusy.current = true;
+    setPluginWorking(true);
+    setPluginError('');
+    try {
+      const job = await updateServerWinglet(server, pluginVersion, eligible);
+      // Cancelled unlock or a stale pairing: the server was never asked, so leave the offer in place.
+      if (job) await checkServerUpdates(server, true);
+    } catch (e) {
+      setPluginError((e as Error).message);
+    } finally {
+      pluginBusy.current = false;
+      setPluginWorking(false);
+    }
+  };
   return <View style={{ gap: 8 }}>
-    {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
-    <Button title={`Update plugin to ${pluginVersion}`} loading={state.working} disabled={state.working || !state.loaded || role !== 'owner'}
+    {pluginError ? <Text style={s.error} accessibilityRole="alert">{pluginError}</Text> : null}
+    <Button title={`Update plugin to ${pluginVersion}`} loading={pluginWorking} disabled={pluginWorking || role !== 'owner'}
       icon={<Download size={16} color={t.colors.onAccent} />}
-      onPress={async () => {
-        try {
-          await updateServerWinglet(server, pluginVersion, eligible);
-        } catch (e) {
-          useApp.getState().toast({ serverId: server.id, title: "Couldn't start", body: (e as Error).message });
-        }
-      }} />
+      onPress={startPluginUpdate} />
     <Text style={s.caption}>{consent}</Text>
   </View>;
 }

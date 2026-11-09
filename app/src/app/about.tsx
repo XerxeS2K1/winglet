@@ -120,8 +120,10 @@ export function AppUpdateCard({ appVersion }: { appVersion: string }) {
   const server = useApp((st) => st.servers.find((item) => item.id === st.selection.serverId) ?? st.servers[0]);
   const rt = useApp((st) => (server ? st.runtime[server.id] : undefined));
   const serverUpdates = useServerUpdates((st) => (server ? st.byServer[serverUpdateKey(server)] : undefined));
-  const pluginBehind = !!serverUpdates?.winglet?.update_available && !!serverUpdates.winglet.latest_release;
-  const pluginVersion = pluginBehind ? serverUpdates!.winglet.latest_release!.version : undefined;
+  const pluginVersion = serverUpdates?.winglet?.update_available
+    ? serverUpdates.winglet.latest_release?.version ?? serverUpdates.winglet.latest
+    : null;
+  const pluginBehind = !!pluginVersion;
   useEffect(() => {
     if (enabled) {
       void check();

@@ -35,16 +35,17 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
   return { host, installButton, render: () => host.render(() => AppUpdateCard({ appVersion: opts.appVersion ?? '0.10.7' })), checked: () => checked, serverChecked: () => serverChecked };
 }
 
-function installButtonHarness(pluginData: any = null, role = 'owner') {
+function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean } = {}) {
   const host = hooks();
   const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role } } } };
   const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
-  let unifiedStarted = false, serverTarget: string | undefined;
+  let unifiedStarted = false, serverTarget: string | undefined, pluginCalls = 0, refreshCalls = 0;
+  let releasePlugin: (() => void) | null = null;
   const modules: any = {
     react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View', Linking: {} },
     'expo-constants': { expoConfig: { version: '0.10.7' } },
     '../lib/unifiedUpdateFlow': {
-      useUnifiedUpdate: (select: any) => select({ loaded: true, record: null, working: false, error: null }),
+      useUnifiedUpdate: (select: any) => select({ loaded: true, record: null, working: false, error: opts.appError ?? null }),
       unifiedUpdate: { start: async () => { unifiedStarted = true; } },
       updateContext: () => ({ server, role }),
     },
@@ -57,8 +58,13 @@ function installButtonHarness(pluginData: any = null, role = 'owner') {
     '../lib/updateJobs': { updateScope: () => 's' },
     '../lib/serverUpdates': {
       serverUpdateKey: () => 's',
-      checkServerUpdates: async () => {},
-      updateServerWinglet: async (_server: any, version: string) => { serverTarget = version; },
+      checkServerUpdates: async () => { refreshCalls++; },
+      updateServerWinglet: async (_server: any, version: string) => {
+        pluginCalls++; serverTarget = version;
+        if (opts.hold) await new Promise<void>((r) => { releasePlugin = r; });
+        if (opts.reject) throw new Error(opts.reject);
+        return { id: 'job' };
+      },
       useServerUpdates: (select: any) => select({ byServer: { s: pluginData } }),
     },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
@@ -68,7 +74,8 @@ function installButtonHarness(pluginData: any = null, role = 'owner') {
     './JobSheet': { JobSheet: 'JobSheet' },
   };
   const app = load('components/AppUpdate.tsx', modules);
-  return { host, app, render: (update: any = null) => host.render(() => app.InstallButton({ update })), unifiedStarted: () => unifiedStarted, serverTarget: () => serverTarget };
+  return { host, app, render: (update: any = null) => host.render(() => app.InstallButton({ update })), unifiedStarted: () => unifiedStarted, serverTarget: () => serverTarget,
+    pluginCalls: () => pluginCalls, refreshCalls: () => refreshCalls, release: () => releasePlugin?.() };
 }
 
 test('AppUpdateCard shows plugin-only offer when app current and plugin behind', async () => {
@@ -131,4 +138,50 @@ test('InstallButton plugin-only disables update for non-owner', async () => {
   const b = nodes(tree).find((n) => n.props?.title?.startsWith('Update plugin'));
   assert.ok(b);
   assert.equal(b.props.disabled, true);
+});
+
+test('InstallButton plugin-only ignores a second tap while the first is starting', async () => {
+  const h = installButtonHarness(updates, 'owner', { hold: true });
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  const first = b.props.onPress();
+  await tick();
+  await b.props.onPress();
+  assert.equal(h.pluginCalls(), 1);
+  h.release();
+  await first;
+  await tick();
+  assert.equal(h.pluginCalls(), 1);
+  assert.equal(h.refreshCalls(), 1);
+});
+
+test('InstallButton plugin-only re-checks the server after a started job', async () => {
+  const h = installButtonHarness(updates);
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  await b.props.onPress();
+  await tick();
+  assert.equal(h.refreshCalls(), 1);
+});
+
+test('InstallButton plugin-only shows its own error, not the app-update error', async () => {
+  const h = installButtonHarness(updates, 'owner', { reject: 'Server refused the job' });
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  await b.props.onPress();
+  await tick();
+  const after = h.render(null);
+  assert.match(text(after), /Server refused the job/);
+  assert.equal(h.refreshCalls(), 0);
+
+  const stale = installButtonHarness(updates, 'owner', { appError: 'Android download failed' });
+  assert.ok(!text(stale.render(null)).includes('Android download failed'));
+});
+
+test('InstallButton plugin-only is offered when only the legacy latest version is known', async () => {
+  const legacy = { hermes: {}, winglet: { ...updates.winglet, update_available: true, latest_release: null, latest: '0.10.9' }, checked_at: 1 };
+  const h = installButtonHarness(legacy);
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  assert.equal(b.props.title, 'Update plugin to 0.10.9');
 });
