@@ -107,7 +107,7 @@ test('no server is app-only; a subsequently paired server gets no inherited cons
   assert.equal(h.installs.length, 1);
 });
 
-test('a non-owner app install failure is reported locally and never starts a server step', async () => {
+test('a download failure says download, not installer, and never starts the server step', async () => {
   const h = harness();
   h.context({ role: 'member' });
   h.deps.install = async () => 'error';
@@ -179,15 +179,17 @@ for (const version of ['0.10.7', '0.9.0', 'garbage']) test(`stale or malformed a
   assert.equal(h.disk.value, null);
 });
 
-test('a saved job missing from history stays open so a gateway restart is not mistaken for failure', async () => {
+test('a saved job missing from history becomes explicitly unknown, not an undismissable running result', async () => {
   const h = harness();
   await h.controller.start(update);
+  h.disk.value.stage = 'tracking';
+  h.disk.value.jobId = 'missing';
   const next = harness(h.disk);
   next.context({ current: update.version });
   await next.controller.observe();
+  assert.equal(next.disk.value.stage, 'unknown');
   assert.equal(next.sent.length, 0);
-  assert.equal(next.disk.value.stage, 'opened');
-  await next.controller.cancel();
+  await next.controller.done();
   assert.equal(next.disk.value, null);
 });
 
@@ -221,6 +223,133 @@ test('overlapping polls cannot burn one consent into a false failure', async () 
   await Promise.all([next.controller.observe(), next.controller.observe()]);
   assert.equal(next.sent.length, 0);
   assert.equal(next.disk.value.stage, 'tracking');
+});
+
+test('saved consent never uses a role acquired after the one-tap consent', async () => {
+  const h = harness();
+  h.context({ role: 'member' });
+  await h.controller.start(update);
+  assert.equal(h.disk.value, null);
+  const next = harness(h.disk);
+  next.context({ role: 'owner', current: update.version });
+  await next.controller.observe();
+  assert.equal(next.sent.length, 0);
+  assert.equal(next.disk.value, null);
+});
+
+test('a handoff saved with a server scope and no owner role is rejected as unreadable', async () => {
+  const h = harness();
+  h.disk.value = { version: update.version, key: 'saved-key', scope: 'saved-scope', stage: 'opened', message: 'saved' };
+  await assert.rejects(() => h.controller.hydrate(), /cannot be read/);
+});
+
+test('a dispatch that already has a server update fails clearly instead of claiming a lost reply', async () => {
+  const h = harness();
+  h.deps.send = async (...args: any[]) => { h.sent.push(args); throw new Error('An update is already being tracked.'); };
+  await h.controller.start(update);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.installs.length, 0);
+  assert.equal(h.disk.value.stage, 'failed');
+  assert.match(h.disk.value.message, /already being tracked/i);
+  assert.doesNotMatch(h.disk.value.message, /reply was lost/i);
+});
+
+test('a send interrupted by a pairing switch records that nothing was sent', async () => {
+  const h = harness();
+  h.deps.send = async (...args: any[]) => {
+    // Simulate the pairing switching after the eligibility check but before the POST returns.
+    h.context({ role: 'member' });
+    throw new Error('The selected connection changed before the server command could be sent.');
+  };
+  await h.controller.start(update);
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.installs.length, 0);
+  assert.equal(h.disk.value.stage, 'failed');
+  assert.match(h.disk.value.message, /changed|could not be sent/i);
+});
+
+test('durable storage failure prevents opening the APK installer and sending the job', async () => {
+  const h = harness();
+  h.deps.write = async () => { throw new Error('storage unavailable'); };
+  await h.controller.start(update);
+  assert.equal(h.installs.length, 0);
+  assert.equal(h.sent.length, 0);
+  assert.match(h.controller.error, /storage unavailable/);
+});
+
+test('double taps share one authentication and download; switching away and back during auth invalidates it', async () => {
+  const h = harness();
+  let resolve: any;
+  h.deps.authenticate = () => new Promise((r) => { resolve = r; });
+  const pending = h.controller.start(update);
+  for (let i = 0; i < 10; i++) await Promise.resolve();
+  await h.controller.start(update);
+  h.controller.invalidate();
+  resolve(true);
+  await pending;
+  assert.equal(h.installs.length, 0);
+  assert.equal(h.sent.length, 0);
+  assert.equal(h.disk.value, null);
+});
+
+test('an orphaned saved consent can be cleared so the app stays updateable', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  h.context({ current: '0.10.7', server: { ...server, id: 'moved' } });
+  assert.equal(h.controller.record.stage, 'opened');
+  await h.controller.recoverOrphan();
+  assert.equal(h.controller.record, null);
+  assert.equal(h.disk.value, null);
+});
+
+test('an orphan can be acknowledged once the consented app version is actually running', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  h.context({ current: update.version, server: { ...server, id: 'moved' } });
+  await h.controller.recoverOrphan();
+  assert.equal(h.controller.record.stage, 'opened');
+  await h.controller.acknowledgeOrphan();
+  assert.equal(h.controller.record, null);
+});
+
+test('an error notice is kept until the user dismisses it and never discards a live record', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  h.context({ current: update.version });
+  h.deps.recover = async () => { throw new Error('Network request failed'); };
+  await h.controller.observe();
+  assert.match(h.controller.error, /Network request failed/);
+  await h.controller.observe();
+  assert.match(h.controller.error, /Network request failed/);
+  h.controller.clearError();
+  assert.equal(h.controller.error, '');
+  assert.equal(h.disk.value.stage, 'opened');
+});
+
+test('cancelling an installer handoff prevents a later matching app from updating the server', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  await h.controller.cancel();
+  const next = harness(h.disk);
+  next.context({ current: update.version });
+  await next.controller.observe();
+  assert.equal(next.sent.length, 0);
+});
+
+test('a lost server reply never repeats a POST across reconnect/relaunch', async () => {
+  const h = harness();
+  h.deps.send = async (...args: any[]) => { h.sent.push(args); throw Object.assign(new Error('lost'), { status: 0 }); };
+  await h.controller.start(update);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.installs.length, 1);
+  assert.equal(h.disk.value.stage, 'opened');
+  assert.equal(h.disk.value.jobId, undefined);
+  const next = harness(h.disk);
+  next.context({ current: update.version });
+  await next.controller.observe();
+  await next.controller.observe();
+  assert.equal(next.sent.length, 0);
+  assert.equal(next.disk.value.stage, 'opened');
 });
 
 test('history recovery only considers jobs created after the saved consent', async () => {
@@ -287,5 +416,80 @@ test('a fresh start is rejected while a server-first update is in progress', asy
   const second = harness(h.disk);
   await second.controller.start(update);
   assert.match(second.controller.error, /Finish or cancel/);
+});
+
+for (const context of [
+  { name: 'server url changed', patch: { server: { ...server, url: 'https://moved.invalid' } } },
+  { name: 'server device changed', patch: { server: { ...server, deviceId: 'new-device' } } },
+  { name: 'server id changed', patch: { server: { ...server, id: 'other' } } },
+  { name: 'role is member', patch: { role: 'member' } },
+  { name: 'server offline', patch: { online: false } },
+  { name: 'app in background', patch: { foreground: false } },
+  { name: 'device locked', patch: { locked: true } },
+]) test(`saved opened consent with no jobId waits for its exact owner pairing: ${context.name}`, async () => {
+  const h = harness();
+  await h.controller.start(update);
+  h.disk.value.stage = 'opened';
+  h.disk.value.jobId = undefined;
+  const next = harness(h.disk);
+  next.context({ current: update.version, ...context.patch });
+  await next.controller.observe();
+  assert.equal(next.sent.length, 0);
+  assert.equal(next.disk.value.stage, 'opened');
+});
+
+for (const pluginVersion of ['0.10.8', '0.11.0']) test(`server already on ${pluginVersion} completes when the app install finishes`, async () => {
+  const h = harness();
+  h.deps.send = async (...args: any[]) => {
+    h.sent.push(args);
+    return { id: 'job', kind: 'winglet_update', device_id: 'd', state: 'succeeded', detail: { to: pluginVersion }, updated_at: 2, created_at: 1 };
+  };
+  await h.controller.start(update);
+  assert.equal(h.sent.length, 1);
+  assert.equal(h.installs.length, 1);
+  assert.equal(h.disk.value.stage, 'opened');
+  const next = harness(h.disk);
+  next.context({ current: update.version });
+  next.deps.recover = async () => ({ id: 'job', kind: 'winglet_update', device_id: 'd', state: 'succeeded', detail: { to: pluginVersion }, updated_at: 2, created_at: 1 });
+  await next.controller.observe();
+  assert.equal(next.disk.value.stage, 'complete');
+});
+
+test('a 5xx during observe keeps the opened record and shows a restart notice', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  h.context({ current: update.version });
+  h.deps.recover = async () => { throw Object.assign(new Error('gateway restart'), { status: 502 }); };
+  await h.controller.observe();
+  assert.equal(h.disk.value.stage, 'opened');
+  assert.match(h.controller.notice, /restarting to finish the update/i);
+  assert.equal(h.controller.error, '');
+});
+
+test('done() cannot dismiss an opened record while the installer is pending', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  await h.controller.done();
+  assert.equal(h.disk.value.stage, 'opened');
+});
+
+test('cancel() clears an opened record so the user can start over', async () => {
+  const h = harness();
+  await h.controller.start(update);
+  await h.controller.cancel();
+  assert.equal(h.disk.value, null);
+});
+
+test('a fresh start is allowed after a terminal failed record is dismissed', async () => {
+  const h = harness();
+  h.deps.send = async (...args: any[]) => { h.sent.push(args); throw Object.assign(new Error('Server refused'), { status: 409 }); };
+  await h.controller.start(update);
+  assert.equal(h.disk.value.stage, 'failed');
+  const next = harness(h.disk);
+  await next.controller.done();
+  assert.equal(next.disk.value, null);
+  await next.controller.start(update);
+  assert.equal(next.disk.value.stage, 'opened');
+  assert.equal(next.sent.length, 1);
 });
 
