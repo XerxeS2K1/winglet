@@ -33,9 +33,13 @@ export function remainingSeconds(retryInSeconds: unknown, arrivedAt: number, now
  * survives a republish, a chat switch or an app restart, where counting from arrival does not.
  */
 export function secondsLeft(fallback: FallbackInfo, arrivedAt: number, now: number): number | null {
+  const relative = remainingSeconds(fallback.retry_in_s, arrivedAt, now);
   const at = fallback.retry_at;
-  if (typeof at === 'number' && Number.isFinite(at)) return at - Date.now() / 1000;
-  return remainingSeconds(fallback.retry_in_s, arrivedAt, now);
+  if (typeof at !== 'number' || !Number.isFinite(at)) return relative;
+  const absolute = at - Date.now() / 1000;
+  // Two clocks, two failure modes: the relative count is immune to a wrong phone clock, the absolute
+  // deadline is immune to a republish. Believing whichever is shorter means neither can lengthen it.
+  return relative === null ? absolute : Math.min(relative, absolute);
 }
 
 /** `45 s`, `12 min`, `1 h 52 min`, always rounded up; nothing left or no cooldown reads `next message`. */

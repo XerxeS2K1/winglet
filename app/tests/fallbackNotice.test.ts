@@ -323,6 +323,18 @@ test('the server absolute reset time beats a relative count, so a republish cann
   assert.equal(secondsLeft(rate, 1000, 1000), 6912);
 });
 
+test('a phone clock that runs slow cannot lengthen the countdown', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  // The server says 600s; an absolute deadline 6912s away means this phone's clock is behind.
+  const behind = { ...rate, retry_in_s: 600, retry_at: nowS + 6912 };
+  const left = secondsLeft(behind, 0, 0) as number;
+  assert.ok(left > 598 && left <= 600, `the relative count wins, got ${left}`);
+  // Skew the other way and the shorter absolute reading is used: early is safe, late is not.
+  const ahead = { ...rate, retry_in_s: 6912, retry_at: nowS + 600 };
+  const shorter = secondsLeft(ahead, 0, 0) as number;
+  assert.ok(shorter > 597 && shorter <= 600, `got ${shorter}`);
+});
+
 function fallbackStore() {
   const zustand = { create: (fn: any) => {
     let state: any;
