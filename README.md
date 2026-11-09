@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.8](docs/releases/v0.10.8.md):** one app Update action now updates the app and the server plugin together — the plugin installs hands-off from the release artifact and restarts the gateway, with no separate setting, no second prompt and no manual command. Recovery survives a pairing switch, a lost reply, a corrupt cache and an interrupted send. A one-time manual plugin install is still required first, because the live 0.10.5 and published 0.10.6/0.10.7 updaters omit that consent.
+> **New in [v0.10.9](docs/releases/v0.10.9.md):** one Update action in About now covers both halves — it updates the app when the app is behind, and updates the server plugin when only the plugin is behind, with its own in-flight guard, its own error, and a re-check after a job is accepted. The separate cards and the "go run this command" note are gone.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
