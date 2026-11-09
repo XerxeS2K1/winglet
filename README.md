@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.9](docs/releases/v0.10.9.md):** one Update action in About now covers both halves — it updates the app when the app is behind, and updates the server plugin when only the plugin is behind, with its own in-flight guard, its own error, and a re-check after a job is accepted. The separate cards and the "go run this command" note are gone.
+> **New in [v0.10.10](docs/releases/v0.10.10.md):** an update now rides out the gateway restart it causes instead of reporting a 502, and the fallback strip keeps its countdown — the server sends an absolute reset time, so a refresh can no longer restart the clock — and drops the bare "next message" when there is no cooldown to show.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

@@ -1,6 +1,6 @@
 {
   "name": "winglet",
-  "version": "0.10.9",
+  "version": "0.10.10",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
