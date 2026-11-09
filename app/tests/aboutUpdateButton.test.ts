@@ -35,7 +35,7 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
   return { host, installButton, render: () => host.render(() => AppUpdateCard({ appVersion: opts.appVersion ?? '0.10.7' })), checked: () => checked, serverChecked: () => serverChecked };
 }
 
-function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean } = {}) {
+function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean; nullJob?: boolean } = {}) {
   const host = hooks();
   const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role } } } };
   const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
@@ -63,6 +63,7 @@ function installButtonHarness(pluginData: any = null, role = 'owner', opts: { ap
         pluginCalls++; serverTarget = version;
         if (opts.hold) await new Promise<void>((r) => { releasePlugin = r; });
         if (opts.reject) throw new Error(opts.reject);
+        if (opts.nullJob) return null;
         return { id: 'job' };
       },
       useServerUpdates: (select: any) => select({ byServer: { s: pluginData } }),
@@ -146,13 +147,28 @@ test('InstallButton plugin-only ignores a second tap while the first is starting
   assert.ok(b);
   const first = b.props.onPress();
   await tick();
-  await b.props.onPress();
+  // The guard must make the second tap return at once; without it the tap waits on the first job and this times out.
+  const outcome = await Promise.race([
+    Promise.resolve(b.props.onPress()).then(() => 'returned'),
+    new Promise((resolve) => { setTimeout(() => resolve('blocked'), 300); }),
+  ]);
+  assert.equal(outcome, 'returned', 'a second tap must not start or wait on a second job');
   assert.equal(h.pluginCalls(), 1);
   h.release();
   await first;
   await tick();
   assert.equal(h.pluginCalls(), 1);
   assert.equal(h.refreshCalls(), 1);
+});
+
+test('InstallButton plugin-only skips the re-check when no job was started', async () => {
+  const h = installButtonHarness(updates, 'owner', { nullJob: true });
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  await b.props.onPress();
+  await tick();
+  assert.equal(h.pluginCalls(), 1);
+  assert.equal(h.refreshCalls(), 0);
 });
 
 test('InstallButton plugin-only re-checks the server after a started job', async () => {
