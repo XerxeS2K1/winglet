@@ -34,7 +34,15 @@ export function parsePairLink(text: string): { url: string; code: string; fp?: s
   } catch { return null; }
 }
 
-export async function request<T>(url: string, init: RequestInit & { token?: string; timeoutMs?: number } = {}): Promise<T> {
+/** 502/503/504 means something in front of the gateway could not reach it. A plugin install restarts
+ * the gateway, so the phone sees these for about half a minute: retry, do not fail. */
+export function isTransientServerError(e: unknown): e is ApiError {
+  return e instanceof ApiError && (e.status === 502 || e.status === 503 || e.status === 504);
+}
+
+type RequestOptions = RequestInit & { token?: string; timeoutMs?: number; retryOnRestart?: boolean };
+
+async function requestOnce<T>(url: string, init: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = { Accept: 'application/json' };
   if (init.body && !(typeof FormData !== 'undefined' && init.body instanceof FormData)) headers['Content-Type'] = 'application/json';
   if (init.token) headers.Authorization = `Bearer ${init.token}`;
@@ -60,6 +68,23 @@ export async function request<T>(url: string, init: RequestInit & { token?: stri
   } finally { clearTimeout(timer); init.signal?.removeEventListener('abort', abort); }
   if (!resp.ok) throw new ApiError(data?.error || `Server returned ${resp.status}`, resp.status, data);
   return data as T;
+}
+
+/**
+ * Reads are retried through a gateway restart. Writes are not: a job is created once and the
+ * idempotency key is what makes a retry safe, so those are left to the caller that owns the key.
+ */
+export async function request<T>(url: string, init: RequestOptions = {}): Promise<T> {
+  const method = (init.method ?? 'GET').toUpperCase();
+  const attempts = method === 'GET' && init.retryOnRestart !== false ? 3 : 1;
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await requestOnce<T>(url, init);
+    } catch (e) {
+      if (attempt >= attempts || init.signal?.aborted || !isTransientServerError(e)) throw e;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+    }
+  }
 }
 
 /** A path for this bot: another bot on the same server is picked with `bot=` (inside the signed path). */

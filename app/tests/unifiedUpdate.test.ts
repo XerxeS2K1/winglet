@@ -7,7 +7,7 @@ function harness(disk = { value: null as any }) {
   let context: any = { server, role: 'owner', online: true, foreground: true, locked: false, current: '0.10.7' };
   const sent: any[] = [], installs: any[] = [], prompts: string[] = [];
   let pluginVersion = '0.10.7';
-  const { UnifiedUpdate } = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}), './updateRecovery': load('lib/updateRecovery.ts', {}) });
+  const { UnifiedUpdate } = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}), './updateRecovery': load('lib/updateRecovery.ts', {}), './api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) } });
   const deps: any = {
     read: async () => structuredClone(disk.value), write: async (value: any) => { disk.value = structuredClone(value); },
     context: () => context, authenticate: async (prompt: string) => { prompts.push(prompt); return true; },

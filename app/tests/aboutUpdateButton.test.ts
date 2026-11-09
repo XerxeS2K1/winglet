@@ -19,6 +19,7 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
     '../components/ui': { Button: 'Button', Card: 'Card', Footnote: () => null, ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Toggle: 'Toggle' },
     '../lib/agent': { agoText: () => 'just now' },
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: () => ({ update: opts.appBehind ? appUpdate : null, checking: false, checkedAt: null, failed: false, check: async () => { checked = true; } }) },
+    '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
     '../lib/cache': { checkCacheStatus: async () => {}, getCacheStatus: () => 'available', subscribeCacheStatus: () => () => {} },
     '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true }, update: () => {} }) },
     '../lib/store': { APP_PROTOCOL: 1, useApp },
@@ -35,7 +36,7 @@ function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolea
   return { host, installButton, render: () => host.render(() => AppUpdateCard({ appVersion: opts.appVersion ?? '0.10.7' })), checked: () => checked, serverChecked: () => serverChecked };
 }
 
-function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean; nullJob?: boolean } = {}) {
+function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean; nullJob?: boolean; sendTransient?: boolean; refreshTransient?: number } = {}) {
   const host = hooks();
   const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role } } } };
   const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
@@ -53,15 +54,17 @@ function installButtonHarness(pluginData: any = null, role = 'owner', opts: { ap
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: () => ({ update: null }) },
     '../lib/appLock': { useLock: (select: any) => select({ locked: false }) },
     '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
+    '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
     '../lib/storage': { getJSON: async () => null },
     '../lib/store': { useApp, useServerState: () => state.runtime.s },
     '../lib/updateJobs': { updateScope: () => 's' },
     '../lib/serverUpdates': {
       serverUpdateKey: () => 's',
-      checkServerUpdates: async () => { refreshCalls++; },
+      checkServerUpdates: async () => { refreshCalls++; if (refreshCalls <= (opts.refreshTransient ?? 0)) throw Object.assign(new Error('Server returned 502'), { status: 502 }); },
       updateServerWinglet: async (_server: any, version: string) => {
         pluginCalls++; serverTarget = version;
         if (opts.hold) await new Promise<void>((r) => { releasePlugin = r; });
+        if (opts.sendTransient) throw Object.assign(new Error('Server returned 502'), { status: 502 });
         if (opts.reject) throw new Error(opts.reject);
         if (opts.nullJob) return null;
         return { id: 'job' };
@@ -74,7 +77,8 @@ function installButtonHarness(pluginData: any = null, role = 'owner', opts: { ap
     './ui': { Button: 'Button' },
     './JobSheet': { JobSheet: 'JobSheet' },
   };
-  const app = load('components/AppUpdate.tsx', modules);
+  // The retry waits are real in production; tests must not sleep through them.
+  const app = load('components/AppUpdate.tsx', modules, { setTimeout: (fn: any) => { void Promise.resolve().then(fn); return 0; } });
   return { host, app, render: (update: any = null) => host.render(() => app.InstallButton({ update })), unifiedStarted: () => unifiedStarted, serverTarget: () => serverTarget,
     pluginCalls: () => pluginCalls, refreshCalls: () => refreshCalls, release: () => releasePlugin?.() };
 }
@@ -200,4 +204,27 @@ test('InstallButton plugin-only is offered when only the legacy latest version i
   const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
   assert.ok(b);
   assert.equal(b.props.title, 'Update plugin to 0.10.9');
+});
+
+test('InstallButton plugin-only treats a 502 on the start as a restart, not a failure', async () => {
+  const h = installButtonHarness(updates, 'owner', { sendTransient: true });
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  await b.props.onPress();
+  await tick();
+  const after = text(h.render(null));
+  assert.match(after, /restarting/i);
+  assert.ok(!after.includes('502'), 'the owner never sees the proxy status for their own update');
+  assert.equal(h.refreshCalls(), 0, 'a refused start must not pretend a job exists');
+});
+
+test('InstallButton plugin-only waits out the restart instead of showing a 502', async () => {
+  const h = installButtonHarness(updates, 'owner', { refreshTransient: 2 });
+  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
+  assert.ok(b);
+  await b.props.onPress();
+  await tick(); await tick(); await tick();
+  assert.equal(h.pluginCalls(), 1);
+  assert.equal(h.refreshCalls(), 3, 'it retries the refresh until the server answers');
+  assert.ok(!text(h.render(null)).includes('502'));
 });

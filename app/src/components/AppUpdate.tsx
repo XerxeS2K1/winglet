@@ -6,6 +6,8 @@ import { useAppInstall } from '../lib/appInstall';
 import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { useLock } from '../lib/appLock';
 import { usePrefs } from '../lib/prefs';
+import { isTransientServerError } from '../lib/api';
+import type { Job } from '../lib/types';
 import { useApp, useServerState } from '../lib/store';
 import { checkServerUpdates, serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
 import { unifiedUpdate, useUnifiedUpdate, updateContext } from '../lib/unifiedUpdateFlow';
@@ -96,6 +98,7 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const pluginBusy = useRef(false);
   const [pluginWorking, setPluginWorking] = useState(false);
   const [pluginError, setPluginError] = useState('');
+  const [pluginNotice, setPluginNotice] = useState('');
   if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
   if (update) {
     const consent = update.apk && server && role === 'owner'
@@ -119,10 +122,33 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
     pluginBusy.current = true;
     setPluginWorking(true);
     setPluginError('');
+    setPluginNotice('');
     try {
-      const job = await updateServerWinglet(server, pluginVersion, eligible);
+      let job: Job | null = null;
+      try {
+        job = await updateServerWinglet(server, pluginVersion, eligible);
+      } catch (e) {
+        // A 5xx while the gateway restarts is not a refused start: the job may well exist.
+        if (!isTransientServerError(e)) throw e;
+        setPluginNotice('The server is restarting. The install carries on by itself; reopen this screen in a minute.');
+        return;
+      }
       // Cancelled unlock or a stale pairing: the server was never asked, so leave the offer in place.
-      if (job) await checkServerUpdates(server, true);
+      if (!job) return;
+      // The install restarts the gateway, so the first refreshes fail until it is back. Wait it out
+      // instead of showing "Server returned 502" for the update the owner just asked for.
+      setPluginNotice('Installing. The server restarts to finish, which takes about half a minute.');
+      for (let attempt = 0; attempt < 12; attempt++) {
+        try {
+          await checkServerUpdates(server, true);
+          setPluginNotice('');
+          return;
+        } catch (e) {
+          if (!isTransientServerError(e)) throw e;
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+      }
+      setPluginNotice('The server is still restarting. Reopen this screen in a minute to see the result.');
     } catch (e) {
       setPluginError((e as Error).message);
     } finally {
@@ -132,6 +158,7 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   };
   return <View style={{ gap: 8 }}>
     {pluginError ? <Text style={s.error} accessibilityRole="alert">{pluginError}</Text> : null}
+    {pluginNotice ? <Text style={s.caption}>{pluginNotice}</Text> : null}
     <Button title={`Update plugin to ${pluginVersion}`} loading={pluginWorking} disabled={pluginWorking || role !== 'owner'}
       icon={<Download size={16} color={t.colors.onAccent} />}
       onPress={startPluginUpdate} />

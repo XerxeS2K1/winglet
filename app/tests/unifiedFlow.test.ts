@@ -16,7 +16,7 @@ function harness(disk = new Map(), current = '0.10.7') {
   const lock: any = (select: any) => select({ locked: false }); lock.getState = () => ({ locked: false }); lock.subscribe = () => () => {};
   const zustand = { create: (init: any) => { let s: any; const store: any = (select = (v: any) => v) => select(s); store.setState = (p: any) => { s = { ...s, ...p }; }; s = init(store.setState); store.getState = () => s; return store; } };
   const installer: any = () => ({ phase: 'ready', progress: 1, cancel: () => {} }); installer.getState = () => ({ install: async () => { events.push('installer opened'); return 'opened'; }, cancel: () => {} });
-  const core = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}), './updateRecovery': load('lib/updateRecovery.ts', {}) });
+  const core = load('lib/unifiedUpdate.ts', { './version': load('lib/version.ts', {}), './updateRecovery': load('lib/updateRecovery.ts', {}), './api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) } });
   const flow = load('lib/unifiedUpdateFlow.ts', {
     'expo-constants': { expoConfig: { version: current } }, zustand, './api': net.api,
     './cache': { cacheGetStrict: async (key: string) => disk.get(key) ?? null, cacheSetStrict: async (key: string, value: any) => { disk.set(key, structuredClone(value)); } },
@@ -28,7 +28,7 @@ function harness(disk = new Map(), current = '0.10.7') {
   const modules: any = { react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View', Linking: {} },
     'expo-constants': { expoConfig: { version: current } }, '../lib/unifiedUpdateFlow': flow, '../lib/appInstall': { useAppInstall: installer },
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: (select: any) => select({ update }) }, '../lib/appLock': { useLock: lock }, '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
-    '../lib/storage': { getJSON: async () => null }, '../lib/store': { useApp, useServerState: () => state.runtime.s }, '../lib/updateJobs': net.jobs,
+    '../lib/storage': { getJSON: async () => null }, '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) }, '../lib/store': { useApp, useServerState: () => state.runtime.s }, '../lib/updateJobs': net.jobs,
     '../lib/serverUpdates': { serverUpdateKey: () => 's', checkServerUpdates: async () => {}, updateServerWinglet: async () => {}, useServerUpdates: () => () => ({}) },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything }, './icons': {}, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' }, './JobSheet': { JobSheet: 'JobSheet' },
     'expo-router': { usePathname: () => '/' },

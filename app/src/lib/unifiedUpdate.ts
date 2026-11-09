@@ -1,5 +1,6 @@
 import type { AppUpdate } from './appUpdate';
 import type { Job, Server } from './types';
+import { isTransientServerError } from './api';
 import { updateScope } from './updateRecovery';
 import { compareVersions } from './version';
 
@@ -17,6 +18,10 @@ type Deps = {
 const versionOK = (v: string) => /^\d+\.\d+\.\d+$/.test(v);
 const scope = (c: UpdateContext) => c.server ? updateScope(c.server) : undefined;
 const CONSENT_TTL = 7 * 24 * 60 * 60 * 1000;
+/** The plugin install restarts the gateway; a 5xx while it does is the update, not a failure. */
+const RESTART_PATIENCE = 90_000;
+const RESTART_STAGES: Stage[] = ['awaiting-app', 'dispatching', 'tracking', 'unknown'];
+const RESTART_NOTICE = 'The server is restarting to finish the update. Waiting for it to come back…';
 
 /** A one-tap, release-bound consent, not a general permission to update servers on startup. */
 export class UnifiedUpdate {
@@ -31,6 +36,7 @@ export class UnifiedUpdate {
   /** True when the persisted record could not be read at all (parse/decrypt/storage failure). */
   private readFailed = false;
   private epoch = 0;
+  private transientSince = 0;
   private queue: Promise<unknown> = Promise.resolve();
   private loading?: Promise<void>;
   private observing = false;
@@ -206,7 +212,27 @@ export class UnifiedUpdate {
             await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' }, current);
           }
         }
-      } catch (e) { this.error = (e as Error).message; }
+        // The server answered: whatever restart was in flight is over.
+        this.transientSince = 0;
+        if (this.notice === RESTART_NOTICE) this.notice = '';
+      } catch (e) {
+        // The plugin install restarts the gateway, so the first polls after a job starts fail with a
+        // 502 from whatever fronts it. That is the update working, not an error to show.
+        if (isTransientServerError(e) && this.record && RESTART_STAGES.includes(this.record.stage)) {
+          const now = Date.now();
+          if (!this.transientSince) this.transientSince = now;
+          if (now - this.transientSince < RESTART_PATIENCE) {
+            this.error = '';
+            this.notice = RESTART_NOTICE;
+          } else {
+            this.transientSince = 0;
+            this.error = 'The server has not answered since the update started. Check that it is running, then tap Check again.';
+          }
+        } else {
+          this.transientSince = 0;
+          this.error = (e as Error).message;
+        }
+      }
       finally { this.working = false; this.emit(); }
     } finally { this.observing = false; }
   }
