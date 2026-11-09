@@ -221,9 +221,10 @@ export class UnifiedUpdate {
             await this.save({ ...current, stage, jobId: job.id, message }, current);
           }
         } else if (current.jobId && current.stage === 'tracking') {
-          // The job ID is known but the server no longer reports it. Demote to unknown so the
-          // user can acknowledge the result instead of being stuck on an undismissable running row.
-          await this.save({ ...current, stage: 'unknown', jobId: undefined, message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' }, current);
+          // The job ID is known but the server no longer reports it. Demote to unknown so the user can
+          // acknowledge the result instead of being stuck on an undismissable running row. Keep the id:
+          // if the job turns up in history after a gateway restart, the record can still resolve.
+          await this.save({ ...current, stage: 'unknown', message: 'The saved server result is unavailable. It may still be running; acknowledging this notice does not cancel it.' }, current);
         }
         // The server answered: whatever restart was in flight is over.
         this.transientSince = 0;
