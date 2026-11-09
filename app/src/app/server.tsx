@@ -18,11 +18,11 @@ import { bytes, duration, idempotencyKey } from '../lib/control';
 import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
 import { isOwner, useApp, useServerState } from '../lib/store';
-import { SERVER_UPDATE_CONSENT, checkServerUpdates, updateServerWinglet } from '../lib/serverUpdates';
+import { checkServerUpdates } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Job, PauseState, SystemInfo, UpdatesInfo } from '../lib/types';
 
-type Confirm = 'restart' | 'hermes' | 'winglet';
+type Confirm = 'restart' | 'hermes';
 const JOB_LABEL: Record<Job['kind'], string> = {
   restart: 'Restart', hermes_update: 'Hermes update', winglet_update: 'Winglet update',
   skill_install: 'Skill install', skill_uninstall: 'Skill removal', mcp_install: 'MCP server install',
@@ -53,7 +53,6 @@ function ServerScreen() {
   const active = useRef(true);
   const focused = useRef(true);
   const focusGeneration = useRef(0);
-  const updatingWinglet = useRef(false);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
   const load = useCallback(() => {
@@ -103,28 +102,6 @@ function ServerScreen() {
 
   const start = async (what: Confirm) => {
     setConfirm(null);
-    if (what === 'winglet') {
-      if (updatingWinglet.current || updates?.winglet.requires_hermes_ok === false) return;
-      updatingWinglet.current = true;
-      const generation = focusGeneration.current;
-      const eligible = () => {
-        const state = useApp.getState();
-        const current = state.servers.find((item) => item.id === state.selection.serverId) ?? state.servers[0];
-        return active.current && focused.current && focusGeneration.current === generation && !!current && current.id === server.id && current.deviceId === server.deviceId
-          && current.url === server.url && isOwner(state.runtime[server.id]);
-      };
-      try {
-        const next = await updateServerWinglet(server, updates?.winglet.latest_release?.version ?? updates?.winglet.latest, eligible);
-        if (next && eligible()) load();
-      } catch (e) {
-        if (active.current) {
-          haptic.error();
-          useApp.getState().toast({ serverId: server.id, title: "Couldn't start", body: (e as Error).message });
-          // Shared tracking retains any update job returned with a conflict.
-        }
-      } finally { updatingWinglet.current = false; }
-      return;
-    }
     const path = what === 'restart' ? '/api/system/restart' : '/api/system/update';
     const body = { ...(what === 'restart' ? {} : { target: what }), idempotency_key: idempotencyKey() };
     const send = () => signedApi<{ job: Job }>(server, 'POST', path, body);
@@ -196,7 +173,7 @@ function ServerScreen() {
         <UpdateRow name="Hermes" version={info?.hermes_version || updates?.hermes.current_version} {...hermesUpdate(updates)}
           onUpdate={() => setConfirm('hermes')} />
         <UpdateRow name="Winglet" version={info?.version ?? updates?.winglet.version} {...wingletUpdate(updates)} available={isOwner(rt) && wingletUpdate(updates).available}
-          onUpdate={() => setConfirm('winglet')} />
+          onUpdate={() => router.push('/about')} />
       </ListGroup>
 
       <SectionHeader title="Tools" />
@@ -333,7 +310,6 @@ function ConfirmSheet({ what, bot, onCancel, onConfirm }: { what: Confirm | null
   const copy = {
     restart: { title: 'Restart now?', body: `${bot} stops and starts again. Every platform reconnects within a few seconds, and a reply that's being written is cut off.`, action: 'Restart' },
     hermes: { title: 'Update Hermes?', body: 'Hermes downloads the update, installs it and restarts. Chats pause for a minute or two. If something goes wrong, the log shows why.', action: 'Update and restart' },
-    winglet: { title: 'Update Winglet?', body: SERVER_UPDATE_CONSENT, action: 'Update server' },
   }[w];
   return (
     <Sheet visible={!!what} onClose={onCancel} title={copy.title}>

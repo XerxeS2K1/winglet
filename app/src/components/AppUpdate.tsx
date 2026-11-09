@@ -106,7 +106,7 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
   if (update) {
     const consent = update.apk && server && role === 'owner'
-      ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
+      ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. The server plugin updates first, then confirm the app in Android and reopen Winglet; the server restarts when chats are idle.`
       : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
     return <View style={{ gap: 8 }}>
       {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}

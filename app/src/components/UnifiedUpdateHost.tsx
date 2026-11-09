@@ -22,7 +22,7 @@ export function UnifiedUpdateHost() {
   const rt = useServerState(server?.id), locked = useLock((state) => state.locked);
   const jobs = useUpdateJobs((state) => server ? state.byScope[updateScope(server)] : undefined);
   const installer = useAppInstall();
-  const polling = !!record && ['dispatching', 'tracking', 'unknown'].includes(record.stage);
+  const polling = !!record && ['dispatching', 'tracking', 'unknown', 'opened'].includes(record.stage);
   useEffect(() => {
     if (!appUpdateSupported || locked || !foreground || pathname === '/pair' || pathname === '/scan') return;
     void unifiedUpdate.observe();
@@ -49,7 +49,7 @@ export function UnifiedUpdateHost() {
       onClose={() => unifiedUpdate.done()} />;
   }
   if (orphan) {
-    const started = ['dispatching', 'tracking', 'unknown'].includes(record.stage);
+    const started = ['dispatching', 'tracking', 'unknown', 'opened'].includes(record.stage);
     return <Sheet visible dismissible={false} onClose={() => {}} title={`Winglet ${record.version} update`}>
       <View style={s.body}>
         <Text style={s.copy}>This saved update belongs to {record.serverName ? `${record.serverName} ` : ''}a connection that is no longer selected.</Text>
@@ -72,14 +72,11 @@ export function UnifiedUpdateHost() {
       {record.serverName ? <Text style={s.copy}>Server: {record.serverName}</Text> : null}
       {installer.phase === 'downloading' ? <Text style={s.copy}>Downloading app{installer.progress === null ? '…' : ` ${Math.round(installer.progress * 100)}%`}</Text> : null}
       {error ? <Text style={s.error} accessibilityRole="alert">{error}</Text> : null}
-      {record.stage === 'awaiting-app' ? <>
-        <Text style={s.copy}>Android decides whether to install. Cancelling here also cancels the later server step.</Text>
-        <Button title="Cancel update" variant="secondary" onPress={() => unifiedUpdate.cancel()} />
-      </> : <>
+      <>
         <Button title="Check again" variant="secondary" onPress={() => unifiedUpdate.observe()} />
-        {['failed', 'complete', 'unknown'].includes(record.stage) && !rolePending ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} onPress={() => unifiedUpdate.done()} /> : null}
-        {['dispatching', 'tracking'].includes(record.stage) ? <Button title="Discard notice" variant="secondary" onPress={() => unifiedUpdate.cancel()} /> : null}
-      </>}
+        {['failed', 'complete', 'unknown', 'cancelled'].includes(record.stage) && !rolePending ? <Button title={record.stage === 'unknown' ? 'Acknowledge unknown result' : 'Done'} onPress={() => unifiedUpdate.done()} /> : null}
+        {['dispatching', 'tracking', 'opened'].includes(record.stage) ? <Button title="Discard notice" variant="secondary" onPress={() => unifiedUpdate.cancel()} /> : null}
+      </>
     </View>
   </Sheet>;
 }

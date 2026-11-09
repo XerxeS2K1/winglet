@@ -79,13 +79,13 @@ test('a 502 while the job runs reads as a restart, not an error, and clears when
   await h.controller.start(update);
   const tracking = h; tracking.context({ current: update.version });
   await tracking.controller.observe();
-  assert.equal(h.disk.value.stage, 'tracking');
+  assert.equal(h.disk.value.stage, 'opened');
 
   tracking.setRecover(async () => { throw transient(); });
   await tracking.controller.observe();
   assert.equal(tracking.controller.error, '', 'a restart must not be reported as a failed update');
   assert.match(tracking.controller.notice, /restarting to finish the update/i);
-  assert.equal(h.disk.value.stage, 'tracking', 'the saved stage is kept so the next poll carries on');
+  assert.equal(h.disk.value.stage, 'opened', 'the saved stage is kept so the next poll carries on');
 
   tracking.setRecover(async () => ({ id: 'job', kind: 'winglet_update', device_id: 'd', state: 'succeeded', detail: {}, updated_at: 2, created_at: 1 }));
   await tracking.controller.observe();
@@ -110,7 +110,7 @@ test('a server that stays down reports an error and never falls back to the rest
   await h.controller.start(update);
   h.context({ current: update.version });
   await h.controller.observe();
-  assert.equal(h.disk.value.stage, 'tracking');
+  assert.equal(h.disk.value.stage, 'opened');
 
   h.setRecover(async () => { throw transient(); });
   await h.controller.observe();
