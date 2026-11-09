@@ -269,7 +269,7 @@ export type AgentInfo = {
  * Hermes's own words and may be empty; `retry_in_s` is the seconds until the main model is tried again, or null
  * when there is no cooldown (it is tried on the next message). An older server never sends the key.
  */
-export type FallbackInfo = { active: boolean; reason?: string; retry_in_s?: number | null; from_model?: string; from_provider?: string };
+export type FallbackInfo = { active: boolean; reason?: string; retry_in_s?: number | null; retry_at?: number | null; from_model?: string; from_provider?: string };
 
 /** New work is on hold (Hermes's /pause). Members get no reason. */
 export type PauseState = { reason: string | null; engaged_at: string | null } | null;

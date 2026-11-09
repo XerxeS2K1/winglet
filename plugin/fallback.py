@@ -48,7 +48,9 @@ class FallbackHistory:
     def _remember(self, key, value, boundary, *, pre_agent=False):
         retry = value["fallback"].get("retry_in_s")
         self._records[key] = {"value": deepcopy(value), "context": boundary, "pre_agent": pre_agent,
-                              "until": time.monotonic() + retry if retry is not None else None}
+                              "until": time.monotonic() + retry if retry is not None else None,
+                              # The same deadline in wall-clock seconds, so the phone can hold it.
+                              "retry_at": int(time.time() + retry) if retry is not None else None}
 
     def notice(self, runner, key, text):
         parsed = parse_notice(text)
@@ -83,7 +85,11 @@ class FallbackHistory:
             return current
         result = deepcopy(record["value"])
         if record["until"] is not None:
-            result["fallback"]["retry_in_s"] = max(0, math.ceil(record["until"] - time.monotonic()))
+            left = max(0.0, record["until"] - time.monotonic())
+            result["fallback"]["retry_in_s"] = max(0, math.ceil(left))
+            # Absolute reset time too: a relative count restarts whenever the phone republishes.
+            if record.get("retry_at") is not None:
+                result["fallback"]["retry_at"] = record["retry_at"]
         return result
 
 

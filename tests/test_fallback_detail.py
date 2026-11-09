@@ -77,6 +77,27 @@ async def test_successful_in_turn_eviction_keeps_model_reason_and_decreasing_dea
 
 
 @pytest.mark.asyncio
+async def test_the_absolute_reset_time_is_sent_so_the_phone_does_not_restart_the_clock(setup, monkeypatch):
+    a, runner, cached, _ = setup
+    cached["key:one"] = live(fallback=True)
+    await a.send_or_update_status("one", "lifecycle", MID)
+    monkeypatch.setattr(hermes_api.time, "monotonic", lambda: 1015.1)
+    monkeypatch.setattr(hermes_api.time, "time", lambda: 1_700_000_000.0)
+    from plugin import fallback as fb
+    monkeypatch.setattr(fb.time, "monotonic", lambda: 1015.1)
+    monkeypatch.setattr(fb.time, "time", lambda: 1_700_000_000.0)
+    first = a._chat_model("one")["fallback"]
+    assert first["retry_in_s"] == 105
+    assert first["retry_at"] == 1_700_000_105, "an absolute reset time rides along with the count"
+    # Ten seconds later both numbers have moved down by ten: the deadline itself never moves.
+    monkeypatch.setattr(fb.time, "monotonic", lambda: 1025.1)
+    monkeypatch.setattr(fb.time, "time", lambda: 1_700_000_010.0)
+    second = a._chat_model("one")["fallback"]
+    assert second["retry_in_s"] == 95
+    assert second["retry_at"] == 1_700_000_105
+
+
+@pytest.mark.asyncio
 async def test_live_primary_recovery_clears_record_and_does_not_reappear_after_eviction(setup):
     a, runner, cached, _ = setup
     await a.send_or_update_status("one", "lifecycle", MID)
