@@ -28,6 +28,7 @@ test('locking immediately unmounts the update modal instead of animating it over
     '../lib/prefs': { usePrefs: (select: any) => select({ prefs: { updateCheck: true } }) },
     '../lib/storage': { getJSON: async () => null },
     '../lib/themeContext': { makeStyles: () => () => ({}), useTheme: () => ({}) },
+    '../lib/serverUpdates': { serverUpdateKey: () => 's', checkServerUpdates: async () => {}, updateServerWinglet: async () => {}, useServerUpdates: () => () => ({}) },
     './icons': {}, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' },
   };
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/components/AppUpdate.tsx', import.meta.url), 'utf8'), {

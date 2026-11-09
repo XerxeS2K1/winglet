@@ -13,6 +13,7 @@ import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { checkCacheStatus, getCacheStatus, resetCache, subscribeCacheStatus } from '../lib/cache';
 import { usePrefs } from '../lib/prefs';
 import { APP_PROTOCOL, useApp } from '../lib/store';
+import { serverUpdateKey, checkServerUpdates, useServerUpdates } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import { compareVersions } from '../lib/version';
 
@@ -109,32 +110,42 @@ export default function AboutScreen() {
   );
 }
 
-/** Whether a newer Android app is out, with a download, and the switch for looking. */
-function AppUpdateCard({ appVersion }: { appVersion: string }) {
+/** Whether a newer Android app or server plugin is out, with a single Update action. */
+export function AppUpdateCard({ appVersion }: { appVersion: string }) {
   const t = useTheme();
   const s = useStyles();
   const enabled = usePrefs((st) => st.prefs.updateCheck);
   const setPrefs = usePrefs((st) => st.update);
   const { update, checking, checkedAt, failed, check } = useAppUpdate();
+  const server = useApp((st) => st.servers.find((item) => item.id === st.selection.serverId) ?? st.servers[0]);
+  const rt = useApp((st) => (server ? st.runtime[server.id] : undefined));
+  const serverUpdates = useServerUpdates((st) => (server ? st.byServer[serverUpdateKey(server)] : undefined));
+  const pluginBehind = !!serverUpdates?.winglet?.update_available && !!serverUpdates.winglet.latest_release;
+  const pluginVersion = pluginBehind ? serverUpdates!.winglet.latest_release!.version : undefined;
   useEffect(() => {
-    if (enabled) check();
-  }, [enabled, check]);
+    if (enabled) {
+      void check();
+      if (server && rt?.status === 'online') void checkServerUpdates(server);
+    }
+  }, [enabled, check, server, rt?.status]);
   const status = checking ? 'Checking…'
     : update ? `Winglet ${update.version} available`
+    : pluginBehind ? `Server plugin ${pluginVersion} available`
     : failed ? "Couldn't reach GitHub."
     : checkedAt ? `Up to date (checked ${agoText(checkedAt / 1000)})`
     : enabled ? '' : 'Automatic checks off; releases are on GitHub.';
+  const showButton = !!update || pluginBehind;
   return (
     <>
       <SectionHeader title="App updates" />
       <View style={{ gap: 10 }}>
         <Card style={{ gap: 12 }}>
-          {status ? <Text style={update ? s.good : s.note}>{status}</Text> : null}
-          {update ? (
+          {status ? <Text style={update || pluginBehind ? s.good : s.note}>{status}</Text> : null}
+          {showButton ? (
             <>
-              {update.notes ? <Text style={s.note}>{update.notes}</Text> : null}
+              {update?.notes ? <Text style={s.note}>{update.notes}</Text> : null}
               <InstallButton update={update} />
-              <Button title="What's new" variant="secondary" icon={<ExternalLink size={16} color={t.colors.text} />} onPress={() => Linking.openURL(update.page)} />
+              {!update && pluginBehind ? null : <Button title="What's new" variant="secondary" icon={<ExternalLink size={16} color={t.colors.text} />} onPress={() => Linking.openURL(update!.page)} />}
             </>
           ) : (
             <Button title="Check now" variant="secondary" loading={checking} icon={<RefreshCw size={16} color={t.colors.text} />} onPress={() => check(true)} />

@@ -29,6 +29,7 @@ function harness(disk = new Map(), current = '0.10.7') {
     'expo-constants': { expoConfig: { version: current } }, '../lib/unifiedUpdateFlow': flow, '../lib/appInstall': { useAppInstall: installer },
     '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: (select: any) => select({ update }) }, '../lib/appLock': { useLock: lock }, '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
     '../lib/storage': { getJSON: async () => null }, '../lib/store': { useApp, useServerState: () => state.runtime.s }, '../lib/updateJobs': net.jobs,
+    '../lib/serverUpdates': { serverUpdateKey: () => 's', checkServerUpdates: async () => {}, updateServerWinglet: async () => {}, useServerUpdates: () => () => ({}) },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything }, './icons': {}, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' }, './JobSheet': { JobSheet: 'JobSheet' },
     'expo-router': { usePathname: () => '/' },
   };

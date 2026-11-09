@@ -7,6 +7,7 @@ import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { useLock } from '../lib/appLock';
 import { usePrefs } from '../lib/prefs';
 import { useApp, useServerState } from '../lib/store';
+import { serverUpdateKey, updateServerWinglet, useServerUpdates } from '../lib/serverUpdates';
 import { unifiedUpdate, useUnifiedUpdate, updateContext } from '../lib/unifiedUpdateFlow';
 import { updateScope } from '../lib/updateJobs';
 import { getJSON, setJSON } from '../lib/storage';
@@ -75,8 +76,9 @@ export function UpdatePrompt() {
   );
 }
 
-/** Downloads and installs the update, showing progress; falls back to the release page. */
-export function InstallButton({ update }: { update: AppUpdate }) {
+/** Downloads and installs the update, showing progress; falls back to the release page.
+ *  Also handles plugin-only updates when no app update is available. */
+export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const t = useTheme();
   const s = useStyles();
   const state = useUnifiedUpdate((st) => st);
@@ -85,15 +87,38 @@ export function InstallButton({ update }: { update: AppUpdate }) {
   const offeredScope = server ? updateScope(server) : undefined;
   const role = rt?.me?.role;
   const eligible = () => { const current = updateContext(); return (current.server ? updateScope(current.server) : undefined) === offeredScope && current.role === role; };
+  const serverUpdates = useServerUpdates((st) => (server ? st.byServer[serverUpdateKey(server)] : undefined));
+  const pluginBehind = serverUpdates?.winglet?.update_available && serverUpdates.winglet.latest_release;
+  const pluginVersion = pluginBehind ? serverUpdates.winglet.latest_release!.version : undefined;
   if (state.record) return <Text style={s.caption}>Update {state.record.version}: {state.record.message}</Text>;
-  const consent = update.apk && server && role === 'owner'
-    ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
-    : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
+  if (update) {
+    const consent = update.apk && server && role === 'owner'
+      ? `Update this app and ${server.bot.title}'s server plugin to ${update.version}, including its declared Python dependencies. Confirm the app in Android, then reopen Winglet; the server restarts when chats are idle.`
+      : update.apk ? 'Update this app in Android. No server update is authorized without an owner connection.' : 'Open the release page. No server update will be started.';
+    return <View style={{ gap: 8 }}>
+      {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
+      <Button title={update.apk ? `Update to ${update.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
+        icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
+        onPress={() => unifiedUpdate.start(update, eligible)} />
+      <Text style={s.caption}>{consent}</Text>
+    </View>;
+  }
+  // Plugin-only update path.
+  if (!pluginBehind || !server) return null;
+  const consent = role === 'owner'
+    ? `Update ${server.bot.title}'s server plugin to ${pluginVersion}, including its declared Python dependencies. The server restarts when chats are idle. A backup is made first, with rollback if startup fails.`
+    : 'Server plugin updates require an owner connection.';
   return <View style={{ gap: 8 }}>
     {state.error ? <Text style={s.error} accessibilityRole="alert">{state.error}</Text> : null}
-    <Button title={update.apk ? `Update to ${update.version}` : 'View release'} loading={state.working} disabled={state.working || !state.loaded}
-      icon={update.apk ? <Download size={16} color={t.colors.onAccent} /> : <CircleArrowUp size={16} color={t.colors.onAccent} />}
-      onPress={() => unifiedUpdate.start(update, eligible)} />
+    <Button title={`Update plugin to ${pluginVersion}`} loading={state.working} disabled={state.working || !state.loaded || role !== 'owner'}
+      icon={<Download size={16} color={t.colors.onAccent} />}
+      onPress={async () => {
+        try {
+          await updateServerWinglet(server, pluginVersion, eligible);
+        } catch (e) {
+          useApp.getState().toast({ serverId: server.id, title: "Couldn't start", body: (e as Error).message });
+        }
+      }} />
     <Text style={s.caption}>{consent}</Text>
   </View>;
 }
