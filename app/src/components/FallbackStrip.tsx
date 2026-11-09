@@ -39,14 +39,16 @@ function Strip({ snapshot, chatKey }: { snapshot: FallbackSnapshot; chatKey: str
 
   const text = stripText(snapshot, now);
   if (!text) return null;
-  const showDetail = stripLines(keyboard, height) === 2 && !!text.detail;
+  // With no countdown there is room for the line that says what happens next, keyboard or not.
+  const showDetail = (stripLines(keyboard, height) === 2 || !text.countdown) && !!text.detail;
+  const label = [text.title, text.countdown, showDetail ? text.detail : null].filter(Boolean).join(', ');
   return (
     <Tap feedback="selection" scaleTo={0.99} onPress={() => openModelSheet(chatKey)}
-      accessibilityLabel={`${text.title}, ${text.countdown}.${showDetail ? ` ${text.detail}.` : ''} Change the model`}
+      accessibilityLabel={`${label}. Change the model`}
       style={[s.strip, { borderColor: alpha(t.colors.warning, 0.4) }]}>
       <View style={s.line}>
         <Text style={s.reason} numberOfLines={1}>{text.title}</Text>
-        <Text style={s.countdown} numberOfLines={1}>{text.countdown}</Text>
+        {text.countdown ? <Text style={s.countdown} numberOfLines={1}>{text.countdown}</Text> : null}
       </View>
       {showDetail ? <Text style={s.detail} numberOfLines={1} ellipsizeMode="tail">{text.detail}</Text> : null}
     </Tap>

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { snapshotOf, type FallbackSnapshot } from './fallbackNotice';
+import { secondsLeft, snapshotOf, type FallbackSnapshot } from './fallbackNotice';
 
 /**
  * What the model button already fetched from `/api/agent?chat=`, shared with the strip above the message box so the
@@ -13,7 +13,18 @@ type FallbackState = {
 
 export const useFallback = create<FallbackState>((set) => ({
   slots: {},
-  publish: (key, chat, arrivedAt) => set((s) => ({ slots: { ...s.slots, [key]: snapshotOf(chat, arrivedAt) ?? undefined } })),
+  publish: (key, chat, arrivedAt) => set((s) => {
+    const next = snapshotOf(chat, arrivedAt);
+    if (!next) return { slots: { ...s.slots, [key]: undefined } };
+    const prev = s.slots[key];
+    // A republish must never restart the clock the owner is already watching.
+    if (prev && prev.model === next.model) {
+      const before = secondsLeft(prev.fallback, prev.arrivedAt, arrivedAt);
+      const after = secondsLeft(next.fallback, next.arrivedAt, arrivedAt);
+      if (before !== null && after !== null && before < after) return s;
+    }
+    return { slots: { ...s.slots, [key]: next } };
+  }),
   clear: (key) => set((s) => (s.slots[key] ? { slots: { ...s.slots, [key]: undefined } } : s)),
 }));
 

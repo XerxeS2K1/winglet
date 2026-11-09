@@ -28,6 +28,16 @@ export function remainingSeconds(retryInSeconds: unknown, arrivedAt: number, now
   return retryInSeconds - Math.max(0, now - arrivedAt) / 1000;
 }
 
+/**
+ * How long the primary model stays unretried. The server's absolute `retry_at` (epoch seconds) wins: it
+ * survives a republish, a chat switch or an app restart, where counting from arrival does not.
+ */
+export function secondsLeft(fallback: FallbackInfo, arrivedAt: number, now: number): number | null {
+  const at = fallback.retry_at;
+  if (typeof at === 'number' && Number.isFinite(at)) return at - Date.now() / 1000;
+  return remainingSeconds(fallback.retry_in_s, arrivedAt, now);
+}
+
 /** `45 s`, `12 min`, `1 h 52 min`, always rounded up; nothing left or no cooldown reads `next message`. */
 export function formatCountdown(seconds: unknown): string {
   if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return NEXT_MESSAGE;
@@ -42,7 +52,7 @@ export function formatCountdown(seconds: unknown): string {
 /** Whether a once-a-second tick still changes anything on screen. */
 export function isTicking(snapshot: FallbackSnapshot | null, now: number): boolean {
   if (!snapshot) return false;
-  const left = remainingSeconds(snapshot.fallback.retry_in_s, snapshot.arrivedAt, now);
+  const left = secondsLeft(snapshot.fallback, snapshot.arrivedAt, now);
   return left !== null && left > 0;
 }
 
@@ -53,7 +63,7 @@ export function stripText(snapshot: FallbackSnapshot | null, now: number): Strip
   if (!snapshot) return null;
   const { fallback, model } = snapshot;
   const reason = typeof fallback.reason === 'string' ? fallback.reason.split(/\s+/).filter(Boolean).join(' ') : '';
-  const left = remainingSeconds(fallback.retry_in_s, snapshot.arrivedAt, now);
+  const left = secondsLeft(fallback, snapshot.arrivedAt, now);
   let detail: string | null = null;
   if (model) {
     detail = `Using ${modelName(model)}`;
@@ -64,7 +74,10 @@ export function stripText(snapshot: FallbackSnapshot | null, now: number): Strip
       detail += ` \u00b7 ${primary} is tried again when you send`;
     }
   }
-  return { title: reason ? `Fallback \u00b7 ${reason}` : 'Fallback', countdown: formatCountdown(left), detail };
+  // No cooldown is not "next message": with nothing to count, the strip says only what it knows,
+  // and the second line explains that the next message tries the main model again.
+  const countdown = left === null ? '' : formatCountdown(left);
+  return { title: reason ? `Fallback \u00b7 ${reason}` : 'Fallback', countdown, detail };
 }
 
 /** One line while the keyboard is up or the window is short, two otherwise. An unknown size is not "short". */

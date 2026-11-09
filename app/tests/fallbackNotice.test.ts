@@ -20,7 +20,7 @@ function compile(file: string, modules: Record<string, any> = {}, globals: Recor
 
 const modelOptions = compile('../src/lib/modelOptions.ts');
 const notice = compile('../src/lib/fallbackNotice.ts', { './modelOptions': modelOptions });
-const { formatCountdown, remainingSeconds, stripText, stripLines, isFallbackActive, isTicking, snapshotOf } = notice;
+const { formatCountdown, remainingSeconds, secondsLeft, stripText, stripLines, isFallbackActive, isTicking, snapshotOf } = notice;
 
 test('countdown text rounds up and uses seconds, minutes, then hours', () => {
   const cases: [any, string][] = [
@@ -59,13 +59,13 @@ test('strip text for a rate limit shows the reason, the countdown and the model 
   assert.equal(stripText(snap(rate), 1000 + 6912_000).countdown, 'next message');
 });
 
-test('without a cooldown the strip says the next message and names what is tried again', () => {
+test('without a cooldown the strip never claims a countdown, it names what is tried again', () => {
   const text = stripText(snap({ active: true, reason: 'authentication failed', retry_in_s: null, from_model: 'claude-sonnet-5-5' }, 'claude-haiku-5-5'), 5000);
   assert.equal(text.title, 'Fallback · authentication failed');
-  assert.equal(text.countdown, 'next message');
+  assert.equal(text.countdown, '', 'no cooldown means no timer to show');
   assert.equal(text.detail, 'Using Claude Haiku 5.5 · Claude is tried again when you send');
   const unknown = stripText(snap({ active: true, reason: 'request timeout' }, 'x-1'), 0);
-  assert.equal(unknown.countdown, 'next message');
+  assert.equal(unknown.countdown, '');
   assert.equal(unknown.detail, 'Using x 1 · The main model is tried again when you send');
 });
 
@@ -308,4 +308,38 @@ test('no const or let is read before its declaration in the files this change to
     '../src/components/ModelSheet.tsx', '../src/components/Composer.tsx']) {
     assert.deepEqual(usedBeforeDeclared(read(file)), [], file);
   }
+});
+
+test('the server absolute reset time beats a relative count, so a republish cannot restart it', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  const withAt = { ...rate, retry_at: nowS + 6912 };
+  const left = secondsLeft(withAt, 0, 0) as number;
+  assert.ok(left > 6910 && left <= 6912, `about 6912 seconds left, got ${left}`);
+  // A later answer quoting a longer remaining time must not move the deadline out.
+  const stale = { ...rate, retry_in_s: 6912, retry_at: nowS + 600 };
+  const left2 = secondsLeft(stale, 0, 0) as number;
+  assert.ok(left2 > 597 && left2 <= 600, `the absolute time wins, got ${left2}`);
+  // Without an absolute time the old behaviour is unchanged.
+  assert.equal(secondsLeft(rate, 1000, 1000), 6912);
+});
+
+function fallbackStore() {
+  const zustand = { create: (fn: any) => {
+    let state: any;
+    const set = (updater: any) => { const next = typeof updater === 'function' ? updater(state) : updater; state = { ...state, ...next }; };
+    state = fn(set); const api: any = (select: any) => select(state); api.getState = () => state; return api;
+  } };
+  return compile('../src/lib/fallbackStore.ts', { zustand, './fallbackNotice': notice });
+}
+
+test('a republish with a longer countdown never replaces the one being watched', () => {
+  const nowS = Math.floor(Date.now() / 1000);
+  const store = fallbackStore().useFallback;
+  store.getState().publish('s:c', { model: 'm', fallback: { ...rate, retry_at: nowS + 600 } }, 1000);
+  const first = store.getState().slots['s:c'];
+  assert.ok(first);
+  store.getState().publish('s:c', { model: 'm', fallback: { ...rate, retry_at: nowS + 900 } }, 2000);
+  assert.equal(store.getState().slots['s:c'], first, 'the shorter countdown stays');
+  store.getState().publish('s:c', { model: 'm', fallback: { ...rate, retry_at: nowS + 300 } }, 3000);
+  assert.notEqual(store.getState().slots['s:c'], first, 'a genuinely shorter countdown is adopted');
 });
