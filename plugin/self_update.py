@@ -12,6 +12,8 @@ out-of-process rollback possible.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -37,6 +39,7 @@ CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 CHECK_START_DELAY_SECONDS = 20
 CHECK_START_JITTER_SECONDS = 20
 RETRY_AFTER_FAILURE_SECONDS = 30 * 60
+RETRY_ATTEMPTS = 3
 WATCHDOG_GRACE_SECONDS = 10 * 60
 
 WATCHDOG_SERVICE = "winglet-update-watchdog.service"
@@ -89,7 +92,7 @@ def _read_json(path: Path) -> Optional[dict]:
     return data if isinstance(data, dict) else None
 
 
-def read_attempts(home=None) -> Dict[str, Dict[str, float]]:
+def read_attempts(home=None) -> Dict[str, Any]:
     """Attempts and failures by release version, kept outside the plugin tree and
     outside the database so a rollback cannot erase the evidence that this
     release has already been tried.
@@ -101,30 +104,76 @@ def read_attempts(home=None) -> Dict[str, Dict[str, float]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        return {"attempts": {}, "failures": {}}
+        return {"attempts": {}, "failures": {}, "permanent": {}}
     except (OSError, ValueError) as exc:
         raise ValueError(f"the update attempt record cannot be read: {exc}") from exc
     if not isinstance(data, dict):
         raise ValueError("the update attempt record is not a record")
     raw_attempts = data.get("attempts")
     raw_failures = data.get("failures")
-    attempts = raw_attempts if isinstance(raw_attempts, dict) else {}
-    failures = raw_failures if isinstance(raw_failures, dict) else {}
-    return {"attempts": {str(k): float(v) for k, v in attempts.items()
-                         if isinstance(v, (int, float)) and not isinstance(v, bool)},
-            "failures": {str(k): float(v) for k, v in failures.items()
-                         if isinstance(v, (int, float)) and not isinstance(v, bool)}}
+    raw_permanent = data.get("permanent")
+    raw_attempts = raw_attempts if isinstance(raw_attempts, dict) else {}
+    raw_failures = raw_failures if isinstance(raw_failures, dict) else {}
+    raw_permanent = raw_permanent if isinstance(raw_permanent, dict) else {}
+    attempts: Dict[str, Dict[str, Any]] = {}
+    legacy_permanent = {}
+    for key, value in raw_attempts.items():
+        if isinstance(value, dict):
+            at = value.get("at")
+            count = value.get("count")
+        else:
+            at, count = value, 1
+            legacy_permanent[str(key)] = True
+        if isinstance(at, (int, float)) and not isinstance(at, bool):
+            attempts[str(key)] = {"at": float(at),
+                                  "count": int(count) if isinstance(count, int) and count > 0 else 1}
+    failures = {str(k): float(v) for k, v in raw_failures.items()
+                if isinstance(v, (int, float)) and not isinstance(v, bool)}
+    permanent = {str(k): True for k, v in raw_permanent.items() if v is True}
+    permanent.update(legacy_permanent)
+    return {"attempts": attempts, "failures": failures, "permanent": permanent}
 
 
-def _write_attempts(data: Dict[str, Dict[str, float]], home=None) -> None:
+@contextlib.contextmanager
+def _attempts_lock(home=None):
+    """An on-disk lock: the watchdog rollback is a different process."""
+    path = attempts_path(home).with_suffix(".lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_attempts(data: Dict[str, Any], home=None) -> None:
     _atomic_json(attempts_path(home), {
         "attempts": dict(sorted(data.get("attempts", {}).items())),
         "failures": dict(sorted(data.get("failures", {}).items())),
+        "permanent": dict(sorted(data.get("permanent", {}).items())),
     })
 
 
+def _mutate_attempts(home, change) -> None:
+    with _attempts_lock(home):
+        data = read_attempts(home)
+        change(data)
+        _write_attempts(data, home)
+
+
 def attempted(version: str, home=None) -> bool:
-    return str(version) in read_attempts(home)["attempts"]
+    data = read_attempts(home)
+    return str(version) in data["attempts"] or str(version) in data["permanent"]
+
+
+def permanent_failure(version: str, home=None) -> bool:
+    return str(version) in read_attempts(home)["permanent"]
+
+
+def attempt_count(version: str, home=None) -> int:
+    entry = read_attempts(home)["attempts"].get(str(version))
+    return int(entry["count"]) if isinstance(entry, dict) else 0
 
 
 def failed_at(version: str, home=None) -> Optional[float]:
@@ -132,25 +181,37 @@ def failed_at(version: str, home=None) -> Optional[float]:
 
 
 def note_attempt(version: str, home=None, *, now=None) -> None:
-    data = read_attempts(home)
-    data["attempts"][str(version)] = float(time.time() if now is None else now)
-    _write_attempts(data, home)
+    def change(data):
+        entry = data["attempts"].get(str(version))
+        count = int(entry["count"]) if isinstance(entry, dict) else 0
+        data["attempts"][str(version)] = {"at": float(time.time() if now is None else now),
+                                          "count": count + 1}
+    _mutate_attempts(home, change)
 
 
-def note_failure(version: str, home=None, *, now=None) -> None:
-    data = read_attempts(home)
-    data["failures"][str(version)] = float(time.time() if now is None else now)
-    _write_attempts(data, home)
+def note_failure(version: str, home=None, *, now=None, kind: str = "transient",
+                 count_as_attempt: bool = False) -> None:
+    def change(data):
+        stamp = float(time.time() if now is None else now)
+        data["failures"][str(version)] = stamp
+        if count_as_attempt:
+            entry = data["attempts"].get(str(version))
+            count = int(entry["count"]) if isinstance(entry, dict) else 0
+            data["attempts"][str(version)] = {"at": stamp, "count": count + 1}
+        if kind == "rollback":
+            data["permanent"][str(version)] = True
+    _mutate_attempts(home, change)
 
 
 def clear_attempts(home=None) -> None:
     """Owner turned autoUpdate off and on: forget every attempted release."""
-    try:
-        attempts_path(home).unlink()
-    except FileNotFoundError:
-        pass
-    except OSError as exc:
-        raise ValueError(f"the update attempt record cannot be cleared: {exc}") from exc
+    with _attempts_lock(home):
+        try:
+            attempts_path(home).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            raise ValueError(f"the update attempt record cannot be cleared: {exc}") from exc
 
 
 def prune_attempts(version: str, home=None) -> None:
@@ -158,16 +219,14 @@ def prune_attempts(version: str, home=None) -> None:
     latest = _version(version)
     if latest is None:
         return
-    data = read_attempts(home)
-    changed = False
-    for group in ("attempts", "failures"):
-        for key in list(data[group]):
-            older = _version(key)
-            if older is not None and older < latest:
-                del data[group][key]
-                changed = True
-    if changed:
-        _write_attempts(data, home)
+
+    def change(data):
+        for group in ("attempts", "failures", "permanent"):
+            for key in list(data[group]):
+                older = _version(key)
+                if older is not None and older < latest:
+                    del data[group][key]
+    _mutate_attempts(home, change)
 
 
 def write_health(current_version: str, home=None, *, now=None) -> Path:
@@ -304,7 +363,8 @@ def set_auto_update(store, enabled: bool) -> bool:
 
 def gate_reason(*, enabled: bool, release: Optional[dict], current_version: str,
                 running_hermes: str, idle: bool, asset_ok: bool, manifest_ok: bool,
-                attempted_release: bool, failed_at: Optional[float], now: float) -> Optional[str]:
+                attempted_release: bool, failed_at: Optional[float], now: float,
+                attempt_count: int = 0) -> Optional[str]:
     """The first gate that refuses, or None when every gate allows the update.
 
     The order is the design's order.  Pure function: the caller supplies the
@@ -324,6 +384,8 @@ def gate_reason(*, enabled: bool, release: Optional[dict], current_version: str,
     if not manifest_ok:
         return "manifest"
     if attempted_release:
+        return "attempt"
+    if failed_at is not None and attempt_count >= RETRY_ATTEMPTS:
         return "attempt"
     if failed_at is not None and now - failed_at < RETRY_AFTER_FAILURE_SECONDS:
         return "retry"

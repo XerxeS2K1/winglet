@@ -754,20 +754,26 @@ class Hub:
             except ValueError as exc:
                 self._self_update_refused(version, "attempt", str(exc))
                 return
+            attempt = attempts["attempts"].get(version) or {}
+            failed_at = attempts["failures"].get(version)
+            if failed_at is None:
+                failed_at = attempt.get("at")
+            attempt_count = int(attempt.get("count") or 0)
             idle = (not self._busy_job()) and await self._is_quiet(h)
             now = time.time()
             early = self_update.gate_reason(
                 enabled=enabled, release=release, current_version=VERSION,
                 running_hermes=self.hermes_version() or "", idle=idle,
                 asset_ok=True, manifest_ok=True,
-                attempted_release=version in attempts["attempts"],
-                failed_at=attempts["failures"].get(version), now=now)
+                attempted_release=version in attempts["permanent"],
+                failed_at=failed_at, now=now, attempt_count=attempt_count)
             if early:
                 self._self_update_refused(version, early)
                 return
             try:
                 asset = await asyncio.to_thread(h.release_plugin_asset, release)
             except Exception as exc:
+                self._record_pre_swap_failure(version)
                 self._self_update_refused(version, "asset", _clip(str(exc), 240))
                 return
             manifest = asset.get("manifest") if isinstance(asset, dict) else None
@@ -777,9 +783,11 @@ class Hub:
                 enabled=enabled, release=release, current_version=VERSION,
                 running_hermes=self.hermes_version() or "", idle=idle,
                 asset_ok=True, manifest_ok=manifest_ok,
-                attempted_release=version in attempts["attempts"],
-                failed_at=attempts["failures"].get(version), now=now)
+                attempted_release=version in attempts["permanent"],
+                failed_at=failed_at, now=now, attempt_count=attempt_count)
             if late:
+                if late == "manifest":
+                    self._record_pre_swap_failure(version)
                 self._self_update_refused(version, late)
                 return
             try:
@@ -3677,13 +3685,20 @@ class Hub:
                 return False
         return True
 
-    def _record_failed_release(self) -> None:
+    def _record_pre_swap_failure(self, version: str) -> None:
+        """A download/digest/manifest failure never swapped the code: retry it."""
+        try:
+            self_update.note_failure(version, self.update_home, count_as_attempt=True)
+        except Exception:
+            logger.debug("[winglet] could not record the failed download", exc_info=True)
+
+    def _record_failed_release(self, *, kind: str = "rollback") -> None:
         """Keep the failed version on disk even if the database is restored underneath us."""
         try:
             marker = self_update.read_marker(self.update_home)
             to = marker.get("to") if isinstance(marker, dict) else None
             if isinstance(to, str) and to:
-                self_update.note_failure(to, self.update_home)
+                self_update.note_failure(to, self.update_home, kind=kind)
         except Exception:
             logger.debug("[winglet] could not record the failed release", exc_info=True)
 
@@ -3699,7 +3714,7 @@ class Hub:
     async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
         """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what
         happened. This never restarts the gateway."""
-        self._record_failed_release()
+        self._record_failed_release(kind="transient")
         try:
             await asyncio.to_thread(self_update.clear_marker, self.update_home)
         except Exception:

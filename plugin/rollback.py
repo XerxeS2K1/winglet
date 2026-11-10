@@ -45,13 +45,13 @@ def _pid_is_alive(pid: int) -> bool:
     return True
 
 
-def _gateway_pid(home: Path) -> Optional[int]:
-    """The live gateway pid from Hermes's JSON pid file.
+def _gateway_pid_info(home: Path):
+    """The live gateway pid and, when relevant, why it could not be verified.
 
     Hermes writes ``{"pid": 123, "start_time": 456, ...}``.  The recorded start
     time is checked against /proc so a recycled pid cannot be mistaken for the
-    gateway.  A plain integer is accepted for older files, but only after the
-    liveness check.
+    gateway.  If /proc cannot be read, the pid is still alive: fail closed by
+    returning it with a reason instead of treating the gateway as dead.
     """
     for candidate in (Path(home) / "gateway.pid", self_update.hermes_home(home) / "gateway.pid"):
         try:
@@ -76,18 +76,27 @@ def _gateway_pid(home: Path) -> Optional[int]:
                     recorded = int(recorded_start)
                 except (TypeError, ValueError):
                     continue
-                if actual is None or actual != recorded:
+                if actual is None:
+                    if _pid_is_alive(pid):
+                        return pid, (f"the gateway pid {pid} is alive, but its /proc start time "
+                                     "could not be read; treating it as running")
+                    continue
+                if actual != recorded:
                     continue  # the pid now belongs to another process
             if _pid_is_alive(pid):
-                return pid
+                return pid, None
             continue
         try:
             pid = int(raw)
         except ValueError:
             continue
         if pid > 0 and _pid_is_alive(pid):
-            return pid
-    return None
+            return pid, None
+    return None, None
+
+
+def _gateway_pid(home: Path) -> Optional[int]:
+    return _gateway_pid_info(home)[0]
 
 
 def _hermes_command(args) -> list:
@@ -172,7 +181,15 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
         out(f"Cannot roll back: the backup named by the marker is not a Winglet backup: {backup}")
         return 1
 
-    running = running or (lambda: _gateway_pid(root) is not None)
+    note = None
+    if running is None:
+        def gateway_running() -> bool:
+            nonlocal note
+            pid, reason = _gateway_pid_info(root)
+            if reason:
+                note = reason
+            return pid is not None
+        running = gateway_running
     was_running = bool(running())
     if was_running:
         stopped = (stop or (lambda: _run_hermes(["gateway", "stop"], out=out)))()
@@ -180,6 +197,8 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
         while running() and time.monotonic() < deadline:
             time.sleep(0.5)
         if running():
+            if note:
+                out(note + ".")
             out("The gateway did not stop, so the database was not restored (never restore a database under a "
                 "running gateway). Stop the gateway and run `hermes winglet rollback` again.")
             _audit(root, f"refused to restore {frm} from {backup}: the gateway did not stop", "refused")
@@ -197,7 +216,7 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
         return 1
 
     try:
-        self_update.note_failure(to, root)
+        self_update.note_failure(to, root, kind="rollback")
     except ValueError as exc:
         out(f"Restored, but the failed attempt could not be recorded: {exc}")
     try:
