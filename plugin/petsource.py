@@ -18,6 +18,7 @@ the tests replace.
 
 from __future__ import annotations
 
+import contextvars
 import http.client
 import io
 import json
@@ -58,6 +59,7 @@ THUMB_W = 96                  # as Hermes's own thumbnails
 IMAGE_FORMATS = ("WEBP", "PNG")
 
 _CODEX_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,59}")
+_HOP_DEADLINE: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar("pet_hop_deadline", default=None)
 _USER_AGENT = "winglet-pets"
 
 
@@ -137,8 +139,8 @@ def _hop(url: str, timeout: float, limit: int) -> Tuple[int, Dict[str, str], byt
         declared = headers.get("content-length", "")
         if declared.isdigit() and int(declared) > limit:
             return response.status, headers, b"\0" * (limit + 1)  # too big: not read
-        # Per-connection total, not just per-read: a trickle cannot keep the socket alive forever.
-        return response.status, headers, _read_capped(response, limit, time.monotonic() + timeout * 2)
+        # The deadline belongs to the whole fetch, not this hop: a redirect chain gets no new budget.
+        return response.status, headers, _read_capped(response, limit, _HOP_DEADLINE.get())
     finally:
         conn.close()
 
@@ -146,26 +148,32 @@ def _hop(url: str, timeout: float, limit: int) -> Tuple[int, Dict[str, str], byt
 def fetch(url: str, *, limit: int, timeout: float = TIMEOUT) -> Tuple[Dict[str, str], bytes]:
     """GET an allowed URL. Redirects are followed only within the allowed host; the body is capped."""
     deadline = time.monotonic() + timeout * 2
-    for _ in range(MAX_REDIRECTS + 1):
-        _check_url(url)
-        try:
-            status, headers, body = _hop(url, timeout, limit)
-        except PetSourceError:
-            raise
-        except Exception as exc:
-            raise PetSourceError(f"Couldn't reach {CODEX_HOST}.") from exc
-        if status in (301, 302, 303, 307, 308):
-            where = headers.get("location", "")
-            if not where or time.monotonic() > deadline:
-                raise PetSourceError("The download was redirected somewhere it can't be followed.")
-            url = urljoin(url, where)  # _check_url at the top of the loop refuses any other host
-            continue
-        if status != 200:
-            raise PetSourceError(f"{CODEX_HOST} answered {status}.")
-        if len(body) > limit:
-            raise PetSourceError("That file is bigger than a pet should be, so it was refused.")
-        return headers, body
-    raise PetSourceError("The download was redirected too many times.")
+    token = _HOP_DEADLINE.set(deadline)
+    try:
+        for _ in range(MAX_REDIRECTS + 1):
+            if time.monotonic() > deadline:
+                raise PetSourceError("That download took too long, so it was stopped.")
+            _check_url(url)
+            try:
+                status, headers, body = _hop(url, timeout, limit)
+            except PetSourceError:
+                raise
+            except Exception as exc:
+                raise PetSourceError(f"Couldn't reach {CODEX_HOST}.") from exc
+            if status in (301, 302, 303, 307, 308):
+                where = headers.get("location", "")
+                if not where:
+                    raise PetSourceError("The download was redirected somewhere it can't be followed.")
+                url = urljoin(url, where)  # _check_url at the top of the loop refuses any other host
+                continue
+            if status != 200:
+                raise PetSourceError(f"{CODEX_HOST} answered {status}.")
+            if len(body) > limit:
+                raise PetSourceError("That file is bigger than a pet should be, so it was refused.")
+            return headers, body
+        raise PetSourceError("The download was redirected too many times.")
+    finally:
+        _HOP_DEADLINE.reset(token)
 
 
 def _fetch_json(url: str, limit: int) -> Any:
