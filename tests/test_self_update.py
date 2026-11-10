@@ -21,7 +21,27 @@ import pytest
 
 from plugin import hermes_api as api
 from plugin import rollback as rollback_module
-from plugin import self_update, update_rollback
+from plugin import self_update
+from plugin import update_rollback
+from plugin.hub import VERSION as RUNNING
+
+
+def _next_patch(version: str) -> str:
+    major, minor, patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
+
+
+# The hub-level tests need a release newer than whatever is shipped right now, or the
+# 'newer' gate refuses and the test proves nothing. Hardcoding it broke on every bump.
+NEWER = _next_patch(RUNNING)
+
+
+def _next_minor(version: str) -> str:
+    major, minor, _patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor + 1}.0"
+
+
+NEXT_MINOR = _next_minor(RUNNING)
 from plugin import hub as hub_module
 from test_control import client, hub, store, settle  # noqa: F401
 from test_trust import pair_phone
@@ -40,16 +60,16 @@ def isolated_hermes_home(tmp_path, monkeypatch):
 
 # -- the gates, in the design's order ------------------------------------------------------------------------------
 
-BASE_GATE = dict(enabled=True, release={"version": "0.10.12"}, current_version="0.10.11",
-                 running_hermes="0.23.0", idle=True, asset_ok=True, manifest_ok=True,
-                 attempted_release=False, failed_at=None, now=1000.0)
+BASE_GATE = dict(enabled=True, release={"version": NEWER}, current_version=RUNNING,
+                  running_hermes="0.23.0", idle=True, asset_ok=True, manifest_ok=True,
+                  attempted_release=False, failed_at=None, now=1000.0)
 
 
 @pytest.mark.parametrize("change,expected", [
     ({"enabled": False}, "autoUpdate"),
     ({"release": {"version": "0.10.11"}}, "newer"),
     ({"release": {"version": "0.10.9"}}, "newer"),
-    ({"release": {"version": "0.11.0"}}, "major"),
+    ({"release": {"version": NEXT_MINOR}}, "major"),
     ({"release": {"version": "1.0.0"}}, "major"),
     ({"idle": False}, "busy"),
     ({"asset_ok": False}, "asset"),
@@ -255,14 +275,14 @@ def test_the_last_successful_update_time_is_recorded(tmp_path):
 
 
 def test_attempts_are_persisted_by_version_and_cleared_only_by_a_newer_release(tmp_path):
-    self_update.note_attempt("0.10.12", home=tmp_path, now=10.0)
-    self_update.note_failure("0.10.12", home=tmp_path, now=20.0)
-    assert self_update.attempted("0.10.12", tmp_path) is True
-    assert self_update.failed_at("0.10.12", tmp_path) == 20.0
-    self_update.prune_attempts("0.10.12", tmp_path)
-    assert self_update.attempted("0.10.12", tmp_path) is True
-    self_update.prune_attempts("0.10.13", tmp_path)
-    assert self_update.attempted("0.10.12", tmp_path) is False
+    self_update.note_attempt(NEWER, home=tmp_path, now=10.0)
+    self_update.note_failure(NEWER, home=tmp_path, now=20.0)
+    assert self_update.attempted(NEWER, tmp_path) is True
+    assert self_update.failed_at(NEWER, tmp_path) == 20.0
+    self_update.prune_attempts(NEWER, tmp_path)
+    assert self_update.attempted(NEWER, tmp_path) is True
+    self_update.prune_attempts(_next_patch(NEWER), tmp_path)
+    assert self_update.attempted(NEWER, tmp_path) is False
     self_update.note_attempt("0.10.13", home=tmp_path)
     self_update.clear_attempts(tmp_path)
     assert self_update.attempted("0.10.13", tmp_path) is False
@@ -270,10 +290,10 @@ def test_attempts_are_persisted_by_version_and_cleared_only_by_a_newer_release(t
 
 def test_a_transient_failure_retries_after_the_window_and_pins_after_three(tmp_path):
     now = 1000.0
-    self_update.note_attempt("0.10.12", home=tmp_path, now=now)
-    self_update.note_failure("0.10.12", home=tmp_path, now=now)
-    assert self_update.permanent_failure("0.10.12", tmp_path) is False
-    assert self_update.attempt_count("0.10.12", tmp_path) == 1
+    self_update.note_attempt(NEWER, home=tmp_path, now=now)
+    self_update.note_failure(NEWER, home=tmp_path, now=now)
+    assert self_update.permanent_failure(NEWER, tmp_path) is False
+    assert self_update.attempt_count(NEWER, tmp_path) == 1
     retry = self_update.gate_reason(**{**BASE_GATE, "failed_at": now,
                                        "now": now + self_update.RETRY_AFTER_FAILURE_SECONDS - 1,
                                        "attempt_count": 1})
@@ -293,16 +313,16 @@ def test_two_processes_both_record_their_attempt(tmp_path):
     script = ("import time; from plugin import self_update; import sys; "
               "time.sleep(0.3); self_update.note_attempt(sys.argv[1], sys.argv[2])")
     env = {**os.environ, "PYTHONPATH": str(root)}
-    first = subprocess.Popen([sys.executable, "-c", script, "0.10.12", str(tmp_path)],
+    first = subprocess.Popen([sys.executable, "-c", script, NEWER, str(tmp_path)],
                              cwd=root, env=env)
     second = subprocess.Popen([sys.executable, "-c", script, "0.10.13", str(tmp_path)],
                               cwd=root, env=env)
     assert first.wait(timeout=30) == 0
     assert second.wait(timeout=30) == 0
     data = self_update.read_attempts(tmp_path)
-    assert "0.10.12" in data["attempts"]
+    assert NEWER in data["attempts"]
     assert "0.10.13" in data["attempts"]
-    assert data["attempts"]["0.10.12"]["count"] == 1
+    assert data["attempts"][NEWER]["count"] == 1
     assert data["attempts"]["0.10.13"]["count"] == 1
 
 
@@ -347,11 +367,11 @@ async def test_auto_update_defaults_on_and_only_the_owner_can_change_it(client, 
 
 async def test_owner_turning_auto_update_off_and_on_clears_attempts(client, hub):
     owner = await pair_phone(client, hub)
-    self_update.note_attempt("0.10.12", hub.update_home, now=time.time())
+    self_update.note_attempt(NEWER, hub.update_home, now=time.time())
     assert (await put_signed(client, owner, "/api/settings", {"autoUpdate": False})).status == 200
-    assert self_update.attempted("0.10.12", hub.update_home) is True
+    assert self_update.attempted(NEWER, hub.update_home) is True
     assert (await put_signed(client, owner, "/api/settings", {"autoUpdate": True})).status == 200
-    assert self_update.attempted("0.10.12", hub.update_home) is False
+    assert self_update.attempted(NEWER, hub.update_home) is False
 
 
 async def test_system_reports_the_last_successful_update_time(client, hub):
@@ -373,7 +393,7 @@ async def test_auto_update_rejects_a_non_boolean(client, hub):
 
 async def test_self_check_refuses_while_a_chat_is_busy(client, hub):
     owner = await pair_phone(client, hub)  # noqa: F841
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
 
     async def busy(_h):
         return False
@@ -388,7 +408,7 @@ async def test_self_check_refuses_while_a_chat_is_busy(client, hub):
 
 async def test_self_check_refuses_while_a_job_is_running(client, hub):
     owner = await pair_phone(client, hub)  # noqa: F841
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
     hub.store.create_job("restart", detail={"boot": hub.boot_id})
     await hub._self_update_once()
     assert not [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"]
@@ -398,7 +418,7 @@ async def test_self_check_refuses_while_a_job_is_running(client, hub):
 async def test_self_check_starts_the_same_job_the_phone_uses(client, hub, monkeypatch):
     owner = await pair_phone(client, hub)  # noqa: F841
     hub.hermes_version = lambda: "0.23.0"
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
 
     async def quiet(_h):
         return True
@@ -415,7 +435,7 @@ async def test_self_check_starts_the_same_job_the_phone_uses(client, hub, monkey
     assert len(started) == 1, [(a["action"], a["summary"]) for a in hub.store.list_audit()]
     job = hub.store.get_job(started[0][0])
     assert job["kind"] == "winglet_update" and job["detail"]["actor"] == "self-update"
-    assert job["detail"]["to"] == "0.10.12"
+    assert job["detail"]["to"] == NEWER
     actions = {a["action"] for a in hub.store.list_audit()}
     assert {"self_update.release_found", "self_update.started"} <= actions
 
@@ -423,7 +443,7 @@ async def test_self_check_starts_the_same_job_the_phone_uses(client, hub, monkey
 async def test_a_recent_attempt_does_not_retry_immediately(client, hub, monkeypatch):
     await pair_phone(client, hub)
     hub.hermes_version = lambda: "0.23.0"
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
 
     async def quiet(_h):
         return True
@@ -448,7 +468,7 @@ async def test_a_marker_already_present_blocks_a_second_attempt(client, hub, tmp
     hub.update_home = tmp_path / "hermes"
     self_update.write_marker(from_version="0.10.11", to_version="0.11.0",
                              backup=tmp_path / "backup", home=hub.update_home)
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
     await hub._self_update_once()
     assert [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"] == []
     assert any("marker is already present" in a["summary"] for a in hub.store.list_audit())
@@ -456,19 +476,19 @@ async def test_a_marker_already_present_blocks_a_second_attempt(client, hub, tmp
 
 def test_pre_swap_failure_is_transient_and_rollback_failure_is_permanent(client, hub, tmp_path):
     hub.update_home = tmp_path / "hermes"
-    self_update.write_marker(from_version="0.10.11", to_version="0.10.12", backup="/b",
+    self_update.write_marker(from_version="0.10.11", to_version=NEWER, backup="/b",
                              home=hub.update_home)
     hub._record_failed_release(kind="transient")
-    assert self_update.permanent_failure("0.10.12", hub.update_home) is False
+    assert self_update.permanent_failure(NEWER, hub.update_home) is False
     hub._record_failed_release(kind="rollback")
-    assert self_update.permanent_failure("0.10.12", hub.update_home) is True
+    assert self_update.permanent_failure(NEWER, hub.update_home) is True
 
 
 async def test_a_transient_failure_retries_once_the_window_passes(client, hub):
     await pair_phone(client, hub)
     hub.hermes_version = lambda: "0.23.0"
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
-    self_update.note_failure("0.10.12", hub.update_home,
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
+    self_update.note_failure(NEWER, hub.update_home,
                              now=time.time() - self_update.RETRY_AFTER_FAILURE_SECONDS - 1,
                              count_as_attempt=True)
 
@@ -485,10 +505,10 @@ async def test_a_transient_failure_retries_once_the_window_passes(client, hub):
 async def test_three_transient_failures_pin_the_release(client, hub):
     await pair_phone(client, hub)
     hub.hermes_version = lambda: "0.23.0"
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
     old = time.time() - self_update.RETRY_AFTER_FAILURE_SECONDS - 1
     for _ in range(self_update.RETRY_ATTEMPTS):
-        self_update.note_failure("0.10.12", hub.update_home, now=old, count_as_attempt=True)
+        self_update.note_failure(NEWER, hub.update_home, now=old, count_as_attempt=True)
 
     async def quiet(_h):
         return True
@@ -505,8 +525,8 @@ async def test_three_transient_failures_pin_the_release(client, hub):
 async def test_a_persisted_attempt_blocks_a_fresh_hub_after_a_rollback(client, hub):
     await pair_phone(client, hub)
     hub.hermes_version = lambda: "0.23.0"
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
-    self_update.note_failure("0.10.12", hub.update_home, now=time.time() - 10 * 24 * 3600,
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
+    self_update.note_failure(NEWER, hub.update_home, now=time.time() - 10 * 24 * 3600,
                              kind="rollback")
 
     async def quiet(_h):
@@ -524,7 +544,7 @@ async def test_a_persisted_attempt_blocks_a_fresh_hub_after_a_rollback(client, h
 async def test_auto_update_off_refuses_but_still_audits_the_release(client, hub):
     await pair_phone(client, hub)
     self_update.set_auto_update(hub.store, False)
-    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.hermes.release = {**hub.hermes.release, "version": NEWER, "tag": f"v{NEWER}"}
     await hub._self_update_once()
     assert not [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"]
     assert any(a["action"] == "self_update.release_found" for a in hub.store.list_audit())

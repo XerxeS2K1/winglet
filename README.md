@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.10.11](docs/releases/v0.10.11.md):** one tap updates both halves — the server plugin job is sent first, then the Android installer opens, and the Server screen's duplicate button is gone. A release the phone already runs is no longer offered, and the fallback strip reads "Claude rate limited — using GPT-6.1 Sol" with a countdown only when the server supplied one.
+> **New in [v0.11.0](docs/releases/v0.11.0.md):** the server updates its own plugin when a release is newer, idle-safe, digest-checked and same-major; a systemd watchdog rolls back a version that never reports health. The app goes back to being an app — download the APK, install it, and read the server's version. A 0.x minor change still needs your tap.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
