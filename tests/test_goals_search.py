@@ -1,6 +1,7 @@
 """Goals, message search and the files in a chat."""
 
 import sys
+import time
 from types import ModuleType
 
 import pytest
@@ -153,3 +154,18 @@ async def test_search_is_capped_paged_and_runs_off_the_event_loop(client, hub, m
     assert len(data["results"]) <= 60
     assert "next_before" in data
     assert calls and calls[0] != threading.get_ident()
+
+
+def test_search_finds_a_match_older_than_the_old_row_window(store):
+    store.ensure_chat("general", "General")
+    now = time.time()
+    with store._db:
+        store._db.executemany(
+            "INSERT INTO messages (id, chat_id, role, text, status, meta, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [("old-needle", "general", "user", "the needle is old", "final", "{}", now, now)]
+            + [(f"noise-{i}", "general", "user", f"noise {i}", "final", "{}", now, now)
+               for i in range(5001)])
+    found, next_before = store.search_page("needle", ["general"], limit=60, scan_limit=50)
+    assert [m["id"] for m in found] == ["old-needle"]
+    assert next_before is None
