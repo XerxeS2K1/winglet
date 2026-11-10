@@ -191,3 +191,33 @@ async def test_the_wear_send_lock_is_released_before_the_reply_post(env):
                                  {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'Hello from my watch'})
     assert result['status'] == 'accepted'
     assert seen == [False], 'the server-wide wear lock was held across the reply post'
+
+
+async def test_two_sends_for_one_watch_are_posted_in_the_order_sent(env):
+    hub, _, _, phone, _, _ = env
+    status, grant = await link(env)
+    assert status == 200
+    first_started, release_first = asyncio.Event(), asyncio.Event()
+    order = []
+    real = hub.user_message
+
+    async def ordered_post(*args, **kwargs):
+        text = args[2]
+        order.append(text + ':start')
+        if text == 'first':
+            first_started.set()
+            await release_first.wait()
+            order.append(text + ':end')
+        return await real(*args, **kwargs)
+
+    hub.user_message = ordered_post
+    first = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                              {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'first'}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                               {'chat_id': 'general', 'request_id': 'b' * 32, 'text': 'second'}))
+    await asyncio.sleep(0.05)
+    assert order == ['first:start'], 'a later watch send overtook the one already posting'
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert order == ['first:start', 'first:end', 'second:start']
