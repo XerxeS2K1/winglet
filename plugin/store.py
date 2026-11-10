@@ -743,6 +743,18 @@ class Store:
                              (chat_id, limit))
         return [self._message(r) for r in reversed(rows)]
 
+    def list_messages_after(self, chat_id: str, *, after_position: Optional[int] = None,
+                            limit: int = 50) -> List[Dict[str, Any]]:
+        """``limit`` oldest messages after a rowid, oldest first, for a forward export cursor."""
+        limit = max(1, min(int(limit or 50), 200))
+        if after_position is not None:
+            rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? AND rowid > ? "
+                             "ORDER BY rowid ASC LIMIT ?", (chat_id, max(0, int(after_position)), limit))
+        else:
+            rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? "
+                             "ORDER BY rowid ASC LIMIT ?", (chat_id, limit))
+        return [self._message(r) for r in rows]
+
     @staticmethod
     def _message(row: sqlite3.Row) -> Dict[str, Any]:
         out = dict(row)

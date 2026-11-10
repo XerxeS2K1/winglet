@@ -1901,8 +1901,10 @@ class Hub:
                 break
         cursor: Optional[int] = None
         while not truncated:
-            page = await asyncio.to_thread(self.store.list_messages, chat["id"],
-                                           before_position=cursor, limit=EXPORT_PAGE_SIZE)
+            # Forward from the oldest row: a backward cursor emitted the newest page first, so the
+            # file was newest-block-first even though each page was ascending.
+            page = await asyncio.to_thread(self.store.list_messages_after, chat["id"],
+                                           after_position=cursor, limit=EXPORT_PAGE_SIZE)
             if not page:
                 break
             for m in page:
@@ -1920,7 +1922,7 @@ class Hub:
                 if not await emit("\n".join(block) + "\n"):
                     truncated = True
                     break
-            cursor = page[0]["position"]
+            cursor = page[-1]["position"]
         if truncated:
             await response.write(f"\n_Export truncated at the {EXPORT_MAX_BYTES // (1024 * 1024)} MB limit._\n".encode())
         await response.write_eof()
