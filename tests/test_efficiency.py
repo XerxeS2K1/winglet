@@ -216,3 +216,40 @@ async def test_shutdown_clears_the_janitor_without_a_bot_watcher(hub):
     assert hub._bots_watch is None
     await hub._close_sockets(None)
     assert hub._janitor is None
+
+
+async def test_publish_does_not_hold_its_lock_while_a_slow_socket_is_sending(hub, monkeypatch):
+    import asyncio
+    from plugin import hub as hub_module
+
+    device, token = hub.store.add_device("Phone")
+    started = asyncio.Event()
+    fast_got = []
+    slow_closed = []
+
+    class Fast:
+        async def send_str(self, text):
+            assert not hub._publish_lock.locked(), "publish lock held during socket I/O"
+            fast_got.append(text)
+
+        async def close(self, **_kwargs):
+            pass
+
+    class Slow:
+        async def send_str(self, text):
+            started.set()
+            await asyncio.sleep(5)
+
+        async def close(self, **_kwargs):
+            slow_closed.append(True)
+
+    fast, slow = Fast(), Slow()
+    hub._sockets[fast] = {"device": device, "bot": None, "auth_token": token}
+    hub._sockets[slow] = {"device": device, "bot": None, "auth_token": token}
+    monkeypatch.setattr(hub_module, "SOCKET_SEND_TIMEOUT", 0.05)
+
+    task = asyncio.create_task(hub.publish(lambda: True, lambda _result: {"type": "bot.activity", "activities": {}}))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert fast_got, "the fast socket must receive while the slow one is stuck"
+    await asyncio.wait_for(task, timeout=1)
+    assert slow not in hub._sockets and slow_closed

@@ -89,6 +89,7 @@ PUSH_SUBJECT = "https://github.com/XerxeS2K1/winglet"
 PAIR_FAILURES_PER_MINUTE = 10
 ALIVE_CACHE_SECONDS = 2.0
 MAX_ATTACHMENTS = 10
+SOCKET_SEND_TIMEOUT = 2.0
 UNSENT_UPLOAD_SECONDS = 24 * 3600
 # A revoked file keeps this marker until the janitor removes it, so a failed delete cannot leave a link live.
 REVOKED_MARKER = ".revoked"
@@ -280,6 +281,8 @@ class Hub:
         # Serializes a resumable change and its journal row with the send of that same event, so a
         # socket sees seq order and can advance its cursor to the highest seq it applied.
         self._publish_lock = asyncio.Lock()
+        # Sends are serialised in journal order, but the global publish lock is released first.
+        self._delivery_lock = asyncio.Lock()
         self.events = EventStream(store)
         self._push_tasks: Dict[str, asyncio.Task] = {}
         self._pushed_messages: Dict[str, None] = {}
@@ -606,7 +609,7 @@ class Hub:
         self._activity_at = time.monotonic()
         if changed:
             # Transient state: reconnects take a fresh snapshot; never replay old busy states.
-            async with self._publish_lock:
+            async with self._delivery_lock:
                 await self._broadcast({"type": "bot.activity", "activities": activity})
         return activity
 
@@ -2377,9 +2380,12 @@ class Hub:
         if device.get("role") == "owner":
             await asyncio.to_thread(self.bots_state)
             await self.refresh_bot_activity()
+        hello_ready = asyncio.Event()
+        hello: Optional[Dict[str, Any]] = None
         try:
             async with self._publish_lock:
-                self._sockets[ws] = {"device": device, "bot": bot, "auth_token": socket_token}
+                self._sockets[ws] = {"device": device, "bot": bot, "auth_token": socket_token,
+                                     "hello_ready": hello_ready}
                 with self._bot_context(bot):
                     # The stream head is read before the snapshot below on purpose: an event committed
                     # after this point is either after the watermark (and sent live, because the socket
@@ -2399,7 +2405,19 @@ class Hub:
                             hello["bots"] = listing["bots"]
                     if device.get("role") == "owner" and self.activity_provider is not None:
                         hello["bot_activity"] = self._bot_activity
-                    await asyncio.wait_for(ws.send_json(hello), timeout=2.0)
+            # The hello tells the phone what the stream cursor means, so it goes first. Sending it
+            # outside the publish lock keeps one slow handshake from holding up every other socket;
+            # broadcasts for this socket wait on hello_ready, preserving that order.
+            try:
+                await asyncio.wait_for(ws.send_json(hello), timeout=SOCKET_SEND_TIMEOUT)
+            except Exception:
+                async with self._publish_lock:
+                    self._sockets.pop(ws, None)
+                with contextlib.suppress(Exception):
+                    await ws.close(code=1013, message=b"resync required")
+                return ws
+            finally:
+                hello_ready.set()
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -2619,8 +2637,9 @@ class Hub:
         nothing is journaled or sent. ``event_of`` builds the wire event from that result, or a list
         of them when one change is two events (a message also updates its chat row). The store change
         and its journal rows share one transaction, so a crash cannot leave a committed change with no
-        replay event. Holding the lock across the sends is what lets a phone trust "every seq below
-        this one that I may see has reached me", which is the whole basis for advancing a cursor.
+        replay event. The lock only covers the commit and journal; sockets are sent to after it is
+        released, under a separate delivery lock that keeps stream order without letting a stalled
+        phone hold up unrelated writes.
         """
         async with self._publish_lock:
             with self.events.transaction():
@@ -2634,6 +2653,7 @@ class Hub:
                         for scope in scopes:
                             seq = self.events.append(scope, payload)
                             events.append(({**payload, "event_seq": seq} if seq is not None else payload, scope))
+        async with self._delivery_lock:
             for event, scope in events:
                 await self._broadcast(event, scope=scope)
         return result
@@ -2648,12 +2668,16 @@ class Hub:
             chats: Dict[str, Optional[Dict[str, Any]]] = {}
             bot = self._event_bot(event, chats)
             scopes = [bot] if bot is not _ANY_BOT else list({None, *[b["name"] for b in self.bots()]})
+            prepared = []
             for scope in scopes:
                 seq = self.events.append(scope, event)
                 payload = {**event, "event_seq": seq} if seq is not None else event
-                await self._broadcast(payload, scope=scope if seq is not None else _ANY_BOT, prepared_chats=chats)
+                prepared.append((payload, scope if seq is not None else _ANY_BOT))
                 if seq is None:
                     break
+        async with self._delivery_lock:
+            for payload, scope in prepared:
+                await self._broadcast(payload, scope=scope, prepared_chats=chats)
 
     async def _broadcast(self, event: Dict[str, Any], scope=_ANY_BOT,
                          prepared_chats: Optional[Dict[str, Optional[Dict[str, Any]]]] = None) -> None:
@@ -2662,17 +2686,19 @@ class Hub:
         # Private phone RPCs are sent only by PhoneTools to the selected authenticated socket.
         if str(event.get("type") or "").startswith(("phone_tool.", "phone_tools.")):
             return
-        dead = []
+        dead: List[Any] = []
         chats = prepared_chats if prepared_chats is not None else {}
-        event_bot = self._event_bot(event, chats) if self._sockets else _ANY_BOT
+        # Snapshot under the lock that registration uses, then let go before any socket I/O.
+        async with self._publish_lock:
+            sockets = list(self._sockets.items())
+        event_bot = self._event_bot(event, chats) if sockets else _ANY_BOT
         pending: Dict[tuple, int] = {}
         encoded: Dict[int, str] = {}
-        for ws, meta in list(self._sockets.items()):
+        deliveries: List[Any] = []
+        for ws, meta in sockets:
             device = self.store.device_for_token(meta["auth_token"]) if meta.get("auth_token") else self.store.get_device(meta["device"]["id"])
             if device is None:
-                dead.append(ws)
-                with contextlib.suppress(Exception):
-                    await ws.close(code=4401, message=b"unpaired")
+                dead.append((ws, 4401, b"unpaired"))
                 continue
             if scope is not _ANY_BOT and scope != meta.get("bot"):
                 continue
@@ -2694,14 +2720,33 @@ class Hub:
                 text = json.dumps(out)
                 if out is event:
                     encoded[id(out)] = text
+            deliveries.append((ws, text, meta.get("hello_ready")))
+
+        async def deliver(ws: Any, text: str, ready: Any) -> Any:
             try:
-                await asyncio.wait_for(ws.send_str(text), timeout=2.0)
+                if ready is not None:
+                    await asyncio.wait_for(ready.wait(), timeout=SOCKET_SEND_TIMEOUT)
+                await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                return None
             except Exception:
-                dead.append(ws)
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(ws.close(code=1013, message=b"resync required"), timeout=0.2)
-        for ws in dead:
-            self._sockets.pop(ws, None)
+                return (ws, 1013, b"resync required")
+
+        # One slow socket has its own timeout; it never sits in front of the others.
+        results = await asyncio.gather(*(deliver(ws, text, ready) for ws, text, ready in deliveries),
+                                       return_exceptions=True)
+        dead.extend(item for item in results if isinstance(item, tuple))
+
+        async def close(item: Any) -> None:
+            ws, code, message = item
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(code=code, message=message), timeout=0.2)
+
+        # Closing a broken socket is cleanup, not delivery: do every close at once and drop the
+        # socket from the registry before waiting on the transport.
+        async with self._publish_lock:
+            for ws, _code, _message in dead:
+                self._sockets.pop(ws, None)
+        await asyncio.gather(*(close(item) for item in dead), return_exceptions=True)
 
     async def broadcast_projects(self, bot: Optional[str]) -> None:
         """Send this bot's project snapshot to each socket, tailored to what that device may see.
