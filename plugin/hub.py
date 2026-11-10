@@ -166,7 +166,8 @@ ROUTE_POLICY = {
     "h_chat_create": "device", "h_chat_rename": "device", "h_chat_delete": "device", "h_messages": "device",
     "h_chat_bypass_get": "owner", "h_chat_bypass_delete": "owner_signed",
     "h_message_send": "device", "h_upload": "device", "h_export": "device", "h_commands": "device",
-    "h_push_prefs": "device", "h_push_prefs_put": "device", "h_inbox": "device", "h_webpush_subscribe": "device",
+    "h_push_prefs": "device", "h_push_prefs_put": "device", "h_shade_approvals": "device",
+    "h_shade_approvals_put": "owner_signed", "h_inbox": "device", "h_webpush_subscribe": "device",
     "h_webpush_unsubscribe": "device", "h_ntfy": "device", "h_push_test": "device", "h_device_verify": "device",
     "h_devices": "owner", "h_audit": "owner",
     "h_agent": "device", "h_picker_select": "owner_signed",
@@ -274,6 +275,10 @@ def _snippet(text: str, query: str, before: int = 50, after: int = 110) -> str:
         space = flat.find(" ", start, at)
         start = space + 1 if space != -1 else start
     return ("…" if start else "") + flat[start:end] + ("…" if end < len(flat) else "")
+
+
+# A shade approval token is valid for 15 minutes from the push that carried it.
+SHADE_TOKEN_TTL = 15 * 60
 
 
 def _clip(text: str, n: int) -> str:
@@ -476,6 +481,8 @@ class Hub:
         r.add_post("/api/wear/relay", self.h_wear_relay)
         r.add_get("/api/push/prefs", self.h_push_prefs)
         r.add_put("/api/push/prefs", self.h_push_prefs_put)
+        r.add_get("/api/push/shade", self.h_shade_approvals)
+        r.add_put("/api/push/shade", self.h_shade_approvals_put)
         r.add_get("/api/inbox", self.h_inbox)
         r.add_post("/api/inbox/{item_id}/respond", self.h_inbox_respond)
         r.add_get("/api/push/vapid", self.h_vapid)
@@ -1070,10 +1077,19 @@ class Hub:
     def audit(self, action: str, device: Optional[Dict[str, Any]], summary: str = "", outcome: str = "ok") -> None:
         self.store.add_audit(action, device=device, summary=summary, outcome=outcome)
 
-    def action_signature(self, item_id: str, choice: str) -> str:
-        """HMAC used for one-tap notification action links (no bearer token available there)."""
+    def action_signature(self, item_id: str, choice: str, epoch: int = 0) -> str:
+        """HMAC used for one-tap notification action links (no bearer token available there).
+
+        Epoch 0 keeps the original ``item:choice`` input, so deny links already in a shade survive
+        upgrades and stay valid for devices that never enable shade approvals. A non-zero epoch
+        folds the device counter in, so flipping the toggle invalidates older shade signatures.
+        """
         key = self.store.secret("action_key").encode()
-        return hmac.new(key, f"{item_id}:{choice}".encode(), hashlib.sha256).hexdigest()[:32]
+        material = f"{item_id}:{choice}" + (f":{int(epoch)}" if epoch else "")
+        return hmac.new(key, material.encode(), hashlib.sha256).hexdigest()[:32]
+
+    def push_options(self, device: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+        return {"shade_actions": bool(device and device.get("shade_approvals"))}
 
     # -- info & pairing ------------------------------------------------------------------
 
@@ -2167,7 +2183,8 @@ class Hub:
 
     async def h_push_prefs(self, request: web.Request) -> web.Response:
         device = self._require(request)
-        return _json({"prefs": self.store.get_push_prefs(device["id"])})
+        return _json({"prefs": self.store.get_push_prefs(device["id"]),
+                      "options": self.push_options(device)})
 
     async def h_push_prefs_put(self, request: web.Request) -> web.Response:
         """This device's notification preferences: muted chats and quiet hours."""
@@ -2178,6 +2195,35 @@ class Hub:
         except ValueError as exc:
             return _error(400, str(exc))
         return _json({"prefs": self.store.set_push_prefs(device["id"], prefs)})
+
+    async def h_shade_approvals(self, request: web.Request) -> web.Response:
+        device = self._require(request)
+        return _json({"enabled": bool(device.get("shade_approvals")),
+                      "shade_approvals": bool(device.get("shade_approvals")),
+                      "shade_actions": bool(device.get("shade_approvals")),
+                      "epoch": int(device.get("shade_epoch") or 0),
+                      "can_enable": device["role"] == "owner" and bool(device.get("verified"))})
+
+    async def h_shade_approvals_put(self, request: web.Request) -> web.Response:
+        """Owner-only, signed switch for answering approvals from the notification shade."""
+        device = self._require(request)
+        if device["role"] != "owner":
+            return _error(403, "Only an owner can change this setting.")
+        if not device.get("verified"):
+            return _json({"error": VERIFY_FIRST, "needs": "verify"}, status=403)
+        body = await self._body(request)
+        enabled = body.get("enabled", body.get("shade_approvals"))
+        if type(enabled) is not bool:
+            return _error(400, "enabled must be a boolean")
+        updated = self.store.set_shade_approvals(device["id"], enabled)
+        if updated is None:
+            return _error(404, "no such device")
+        self.audit("shade.approvals", device, "on" if enabled else "off")
+        return _json({"enabled": bool(updated["shade_approvals"]),
+                      "shade_approvals": bool(updated["shade_approvals"]),
+                      "shade_actions": bool(updated["shade_approvals"]),
+                      "epoch": int(updated["shade_epoch"]),
+                      "can_enable": updated["role"] == "owner" and bool(updated["verified"])})
 
     # -- inbox ---------------------------------------------------------------------------
 
@@ -2235,13 +2281,26 @@ class Hub:
         device = self._device(request)
         if allow_all and (device is None or device["role"] != "owner"):
             return _error(403, "Only an owner can disable approvals.")
-        if device is None:
-            # Older notifications carried signed action links. Only "deny" is honoured from one: an
-            # approval must be given from the card itself, where the whole command is visible.
-            sig = str(body.get("sig") or request.query.get("sig") or "")
-            if not (choice == "deny" and hmac.compare_digest(sig, self.action_signature(item_id, choice))):
-                return _error(401, "not paired")
         item = self.store.get_inbox(item_id)
+        if device is None:
+            # No bearer token: this is a notification action. Decline links predate shade approvals
+            # and stay valid. Approve needs a live, single-use shade token tied to this device.
+            sig = str(body.get("sig") or request.query.get("sig") or "")
+            if choice not in ("once", "deny"):
+                return _error(400, "That choice isn't available from a notification.")
+            legacy_deny = choice == "deny" and hmac.compare_digest(
+                sig, self.action_signature(item_id, choice))
+            if not legacy_deny:
+                token = self.store.take_shade_token(item_id, choice, sig)
+                if token is None or item is None or item["kind"] != "approval":
+                    return _error(401, "That notification action has expired or was already used.")
+                token_device = self.store.get_device(token["device_id"])
+                if token_device is None or token_device["role"] != "owner":
+                    return _error(403, "Only an owner can approve or deny commands.")
+                if choice == "once" and not token_device["shade_approvals"]:
+                    return _error(403, "Approvals from the notification shade are off.")
+                if int(token_device["shade_epoch"]) != int(token["epoch"]):
+                    return _error(403, "That notification is out of date. Open the card to answer it.")
         if device is not None and (allow_all or (item and item["kind"] == "approval" and choice != "deny")):
             if device["role"] != "owner":
                 return _error(403, "Only an owner can approve or deny commands. It's waiting in their inbox.")
@@ -2251,7 +2310,8 @@ class Hub:
                 return _json({"error": problem, **needs}, status=403)
         try:
             ok, item = await self.respond(item_id, choice=choice, answer=answer, device=device,
-                                          allow_all=allow_all, chat_id=body.get("chat_id"))
+                                          allow_all=allow_all, chat_id=body.get("chat_id"),
+                                          channel="card" if device is not None else "shade")
         except Forbidden as exc:
             return _error(403, str(exc))
         if item is None:
@@ -2260,15 +2320,15 @@ class Hub:
 
     async def respond(self, item_id: str, *, choice: str = "", answer: Any = None,
                       device: Optional[Dict[str, Any]] = None, allow_all: bool = False,
-                      chat_id: Optional[str] = None) -> tuple[bool, Optional[Dict]]:
+                      chat_id: Optional[str] = None, channel: str = "") -> tuple[bool, Optional[Dict]]:
         """Serialize card answers so only the winner may change bypass state."""
         async with self._inbox_response_lock:
             return await self._respond_locked(item_id, choice=choice, answer=answer, device=device,
-                                              allow_all=allow_all, chat_id=chat_id)
+                                              allow_all=allow_all, chat_id=chat_id, channel=channel)
 
     async def _respond_locked(self, item_id: str, *, choice: str, answer: Any,
                               device: Optional[Dict[str, Any]], allow_all: bool,
-                              chat_id: Optional[str]) -> tuple[bool, Optional[Dict]]:
+                              chat_id: Optional[str], channel: str = "") -> tuple[bool, Optional[Dict]]:
         item = self.store.get_inbox(item_id)
         if item is None or (device is not None and not self.can_see(device, self.store.get_chat(item["chat_id"]))):
             return False, None
@@ -2317,7 +2377,8 @@ class Hub:
         else:  # results are simply acknowledged
             ok, resolution = True, "seen"
         item = await self.publish(
-            lambda: self.store.resolve_inbox(item_id, "resolved" if ok else "expired", resolution if ok else ""),
+            lambda: self.store.resolve_inbox(item_id, "resolved" if ok else "expired",
+                                             resolution if ok else "", channel),
             lambda row: {"type": "inbox.update", "item": row, "pending": self.store.pending_count()})
         return ok, item or self.store.get_inbox(item_id)
 
@@ -2349,9 +2410,39 @@ class Hub:
         server = self.server_id() + (f"~{chat['bot']}" if chat.get("bot") else "")
         # Tapping it opens exactly this card in the app.
         url = f"/inbox?server={quote(server, safe='')}&item={quote(item['id'], safe='')}"
-        return {"title": f"{bot} · {item['title']}", "body": _clip(item["body"], 180),
+        body = item["body"]
+        if item["kind"] == "approval":
+            # The shade may offer Approve, so the whole command and its description must be visible
+            # before the buttons are reachable. Never clip an approval body.
+            payload = item.get("payload") or {}
+            command = str(payload.get("command") or body or "")
+            description = str(payload.get("description") or "")
+            body = command + (f"\n\n{description}" if description and description not in command else "")
+        else:
+            body = _clip(body, 180)
+        return {"title": f"{bot} · {item['title']}", "body": body,
                 "url": url, "kind": item["kind"], "item_id": item["id"],
                 "chat_id": item["chat_id"], "chat_title": chat.get("title", "")}
+
+    def _shade_notification(self, note: Dict[str, Any], item: Dict[str, Any],
+                            device: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Per-device approval payload: choices plus short-lived signatures for the shade."""
+        payload = item.get("payload") or {}
+        offered = [c for c in (payload.get("choices") or []) if c in ("once", "deny")]
+        sigs: Dict[str, str] = {}
+        epoch = int((device or {}).get("shade_epoch") or 0)
+        expires = time.time() + SHADE_TOKEN_TTL
+        if device and device.get("shade_approvals") and "once" in offered:
+            sig = self.action_signature(item["id"], "once", epoch)
+            self.store.issue_shade_token(device["id"], item["id"], "once", sig, expires)
+            sigs["once"] = sig
+        if "deny" in offered:
+            # Decline is always available, and keeps the original item:deny link so old links work.
+            sigs["deny"] = self.action_signature(item["id"], "deny")
+        out = {**note, "choices": list(sigs), "sig": sigs}
+        if "once" in sigs:
+            out["shade_expires"] = int(expires)
+        return out
 
     # -- outbound (called by the adapter) ------------------------------------------------------
 
@@ -4754,7 +4845,8 @@ class Hub:
         if not subs:
             return result
         client = await self._client()
-        # No approve buttons on notifications: approving needs the card, with the full command in view.
+        # Approvals are card-only unless a device opts into shade actions; the per-device payload
+        # below carries the choices and signatures only for devices with that switch on.
         note = {**note, "tag": tag, "server_id": self.server_id()}
         chat = self.store.get_chat(str(note.get("chat_id") or "")) if note.get("chat_id") else None
         wanted: Dict[str, bool] = {}
@@ -4768,30 +4860,40 @@ class Hub:
                 and (sub["kind"] == encrypted_push.KIND or self.store.get_kv(encrypted_push.policy_key(sub["device_id"])) != "1")]
         pem = self.vapid_private_key() if any(sub["kind"] in ("webpush", encrypted_push.KIND) for sub in subs) else ""
 
+        # Approval buttons are per device: each phone gets its own short-lived signatures.
+        shade_notes: Dict[str, Dict[str, Any]] = {}
+        if item is not None and item.get("kind") == "approval":
+            for device_key, should_push in wanted.items():
+                if should_push:
+                    shade_notes[device_key] = self._shade_notification(
+                        note, item, self.store.get_device(device_key))
+
         async def deliver(sub: Dict[str, Any]) -> None:
             try:
                 current = self.store.get_device(sub["device_id"])
                 if current is None or (sub["kind"] == encrypted_push.KIND and
                     (encrypted_push.enrolled(self.store, sub["device_id"]) or {}).get("id") != sub["id"]):
                     return
+                outgoing_note = shade_notes.get(sub["device_id"], note)
                 if sub["kind"] == encrypted_push.KIND:
-                    envelope = encrypted_push.seal(sub["data"]["key"], sub["data"]["kid"], self.server_id(), sub["device_id"], note)
+                    envelope = encrypted_push.seal(sub["data"]["key"], sub["data"]["kid"], self.server_id(), sub["device_id"], outgoing_note)
                     status = await webpush.send(client, sub["data"]["subscription"], envelope, pem, PUSH_SUBJECT, urgency=urgency)
                 elif sub["kind"] == "webpush":
                     if not webpush.allowed_endpoint(sub["data"].get("endpoint", "")):
                         self.store.remove_push_sub(endpoint=sub["endpoint"], device_id=sub["device_id"])
                         result["expired"] += 1
                         return
-                    outgoing = note
+                    outgoing = outgoing_note
                     if sub["data"].get("guard_v") == 1:
                         stamp = int(time.time())
-                        outgoing = {**note, "guard_v": 1, "id": secrets.token_hex(16), "issued": stamp,
+                        outgoing = {**outgoing_note, "guard_v": 1, "id": secrets.token_hex(16), "issued": stamp,
                                     "expires": stamp + 86400, "device_id": sub["device_id"],
-                                    "title": encrypted_push._clip(note.get("title"), 180),
-                                    "body": encrypted_push._clip(note.get("body"), 600)}
+                                    "title": encrypted_push._clip(outgoing_note.get("title"), 180)}
+                        if outgoing_note.get("kind") != "approval":
+                            outgoing["body"] = encrypted_push._clip(outgoing_note.get("body"), encrypted_push.PUSH_BODY_LIMIT)
                     status = await webpush.send(client, sub["data"], outgoing, pem, PUSH_SUBJECT, urgency=urgency, topic=tag)
                 else:
-                    status = await self._send_ntfy(client, sub["data"], note)
+                    status = await self._send_ntfy(client, sub["data"], outgoing_note)
             except Exception as exc:
                 logger.warning("[winglet] push delivery failed: %s", type(exc).__name__)
                 result["failed"] += 1

@@ -58,6 +58,12 @@ CREATE TABLE IF NOT EXISTS inbox (
 );
 CREATE INDEX IF NOT EXISTS inbox_status ON inbox (status, created_at);
 CREATE INDEX IF NOT EXISTS inbox_created ON inbox (created_at);
+-- One live shade-approval token per signature. Rows are deleted as soon as they are used.
+CREATE TABLE IF NOT EXISTS shade_tokens (
+    token_hash TEXT PRIMARY KEY, item_id TEXT NOT NULL, choice TEXT NOT NULL,
+    device_id TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS shade_tokens_item ON shade_tokens (item_id);
 CREATE TABLE IF NOT EXISTS uploads (
     id TEXT PRIMARY KEY, device_id TEXT NOT NULL, chat_id TEXT NOT NULL, name TEXT NOT NULL, mime TEXT NOT NULL,
     kind TEXT NOT NULL, size INTEGER NOT NULL, created_at REAL NOT NULL, message_id TEXT
@@ -137,6 +143,11 @@ _MIGRATIONS = [
     ("chats", "bot", "TEXT"),
     # When a message was deleted, so old tombstones can be dropped.
     ("message_deletions", "deleted_at", "REAL NOT NULL DEFAULT 0"),
+    # Opt-in shade approvals, and a counter that invalidates tokens when the toggle changes.
+    ("devices", "shade_approvals", "INTEGER NOT NULL DEFAULT 0"),
+    ("devices", "shade_epoch", "INTEGER NOT NULL DEFAULT 0"),
+    # Where an inbox answer came from: the notification shade or the in-app card.
+    ("inbox", "channel", "TEXT NOT NULL DEFAULT ''"),
 ]
 ROLES = ("owner", "member")
 AUDIT_KEEP_SECONDS = 180 * 86400
@@ -418,7 +429,46 @@ class Store:
     def _device(row: sqlite3.Row) -> Dict[str, Any]:
         return {"id": row["id"], "name": row["name"], "platform": row["platform"],
                 "created_at": row["created_at"], "last_seen": row["last_seen"],
-                "role": row["role"], "verified": bool(row["verified"])}
+                "role": row["role"], "verified": bool(row["verified"]),
+                "shade_approvals": bool(row["shade_approvals"]),
+                "shade_epoch": int(row["shade_epoch"])}
+
+    def set_shade_approvals(self, device_id: str, enabled: bool) -> Optional[Dict[str, Any]]:
+        """Turn shade approvals on or off. Any change bumps the epoch, voiding older signatures."""
+        with self.transaction():
+            device = self.get_device(device_id)
+            if device is None:
+                return None
+            enabled = bool(enabled)
+            if device["shade_approvals"] != enabled:
+                self._exec("UPDATE devices SET shade_approvals = ?, shade_epoch = shade_epoch + 1 WHERE id = ?",
+                           (1 if enabled else 0, device_id))
+            return self.get_device(device_id)
+
+    def issue_shade_token(self, device_id: str, item_id: str, choice: str, signature: str,
+                          expires_at: float) -> None:
+        """Record a single-use shade token. The signature is the bearer secret, so store only its hash."""
+        token_hash = hashlib.sha256(signature.encode()).hexdigest()
+        with self._lock:
+            self._exec("INSERT OR REPLACE INTO shade_tokens "
+                       "(token_hash, item_id, choice, device_id, epoch, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
+                       (token_hash, item_id, choice, device_id,
+                        int((self.get_device(device_id) or {}).get("shade_epoch") or 0), expires_at))
+
+    def take_shade_token(self, item_id: str, choice: str, signature: str,
+                         now: Optional[float] = None) -> Optional[Dict[str, Any]]:
+        """Delete and return a token exactly once; expiry or a mismatched item/choice returns None."""
+        token_hash = hashlib.sha256(signature.encode()).hexdigest()
+        with self.transaction():
+            row = self._one("SELECT * FROM shade_tokens WHERE token_hash = ?", (token_hash,))
+            if row is None:
+                return None
+            self._exec("DELETE FROM shade_tokens WHERE token_hash = ?", (token_hash,))
+            if row["item_id"] != item_id or row["choice"] != choice:
+                return None
+            if row["expires_at"] < (time.time() if now is None else now):
+                return None
+            return dict(row)
 
     # -- chats -------------------------------------------------------------------
 
@@ -807,11 +857,13 @@ class Store:
             rows = self._all("SELECT * FROM inbox ORDER BY created_at DESC LIMIT ?", (limit,))
         return [self._inbox(r) for r in rows]
 
-    def resolve_inbox(self, item_id: str, status: str, resolution: str = "") -> Optional[Dict[str, Any]]:
+    def resolve_inbox(self, item_id: str, status: str, resolution: str = "",
+                      channel: str = "") -> Optional[Dict[str, Any]]:
         """Move a pending item to ``status``; returns None if it was not pending (already handled)."""
         with self._lock:
-            changed = self._exec("UPDATE inbox SET status = ?, resolution = ?, updated_at = ? "
-                                 "WHERE id = ? AND status = 'pending'", (status, resolution, _now(), item_id))
+            changed = self._exec("UPDATE inbox SET status = ?, resolution = ?, channel = ?, updated_at = ? "
+                                 "WHERE id = ? AND status = 'pending'",
+                                 (status, resolution, channel, _now(), item_id))
             return self.get_inbox(item_id) if changed == 1 else None
 
     def expire_pending(self, kind: str, *, chat_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -855,7 +907,8 @@ class Store:
         return (self._exec("DELETE FROM phone_tool_events WHERE ts < ? OR id NOT IN (SELECT id FROM phone_tool_events ORDER BY id DESC LIMIT 5000)", (now - 30 * 86400,))
                 + self._exec("DELETE FROM message_deletions WHERE deleted_at < ?", (now - DELETIONS_KEEP_SECONDS,))
                 + self._exec("DELETE FROM inbox WHERE status != 'pending' AND updated_at < ?",
-                             (now - INBOX_KEEP_SECONDS,)))
+                             (now - INBOX_KEEP_SECONDS,))
+                + self._exec("DELETE FROM shade_tokens WHERE expires_at < ?", (now,)))
 
     @staticmethod
     def _inbox(row: sqlite3.Row) -> Dict[str, Any]:
