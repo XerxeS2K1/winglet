@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.11.2](docs/releases/v0.11.2.md):** GitHub redirects a release download to its asset CDN, and the download only followed redirects to the two hostnames it knew — GitHub has moved to a third, so every self-update refused the asset while the release looked fine. Fixed, with the digest still checked. Everything else is v0.11.1: the app compares the installed binary, the server updates its own plugin when idle.
+> **New in [v0.11.3](docs/releases/v0.11.3.md):** the browser sign-in QR shows on `/pair` even when a server is already saved, "Complete verification" offers the one-scan path instead of another code, and the self-updater follows GitHub's release-asset redirect (which had moved to a third hostname, so no release could be downloaded).
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

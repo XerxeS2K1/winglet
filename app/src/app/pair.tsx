@@ -120,8 +120,10 @@ export default function PairScreen() {
             ) : result ? (
               <View style={s.panel}>
                 <Text style={s.bold}>{result.verified ? 'Verified connection' : 'Limited connection'}{result.role ? ` · ${result.role === 'owner' ? 'Owner' : 'Member'}` : ' · Access not checked yet'}</Text>
-                <Footnote>{!result.verified ? 'Complete verification with a fingerprint-bearing pairing link before using owner changes. The server key is not trusted from a network lookup alone.' : result.role === 'owner' ? 'Owners can approve commands, see all chats, change settings and manage devices.' : 'Members have their own chats, without approvals or settings. Memory and tools are shared.'}</Footnote>
-                {!result.verified ? <Button title="Complete verification" onPress={() => { setResult(null); setLink(''); setManual(false); }} /> : null}
+                <Footnote>{!result.verified ? 'A code alone cannot verify the server: it looked up the key over the network. Scan below from your owner phone to finish in one step, or paste the full pairing link.' : result.role === 'owner' ? 'Owners can approve commands, see all chats, change settings and manage devices.' : 'Members have their own chats, without approvals or settings. Memory and tools are shared.'}</Footnote>
+                {!result.verified ? (Platform.OS === 'web' && globalThis.location?.origin
+                  ? <BrowserSignIn base={globalThis.location.origin} onPhase={setBrowserPhase} sessionRef={browserSession} />
+                  : <Button title="Complete verification" onPress={() => { setResult(null); setLink(''); setManual(false); }} />) : null}
                 <Button title="Continue" variant={result.verified ? 'primary' : 'secondary'} onPress={() => router.replace('/')} />
               </View>
             ) : (
