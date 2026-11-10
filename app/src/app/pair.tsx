@@ -23,7 +23,6 @@ export default function PairScreen() {
   const insets = useSafeAreaInsets();
   const params = useLocalSearchParams<{ code?: string; url?: string; fp?: string }>();
   const hasServers = useApp((st) => st.servers.length > 0);
-  const initialUnpaired = useRef(!hasServers);
   const [link, setLink] = useState('');
   const [result, setResult] = useState<PairingResult | null>(null);
   const connecting = useRef(false);
@@ -127,7 +126,7 @@ export default function PairScreen() {
               </View>
             ) : (
               <View style={s.actions}>
-                {Platform.OS === 'web' && initialUnpaired.current && !params.code && !manualChosen && globalThis.location?.origin ? <BrowserSignIn base={globalThis.location.origin} onPhase={setBrowserPhase} sessionRef={browserSession} /> : null}
+                {Platform.OS === 'web' && !params.code && !manualChosen && globalThis.location?.origin ? <BrowserSignIn base={globalThis.location.origin} onPhase={setBrowserPhase} sessionRef={browserSession} /> : null}
                 {Platform.OS !== 'web' ? (
                   <Button size="lg" title="Scan QR code" icon={<QrCode size={19} color={t.colors.onInk} />} onPress={() => router.push('/scan')} />
                 ) : null}

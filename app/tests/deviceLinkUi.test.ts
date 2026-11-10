@@ -20,3 +20,11 @@ test('trusted Add-device QR/copy/share remains alongside scan-to-authorize navig
 test('web hash login opens a local approval route rather than navigating to the QR URL', () => {
   const s = source('app/(tabs)/index.tsx'); assert.match(s, /parseDeviceLink/); assert.match(s, /pathname: '\/link-device'/);
 });
+
+test('the browser QR is offered even when a server is already saved', () => {
+  // It was hidden whenever the app already had a server, so the one-tap path disappeared for every
+  // returning user and left only "paste a link" or "address and code" — the double sign-in.
+  const s = source('app/pair.tsx');
+  assert.ok(!/initialUnpaired/.test(s), 'the QR must not depend on having no saved server');
+  assert.match(s, /Platform\.OS === 'web' && !params\.code && !manualChosen/);
+});
