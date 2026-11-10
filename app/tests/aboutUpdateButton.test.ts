@@ -1,231 +1,149 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { load, hooks, jsx, anything, nodes, text, button, tick, server, updates } from './helpers/serverUpdateHarness.ts';
+import { anything, button, hooks, jsx, load, nodes, server, text, tick } from './helpers/serverUpdateHarness.ts';
 
 const appUpdate = { version: '0.10.8', apk: 'https://example.invalid/update.apk', page: 'https://example.invalid/release', notes: 'Bug fixes' };
+const compare = (a: string, b: string) => {
+  const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0);
+  const [x, y] = [p(a), p(b)];
+  for (let i = 0; i < 3; i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1;
+  return 0;
+};
 
-function appUpdateCardHarness(opts: { appBehind?: boolean; pluginBehind?: boolean; role?: string; online?: boolean; appVersion?: string }) {
+function aboutHarness(opts: { role?: string; app?: any; system?: any; settings?: any } = {}) {
   const host = hooks();
-  const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: opts.online !== false ? 'online' : 'offline', me: { role: opts.role ?? 'owner' } } } };
+  const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role: opts.role ?? 'owner' } } } };
   const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
-  let checked = false, serverChecked = false;
-  const updatesState = opts.pluginBehind ? updates : null;
-  const installButton = ({ update }: any) => ({ type: 'InstallButton', props: { update } });
+  const gets: string[] = [], puts: any[] = [];
   const modules: any = {
-    react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View', Linking: { openURL: () => {} } },
-    'expo-constants': { expoConfig: { version: opts.appVersion ?? '0.10.7' } }, 'expo-router': { router: { push: () => {} } },
-    '../components/AppUpdate': { InstallButton: installButton },
-    '../components/AgentFace': () => null, '../components/icons': anything, '../components/Logo': () => null, '../components/Screen': ({ children }: any) => children,
+    react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx },
+    'react-native': { Text: 'Text', View: 'View', Linking: { openURL: () => {} } },
+    'expo-constants': { expoConfig: { version: '0.10.7' } }, 'expo-router': { router: { push: () => {} } },
+    '../components/AppUpdate': { InstallButton: ({ update }: any) => ({ type: 'InstallButton', props: { update } }) },
+    '../components/AgentFace': () => null, '../components/icons': anything, '../components/Logo': () => null,
+    '../components/Screen': ({ children }: any) => children,
     '../components/ui': { Button: 'Button', Card: 'Card', Footnote: () => null, ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader', Toggle: 'Toggle' },
     '../lib/agent': { agoText: () => 'just now' },
-    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: opts.appBehind ? appUpdate : null, checking: false, checkedAt: null, failed: false, check: async () => { checked = true; } }), { getState: () => ({ forget: () => { forgotten = true; } }) }) },
-    '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
+    '../lib/api': {
+      api: async (_s: any, path: string) => { gets.push(path); return path === '/api/system' ? (opts.system ?? { version: '0.11.0', updatedAt: 1710000000, hermes_version: '0.23.0' }) : (opts.settings ?? { autoUpdate: true }); },
+      signedApi: async (...args: any[]) => { puts.push(args); return { autoUpdate: args[3].autoUpdate }; },
+    },
+    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: opts.app ?? null, checking: false, checkedAt: null, failed: false, check: async () => {} }), { getState: () => ({ forget: () => {} }) }) },
     '../lib/cache': { checkCacheStatus: async () => {}, getCacheStatus: () => 'available', subscribeCacheStatus: () => () => {} },
     '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true }, update: () => {} }) },
     '../lib/store': { APP_PROTOCOL: 1, useApp },
-    '../lib/serverUpdates': {
-      serverUpdateKey: () => 's',
-      checkServerUpdates: async () => { serverChecked = true; },
-      updateServerWinglet: async () => {},
-      useServerUpdates: (select: any) => select({ byServer: { s: updatesState } }),
-    },
     '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
-    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
+    '../lib/version': { compareVersions: compare },
   };
-  const { AppUpdateCard } = load('app/about.tsx', modules);
-  return { host, installButton, render: () => host.render(() => AppUpdateCard({ appVersion: opts.appVersion ?? '0.10.7' })), checked: () => checked, serverChecked: () => serverChecked };
+  const about = load('app/about.tsx', modules);
+  return { host, about, gets, puts };
 }
 
-function installButtonHarness(pluginData: any = null, role = 'owner', opts: { appError?: string; reject?: string; hold?: boolean; nullJob?: boolean; sendTransient?: boolean; refreshTransient?: number } = {}) {
-  const host = hooks();
-  const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role } } } };
-  const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
-  let unifiedStarted = false, serverTarget: string | undefined, pluginCalls = 0, refreshCalls = 0;
-  let releasePlugin: (() => void) | null = null;
-  const modules: any = {
-    react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx }, 'react-native': { Text: 'Text', View: 'View', Linking: {} },
-    'expo-constants': { expoConfig: { version: '0.10.7' } },
-    '../lib/unifiedUpdateFlow': {
-      useUnifiedUpdate: (select: any) => select({ loaded: true, record: null, working: false, error: opts.appError ?? null }),
-      unifiedUpdate: { start: async () => { unifiedStarted = true; } },
-      updateContext: () => ({ server, role }),
-    },
-    '../lib/appInstall': { useAppInstall: () => ({ phase: 'ready' }) },
-    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: null }), { getState: () => ({ forget: () => { forgotten = true; } }) }) },
-    '../lib/appLock': { useLock: (select: any) => select({ locked: false }) },
-    '../lib/prefs': { usePrefs: (fn: any) => fn({ prefs: { updateCheck: true } }) },
-    '../lib/api': { isTransientServerError: (e: any) => !!e && (e.status === 502 || e.status === 503 || e.status === 504) },
-    '../lib/storage': { getJSON: async () => null },
-    '../lib/store': { useApp, useServerState: () => state.runtime.s },
-    '../lib/updateJobs': { updateScope: () => 's' },
-    '../lib/version': { compareVersions: (a: string, b: string) => { const p = (v: string) => v.split('.').map((n) => parseInt(n, 10) || 0); const [x, y] = [p(a), p(b)]; for (let i = 0; i < 3; i++) { if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0) ? 1 : -1; } return 0; } },
-    '../lib/serverUpdates': {
-      serverUpdateKey: () => 's',
-      checkServerUpdates: async () => { refreshCalls++; if (refreshCalls <= (opts.refreshTransient ?? 0)) throw Object.assign(new Error('Server returned 502'), { status: 502 }); },
-      updateServerWinglet: async (_server: any, version: string) => {
-        pluginCalls++; serverTarget = version;
-        if (opts.hold) await new Promise<void>((r) => { releasePlugin = r; });
-        if (opts.sendTransient) throw Object.assign(new Error('Server returned 502'), { status: 502 });
-        if (opts.reject) throw new Error(opts.reject);
-        if (opts.nullJob) return null;
-        return { id: 'job' };
-      },
-      useServerUpdates: (select: any) => select({ byServer: { s: pluginData } }),
-    },
-    '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
-    './icons': {},
-    './Sheet': { Sheet: 'Sheet' },
-    './ui': { Button: 'Button' },
-    './JobSheet': { JobSheet: 'JobSheet' },
-  };
-  // The retry waits are real in production; tests must not sleep through them.
-  const app = load('components/AppUpdate.tsx', modules, { setTimeout: (fn: any) => { void Promise.resolve().then(fn); return 0; } });
-  return { host, app, render: (update: any = null) => host.render(() => app.InstallButton({ update })), unifiedStarted: () => unifiedStarted, serverTarget: () => serverTarget,
-    pluginCalls: () => pluginCalls, refreshCalls: () => refreshCalls, release: () => releasePlugin?.() };
-}
-
-test('AppUpdateCard shows plugin-only offer when app current and plugin behind', async () => {
-  const h = appUpdateCardHarness({ pluginBehind: true });
-  const tree = h.render();
-  await tick();
-  assert.equal(h.checked(), true);
-  assert.equal(h.serverChecked(), true);
-  assert.match(text(tree), /Server plugin 0\.10\.6 available/);
-  assert.ok(nodes(tree).some((n) => n.type === h.installButton && n.props?.update === null));
-});
-
-test('AppUpdateCard shows unified offer when app behind', async () => {
-  const h = appUpdateCardHarness({ appBehind: true });
-  const tree = h.render();
+test('About offers the Android app only, with no server plugin offer', async () => {
+  const h = aboutHarness({ app: appUpdate });
+  const tree = h.about.AppUpdateCard({ appVersion: '0.10.7' });
   await tick();
   assert.match(text(tree), /Winglet 0\.10\.8 available/);
-  assert.ok(nodes(tree).some((n) => n.type === h.installButton && n.props?.update && n.props.update.version === '0.10.8'));
+  assert.ok(nodes(tree).some((n) => n.props?.update?.version === '0.10.8'));
 });
 
-test('AppUpdateCard skips server check when offline', async () => {
-  const h = appUpdateCardHarness({ pluginBehind: true, online: false });
-  h.render();
+test('About says Check now when no app update is published', async () => {
+  const tree = aboutHarness().about.AppUpdateCard({ appVersion: '0.10.7' });
+  assert.ok(nodes(tree).some((n) => n.props?.title === 'Check now'));
+});
+
+test('a member never sees the server auto-update toggle', () => {
+  const h = aboutHarness({ role: 'member' });
+  assert.equal(h.host.render(() => h.about.ServerAutoUpdateCard()), null);
+  assert.equal(h.gets.length, 0);
+});
+
+test('an owner sees autoUpdate and writes only autoUpdate through the signed settings endpoint', async () => {
+  const h = aboutHarness({ role: 'owner' });
+  h.host.render(() => h.about.ServerAutoUpdateCard());
   await tick();
-  assert.equal(h.serverChecked(), false);
-});
-
-test('AppUpdateCard checks server updates when plugin behind and online', async () => {
-  const h = appUpdateCardHarness({ pluginBehind: true });
-  h.render();
+  const tree = h.host.render(() => h.about.ServerAutoUpdateCard());
+  assert.ok(nodes(tree).some((n) => n.props?.title === 'Update automatically'));
+  assert.ok(nodes(tree).some((n) => n.props?.value === 'On'));
+  const toggle = nodes(tree).find((n) => n.type === 'Toggle');
+  assert.ok(toggle);
+  await toggle.props.onValueChange(false);
   await tick();
-  assert.equal(h.serverChecked(), true);
+  assert.equal(h.puts.length, 1);
+  assert.equal(h.puts[0][1], 'PUT');
+  assert.equal(h.puts[0][2], '/api/settings');
+  assert.equal(h.puts[0][3].autoUpdate, false);
 });
 
-test('InstallButton plugin-only calls updateServerWinglet when pressed', async () => {
-  const h = installButtonHarness(updates);
-  const tree = h.render(null);
-  const b = nodes(tree).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  assert.equal(b.props.title, 'Update plugin to 0.10.6');
-  await b.props.onPress();
-  assert.equal(h.serverTarget(), '0.10.6');
-  assert.equal(h.unifiedStarted(), false);
+test('ServerVersion shows the plugin version and last update time read-only', async () => {
+  const h = aboutHarness({ system: { version: '0.11.0', updatedAt: 1710000000, hermes_version: '0.23.0' } });
+  h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
+  await tick();
+  const tree = h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
+  assert.match(text(tree), /Plugin 0\.11\.0/);
+  assert.match(text(tree), /updated/);
+  assert.match(text(tree), /Hermes 0\.23\.0/);
+  assert.equal(h.gets[0], '/api/system');
 });
 
-test('InstallButton app behind calls unifiedUpdate.start when pressed', async () => {
-  const h = installButtonHarness(null);
+test('ServerVersion says the time is unavailable when the server does not report it', async () => {
+  const h = aboutHarness({ system: { version: '0.11.0', hermes_version: '0.23.0' } });
+  h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
+  await tick();
+  const tree = h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
+  assert.match(text(tree), /update time unavailable/);
+});
+
+function installHarness(opts: { update?: any; error?: string; outcome?: string } = {}) {
+  const host = hooks();
+  let started: any = null, forgotten = false;
+  const modules: any = {
+    react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx },
+    'react-native': { Text: 'Text', View: 'View', Linking: { openURL: () => {} } },
+    'expo-constants': { expoConfig: { version: '0.10.7' } },
+    '../lib/appInstall': { useAppInstall: (select: any) => select({ phase: 'idle', progress: null, error: opts.error ?? '' }) },
+    '../lib/appUpdateCheck': { appUpdateSupported: true, useAppUpdate: Object.assign(() => ({ update: null }), { getState: () => ({ forget: () => { forgotten = true; } }) }) },
+    '../lib/version': { compareVersions: compare },
+    '../lib/appLock': { useLock: (select: any) => select({ locked: false }) },
+    '../lib/prefs': { usePrefs: (select: any) => select({ prefs: { updateCheck: true } }) },
+    '../lib/unifiedUpdateFlow': {
+      useUnifiedUpdate: (select: any) => select({ working: false, error: opts.error ?? '' }),
+      appUpdateFlow: { start: async (update: any) => { started = update; return opts.outcome ?? 'opened'; } },
+    },
+    '../lib/storage': { getJSON: async () => null, setJSON: async () => {} },
+    '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
+    './icons': anything, './Sheet': { Sheet: 'Sheet' }, './ui': { Button: 'Button' },
+  };
+  const app = load('components/AppUpdate.tsx', modules);
+  return { host, app, started: () => started, forgotten: () => forgotten,
+    render: (update: any) => host.render(() => app.InstallButton({ update })) };
+}
+
+test('InstallButton downloads and installs the app; it never contacts a server update endpoint', async () => {
+  const h = installHarness();
   const tree = h.render(appUpdate);
-  const b = nodes(tree).find((n) => n.props?.title?.startsWith('Update to'));
-  assert.ok(b);
-  assert.equal(b.props.title, 'Update to 0.10.8');
-  await b.props.onPress();
-  assert.equal(h.unifiedStarted(), true);
-  assert.equal(h.serverTarget(), undefined);
-});
-
-test('InstallButton plugin-only disables update for non-owner', async () => {
-  const h = installButtonHarness(updates, 'member');
-  const tree = h.render(null);
-  const b = nodes(tree).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  assert.equal(b.props.disabled, true);
-});
-
-test('InstallButton plugin-only ignores a second tap while the first is starting', async () => {
-  const h = installButtonHarness(updates, 'owner', { hold: true });
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  const first = b.props.onPress();
+  const press = button(tree, 'Update to 0.10.8');
+  await press();
   await tick();
-  // The guard must make the second tap return at once; without it the tap waits on the first job and this times out.
-  const outcome = await Promise.race([
-    Promise.resolve(b.props.onPress()).then(() => 'returned'),
-    new Promise((resolve) => { setTimeout(() => resolve('blocked'), 300); }),
-  ]);
-  assert.equal(outcome, 'returned', 'a second tap must not start or wait on a second job');
-  assert.equal(h.pluginCalls(), 1);
-  h.release();
-  await first;
+  assert.equal(h.started()?.version, '0.10.8');
+  assert.equal(h.forgotten(), true);
+});
+
+test('InstallButton offers nothing when the build is already current or newer', () => {
+  assert.equal(installHarness().render({ ...appUpdate, version: '0.10.7' }), null);
+  assert.equal(installHarness().render({ ...appUpdate, version: '0.10.6' }), null);
+});
+
+test('InstallButton shows a download error and keeps the sheet open', () => {
+  const h = installHarness({ error: "Couldn't download the update. Check your connection and try again." });
+  const tree = h.render(appUpdate);
+  assert.match(text(tree), /Couldn't download the update/);
+  assert.ok(nodes(tree).some((n) => n.type === 'Button' && n.props.title === 'Update to 0.10.8'));
+});
+
+test('InstallButton does not forget the offer when Android cancels the installer', async () => {
+  const h = installHarness({ outcome: 'cancelled' });
+  await button(h.render(appUpdate), 'Update to 0.10.8')();
   await tick();
-  assert.equal(h.pluginCalls(), 1);
-  assert.equal(h.refreshCalls(), 1);
-});
-
-test('InstallButton plugin-only skips the re-check when no job was started', async () => {
-  const h = installButtonHarness(updates, 'owner', { nullJob: true });
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  await b.props.onPress();
-  await tick();
-  assert.equal(h.pluginCalls(), 1);
-  assert.equal(h.refreshCalls(), 0);
-});
-
-test('InstallButton plugin-only re-checks the server after a started job', async () => {
-  const h = installButtonHarness(updates);
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  await b.props.onPress();
-  await tick();
-  assert.equal(h.refreshCalls(), 1);
-});
-
-test('InstallButton plugin-only shows its own error, not the app-update error', async () => {
-  const h = installButtonHarness(updates, 'owner', { reject: 'Server refused the job' });
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  await b.props.onPress();
-  await tick();
-  const after = h.render(null);
-  assert.match(text(after), /Server refused the job/);
-  assert.equal(h.refreshCalls(), 0);
-
-  const stale = installButtonHarness(updates, 'owner', { appError: 'Android download failed' });
-  assert.ok(!text(stale.render(null)).includes('Android download failed'));
-});
-
-test('InstallButton plugin-only is offered when only the legacy latest version is known', async () => {
-  const legacy = { hermes: {}, winglet: { ...updates.winglet, update_available: true, latest_release: null, latest: '0.10.9' }, checked_at: 1 };
-  const h = installButtonHarness(legacy);
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  assert.equal(b.props.title, 'Update plugin to 0.10.9');
-});
-
-test('InstallButton plugin-only treats a 502 on the start as a restart, not a failure', async () => {
-  const h = installButtonHarness(updates, 'owner', { sendTransient: true });
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  await b.props.onPress();
-  await tick();
-  const after = text(h.render(null));
-  assert.match(after, /restarting/i);
-  assert.ok(!after.includes('502'), 'the owner never sees the proxy status for their own update');
-  assert.equal(h.refreshCalls(), 0, 'a refused start must not pretend a job exists');
-});
-
-test('InstallButton plugin-only waits out the restart instead of showing a 502', async () => {
-  const h = installButtonHarness(updates, 'owner', { refreshTransient: 2 });
-  const b = nodes(h.render(null)).find((n) => n.props?.title?.startsWith('Update plugin'));
-  assert.ok(b);
-  await b.props.onPress();
-  await tick(); await tick(); await tick();
-  assert.equal(h.pluginCalls(), 1);
-  assert.equal(h.refreshCalls(), 3, 'it retries the refresh until the server answers');
-  assert.ok(!text(h.render(null)).includes('502'));
+  assert.equal(h.forgotten(), false);
 });

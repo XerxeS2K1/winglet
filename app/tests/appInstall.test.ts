@@ -80,6 +80,14 @@ test('a size mismatch deletes the incomplete APK and never opens the installer',
   assert.equal(h.intents.length, 0);
 });
 
+test('a 4xx download failure reports download, not installer, and never opens the installer', async () => {
+  const h = harness({ download: async () => { throw Object.assign(new Error('404 Not Found'), { status: 404 }); } });
+  assert.equal(await h.state.install(h.update), 'error');
+  assert.equal(h.state.phase, 'error');
+  assert.match(h.state.error, /couldn't download/i);
+  assert.equal(h.intents.length, 0);
+});
+
 test('cancelling a pending download suppresses installation and releases the download guard', async () => {
   const h = harness({ download: (_url: string, _file: any, options: any) => new Promise((_resolve, reject) => {
     options.signal.addEventListener('abort', () => reject(new Error('cancelled')));
