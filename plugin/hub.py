@@ -101,6 +101,8 @@ REPLY_EXCERPT = 280
 # after five minutes; the card says so when it's too late).
 PICKER_SECONDS = 10 * 60
 MAX_PERSONA = 20_000
+EXPORT_MAX_BYTES = 20 * 1024 * 1024
+EXPORT_PAGE_SIZE = 200
 _KEY_ENV = re.compile(r"^[A-Z][A-Z0-9_]{1,62}(_API_KEY|_KEY|_TOKEN)$")
 VERIFY_FIRST = "Verify this device first: scan a new pairing code from your server or another owner's phone."
 BAD_SIGNATURE = "The request's signature doesn't match this device."
@@ -1839,27 +1841,64 @@ class Hub:
         return _error(400, "no file in the upload")
 
     async def h_export(self, request: web.Request) -> web.Response:
-        """The whole chat as Markdown, to save or share."""
+        """The whole chat as Markdown, streamed page by page with a documented byte cap.
+
+        A long chat is no longer materialised as one string: each page is read in a worker thread
+        and written to the response. Past ``EXPORT_MAX_BYTES`` the download stops with a visible
+        marker instead of exhausting the server's memory.
+        """
         device = self._require(request)
         chat = self._visible_chat(device, request.match_info["chat_id"])
         bot = self.bot()["title"]
         title = "Updates" if chat["kind"] == "home" else chat["title"]
-        lines = [f"# {title}", "", f"_Exported from Winglet · {bot}_", ""]
-        for m in self.store.all_messages(chat["id"]):
-            if (m.get("meta") or {}).get("hidden"):
-                continue
-            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["created_at"]))
-            if m["role"] == "system":
-                lines += [f"> {m['text']}", ""]
-                continue
-            who = bot if m["role"] == "bot" else "You"
-            lines += [f"**{who}** · {when}", "", m["text"] or ""]
-            for a in (m.get("meta") or {}).get("attachments") or []:
-                lines.append(f"- 📎 {a.get('name', 'attachment')}")
-            lines.append("")
         safe = uploads.safe_name(f"{title}.md", "chat.md")
-        return web.Response(text="\n".join(lines), content_type="text/markdown", charset="utf-8",
-                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe)}"})
+        response = web.StreamResponse(headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe)}"})
+        response.content_type = "text/markdown"
+        response.charset = "utf-8"
+        await response.prepare(request)
+        written = 0
+        truncated = False
+
+        async def emit(text: str) -> bool:
+            nonlocal written
+            data = text.encode("utf-8")
+            if written + len(data) > EXPORT_MAX_BYTES:
+                return False
+            await response.write(data)
+            written += len(data)
+            return True
+
+        for line in (f"# {title}", "", f"_Exported from Winglet · {bot}_", ""):
+            if not await emit(line + "\n"):
+                truncated = True
+                break
+        cursor: Optional[int] = None
+        while not truncated:
+            page = await asyncio.to_thread(self.store.list_messages, chat["id"],
+                                           before_position=cursor, limit=EXPORT_PAGE_SIZE)
+            if not page:
+                break
+            for m in page:
+                if (m.get("meta") or {}).get("hidden"):
+                    continue
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["created_at"]))
+                if m["role"] == "system":
+                    block = [f"> {m['text']}", ""]
+                else:
+                    who = bot if m["role"] == "bot" else "You"
+                    block = [f"**{who}** · {when}", "", m["text"] or ""]
+                    for a in (m.get("meta") or {}).get("attachments") or []:
+                        block.append(f"- 📎 {a.get('name', 'attachment')}")
+                    block.append("")
+                if not await emit("\n".join(block) + "\n"):
+                    truncated = True
+                    break
+            cursor = page[0]["position"]
+        if truncated:
+            await response.write(f"\n_Export truncated at the {EXPORT_MAX_BYTES // (1024 * 1024)} MB limit._\n".encode())
+        await response.write_eof()
+        return response
 
     # -- goals, search and files ----------------------------------------------------------------
 
