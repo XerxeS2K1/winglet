@@ -12,18 +12,25 @@ out-of-process rollback possible.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
+import re
 import shlex
 import shutil
 import stat
 import subprocess
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Tuple
 
 MARKER_NAME = "winglet-update.json"
+ATTEMPTS_NAME = "winglet-update-attempts.json"
+HEALTH_NAME = "winglet-update-health.json"
+LAST_SUCCESS_NAME = "winglet-update-last-success.json"
 AUTO_UPDATE_KEY = "auto_update"
 
 CHECK_INTERVAL_SECONDS = 6 * 60 * 60
@@ -60,6 +67,147 @@ def marker_path(home=None) -> Path:
     return hermes_home(home) / MARKER_NAME
 
 
+def attempts_path(home=None) -> Path:
+    return hermes_home(home) / ATTEMPTS_NAME
+
+
+def health_path(home=None) -> Path:
+    return hermes_home(home) / HEALTH_NAME
+
+
+def last_success_path(home=None) -> Path:
+    return hermes_home(home) / LAST_SUCCESS_NAME
+
+
+def _read_json(path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def read_attempts(home=None) -> Dict[str, Dict[str, float]]:
+    """Attempts and failures by release version, kept outside the plugin tree and
+    outside the database so a rollback cannot erase the evidence that this
+    release has already been tried.
+
+    A corrupt file is not silently treated as empty: that would allow the same
+    broken release to be installed again.  Callers turn the error into a refusal.
+    """
+    path = attempts_path(home)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {"attempts": {}, "failures": {}}
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"the update attempt record cannot be read: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError("the update attempt record is not a record")
+    raw_attempts = data.get("attempts")
+    raw_failures = data.get("failures")
+    attempts = raw_attempts if isinstance(raw_attempts, dict) else {}
+    failures = raw_failures if isinstance(raw_failures, dict) else {}
+    return {"attempts": {str(k): float(v) for k, v in attempts.items()
+                         if isinstance(v, (int, float)) and not isinstance(v, bool)},
+            "failures": {str(k): float(v) for k, v in failures.items()
+                         if isinstance(v, (int, float)) and not isinstance(v, bool)}}
+
+
+def _write_attempts(data: Dict[str, Dict[str, float]], home=None) -> None:
+    _atomic_json(attempts_path(home), {
+        "attempts": dict(sorted(data.get("attempts", {}).items())),
+        "failures": dict(sorted(data.get("failures", {}).items())),
+    })
+
+
+def attempted(version: str, home=None) -> bool:
+    return str(version) in read_attempts(home)["attempts"]
+
+
+def failed_at(version: str, home=None) -> Optional[float]:
+    return read_attempts(home)["failures"].get(str(version))
+
+
+def note_attempt(version: str, home=None, *, now=None) -> None:
+    data = read_attempts(home)
+    data["attempts"][str(version)] = float(time.time() if now is None else now)
+    _write_attempts(data, home)
+
+
+def note_failure(version: str, home=None, *, now=None) -> None:
+    data = read_attempts(home)
+    data["failures"][str(version)] = float(time.time() if now is None else now)
+    _write_attempts(data, home)
+
+
+def clear_attempts(home=None) -> None:
+    """Owner turned autoUpdate off and on: forget every attempted release."""
+    try:
+        attempts_path(home).unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        raise ValueError(f"the update attempt record cannot be cleared: {exc}") from exc
+
+
+def prune_attempts(version: str, home=None) -> None:
+    """Only a strictly newer release may erase an older attempt."""
+    latest = _version(version)
+    if latest is None:
+        return
+    data = read_attempts(home)
+    changed = False
+    for group in ("attempts", "failures"):
+        for key in list(data[group]):
+            older = _version(key)
+            if older is not None and older < latest:
+                del data[group][key]
+                changed = True
+    if changed:
+        _write_attempts(data, home)
+
+
+def write_health(current_version: str, home=None, *, now=None) -> Path:
+    """A stamp independent of the marker: this version is actually serving."""
+    path = health_path(home)
+    _atomic_json(path, {"version": current_version, "ts": float(time.time() if now is None else now)})
+    return path
+
+
+def read_health(home=None) -> Optional[dict]:
+    data = _read_json(health_path(home))
+    if not data or not isinstance(data.get("version"), str):
+        return None
+    ts = data.get("ts")
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None
+    return data
+
+
+def last_success(home=None) -> Optional[dict]:
+    data = _read_json(last_success_path(home))
+    if not data or not isinstance(data.get("version"), str):
+        return None
+    ts = data.get("updatedAt")
+    if not isinstance(ts, (int, float)) or isinstance(ts, bool):
+        return None
+    return {"version": data["version"], "updatedAt": float(ts)}
+
+
+def _fsync_dir(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def read_marker(home=None) -> Optional[dict]:
     path = marker_path(home)
     try:
@@ -81,12 +229,16 @@ def _atomic_json(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     try:
-        temp.write_text(json.dumps(data, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+        with open(temp, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(data, sort_keys=True, separators=(",", ":")))
+            handle.flush()
+            os.fsync(handle.fileno())
         try:
             os.chmod(temp, stat.S_IRUSR | stat.S_IWUSR)
         except OSError:
             pass
         os.replace(temp, path)
+        _fsync_dir(path.parent)
     finally:
         try:
             temp.unlink()
@@ -113,12 +265,18 @@ def clear_marker(home=None) -> bool:
         raise ValueError(f"the update marker cannot be cleared: {exc}") from exc
 
 
-def record_health(current_version: str, home=None) -> bool:
+def record_health(current_version: str, home=None, *, now=None) -> bool:
     """The single happy-path write: the new version is serving, so its marker is
-    cleared.  The marker's absence *is* the health signal the watchdog reads.
+    cleared and its success time is recorded.
+
+    A health stamp is written on every start, even when the marker is missing or
+    unreadable.  That stamp is what the out-of-process watchdog trusts when the
+    marker itself has been damaged; a healthy update must never be rolled back
+    just because the marker file cannot be parsed.
 
     Returns True only when this start cleared a marker that named this version.
     """
+    write_health(current_version, home, now=now)
     try:
         marker = read_marker(home)
     except ValueError:
@@ -126,6 +284,8 @@ def record_health(current_version: str, home=None) -> bool:
     if not marker or marker.get("to") != current_version:
         return False
     clear_marker(home)
+    _atomic_json(last_success_path(home), {"version": current_version,
+                                           "updatedAt": float(time.time() if now is None else now)})
     return True
 
 
@@ -190,14 +350,20 @@ def _newer(candidate, current) -> bool:
 
 def _same_major(candidate, current) -> bool:
     a, b = _version(candidate), _version(current)
-    return a is not None and b is not None and a[0] == b[0]
+    if a is None or b is None or a[0] != b[0]:
+        return False
+    # While Winglet is 0.x, a minor bump is a contract change: 0.10 -> 0.11 is
+    # not an unattended update.  Major 0 has no stable compatibility promise.
+    return a[0] != 0 or a[1] == b[1]
 
 
-def watchdog_decision(marker: Optional[dict], *, now: float, current_version: Optional[str] = None) -> str:
+def watchdog_decision(marker: Optional[dict], *, now: float, current_version: Optional[str] = None,
+                      health: Optional[dict] = None) -> str:
     """What the out-of-process watchdog should do with the marker.
 
     ``idle``  - there is no update waiting.
-    ``ok``    - the marker names the version that is now serving; clear it.
+    ``ok``    - the marker names the version that is now serving, or a health
+                stamp newer than the marker proves the new version started.
     ``wait``  - the new version has not had its ten minutes yet.
     ``rollback`` - ten minutes have passed and the marker is still there.
     ``broken`` - the marker exists but cannot be used safely.
@@ -205,9 +371,15 @@ def watchdog_decision(marker: Optional[dict], *, now: float, current_version: Op
     if not marker:
         return "idle"
     to = marker.get("to")
+    started = marker.get("started")
+    if health and isinstance(health, dict) and health.get("version") == to:
+        stamped = health.get("ts")
+        if (isinstance(stamped, (int, float)) and not isinstance(stamped, bool)
+                and isinstance(started, (int, float)) and not isinstance(started, bool)
+                and stamped >= started):
+            return "ok"
     if current_version is not None and to == current_version:
         return "ok"
-    started = marker.get("started")
     if not isinstance(started, (int, float)) or isinstance(started, bool) or started <= 0:
         return "broken"
     if not isinstance(marker.get("from"), str) or not _version(marker.get("from")):
@@ -217,6 +389,93 @@ def watchdog_decision(marker: Optional[dict], *, now: float, current_version: Op
     if not isinstance(marker.get("backup"), str) or not marker["backup"]:
         return "broken"
     return "rollback" if now - started >= WATCHDOG_GRACE_SECONDS else "wait"
+
+
+# -- verifying that the installed tree is the asset that was verified -----------------------------------------------
+
+_IGNORED_PARTS = {"__pycache__", ".git", ".pytest_cache", ".mypy_cache"}
+
+
+def _digest_entries(entries: Dict[str, bytes]) -> str:
+    digest = hashlib.sha256()
+    for rel in sorted(entries):
+        body = entries[rel]
+        name = rel.encode()
+        digest.update(len(name).to_bytes(8, "big") + name + len(body).to_bytes(8, "big") + body)
+    return digest.hexdigest()
+
+
+def zip_tree_digest(data: bytes) -> str:
+    """A deterministic digest of the plugin tree inside a release zip.
+
+    The zip may contain the plugin folder itself rather than the repository
+    root, so the shallowest ``plugin.yaml`` decides the prefix.
+    """
+    with zipfile.ZipFile(BytesIO(data)) as archive:
+        manifests = [name for name in archive.namelist()
+                     if name == "plugin.yaml" or name.endswith("/plugin.yaml")]
+        if not manifests:
+            raise ValueError("the release asset has no plugin.yaml")
+        manifests.sort(key=lambda name: (name.count("/"), len(name)))
+        prefix = manifests[0].rsplit("/", 1)[0] + "/" if "/" in manifests[0] else ""
+        entries: Dict[str, bytes] = {}
+        for info in archive.infolist():
+            if info.is_dir() or not info.filename.startswith(prefix):
+                continue
+            rel = info.filename[len(prefix):]
+            if not rel or any(part in _IGNORED_PARTS for part in rel.split("/")):
+                continue
+            entries[rel] = archive.read(info)
+        return _digest_entries(entries)
+
+
+def installed_tree_digest(plugin_dir) -> str:
+    base = Path(plugin_dir)
+    entries: Dict[str, bytes] = {}
+    for path in sorted(base.rglob("*")):
+        if path.is_dir():
+            continue
+        if any(part in _IGNORED_PARTS for part in path.relative_to(base).parts):
+            continue
+        rel = path.relative_to(base).as_posix()
+        entries[rel] = os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
+    return _digest_entries(entries)
+
+
+def _manifest_field(text: str, name: str) -> Optional[str]:
+    match = re.search(rf"(?m)^{name}:[ \t]*(.*)$", text)
+    if not match:
+        return None
+    value = re.sub(r"\s#.*$", "", match.group(1)).strip().strip("\"'").strip()
+    return value or None
+
+
+def verify_installed_plugin(plugin_dir, data: bytes, manifest: Optional[dict] = None) -> Tuple[bool, str]:
+    """Prove the code Hermes installed is the code whose digest GitHub published.
+
+    The manifest gate is re-read from the installed ``plugin.yaml``, not from the
+    zip's copy, because that is the file the running plugin will load.
+    """
+    try:
+        expected = zip_tree_digest(data)
+        actual = installed_tree_digest(plugin_dir)
+    except (OSError, ValueError, zipfile.BadZipFile) as exc:
+        return False, f"the installed plugin could not be checked: {exc}"
+    if expected != actual:
+        return False, "the installed plugin files do not match the verified release asset"
+    try:
+        text = (Path(plugin_dir) / "plugin.yaml").read_text(encoding="utf-8")
+    except OSError as exc:
+        return False, f"the installed plugin manifest cannot be read: {exc}"
+    installed_version = _manifest_field(text, "version")
+    installed_requires = _manifest_field(text, "requires_hermes")
+    wanted = manifest or {}
+    if wanted.get("version") and installed_version != wanted["version"]:
+        return False, (f"the installed plugin says {installed_version or 'no version'}, "
+                       f"not {wanted['version']}")
+    if wanted.get("requires_hermes") and installed_requires != wanted["requires_hermes"]:
+        return False, "the installed plugin's Hermes requirement does not match the release asset"
+    return True, ""
 
 
 # -- systemd watchdog ---------------------------------------------------------------------------------------------
@@ -232,6 +491,65 @@ def _systemctl(args, *, runner=None) -> subprocess.CompletedProcess:
     return runner(["systemctl", "--user", *args], capture_output=True, text=True, timeout=30)
 
 
+def _linger(user: Optional[str] = None, *, runner: Optional[Callable] = None) -> Optional[bool]:
+    """Whether a systemd ``--user`` timer can run while the user is logged out.
+
+    We never enable linger ourselves: that is a machine-wide permission change.
+    ``None`` means loginctl is unavailable or its answer was unreadable.
+    """
+    runner = runner or subprocess.run
+    try:
+        result = runner(["loginctl", "show-user", user or str(os.getuid()), "-p", "Linger"],
+                        capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if getattr(result, "returncode", 1) != 0:
+        return None
+    text = str(getattr(result, "stdout", "") or "")
+    match = re.search(r"(?m)^Linger=(\w+)\s*$", text)
+    if not match:
+        return None
+    return match.group(1).lower() == "yes"
+
+
+def refresh_watchdog_scripts(home=None) -> Dict[str, Any]:
+    """Copy the watchdog's code next to the unit, replacing only changed files.
+
+    Called by ``winglet setup`` *and* by every successful update, because a fix
+    to the watchdog is useless if the copy systemd runs is never refreshed.
+    """
+    root = hermes_home(home)
+    scripts = root / "scripts"
+    here = Path(__file__).resolve().parent
+    copies = {
+        WATCHDOG_SCRIPT: here / "update_watchdog.py",
+        ROLLBACK_SCRIPT: here / "update_rollback.py",
+        "update_rollback.py": here / "update_rollback.py",
+        "rollback.py": here / "rollback.py",
+        "self_update.py": here / "self_update.py",
+    }
+    changed = []
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name, source in copies.items():
+        target = scripts / name
+        try:
+            wanted = source.read_bytes()
+        except OSError as exc:
+            raise OSError(f"cannot read {source}: {exc}") from exc
+        try:
+            current = target.read_bytes()
+        except OSError:
+            current = None
+        if current != wanted:
+            target.write_bytes(wanted)
+            changed.append(name)
+        try:
+            os.chmod(target, 0o700)
+        except OSError:
+            pass
+    return {"scripts": str(scripts), "changed": changed}
+
+
 def install_watchdog(home=None, *, python=None, runner: Optional[Callable] = None) -> dict:
     """Install the out-of-process watchdog.  Never raises: setup must still work
     on a machine without systemd, but the caller is told what is missing."""
@@ -239,17 +557,8 @@ def install_watchdog(home=None, *, python=None, runner: Optional[Callable] = Non
     scripts = root / "scripts"
     unit_dir = _systemd_user_dir(root)
     script = scripts / WATCHDOG_SCRIPT
-    helper = scripts / ROLLBACK_SCRIPT
     try:
-        scripts.mkdir(parents=True, exist_ok=True)
-        here = Path(__file__).resolve().parent
-        shutil.copyfile(here / "update_watchdog.py", script)
-        shutil.copyfile(here / "update_rollback.py", helper)
-        shutil.copyfile(here / "update_rollback.py", scripts / "update_rollback.py")
-        shutil.copyfile(here / "rollback.py", scripts / "rollback.py")
-        shutil.copyfile(here / "self_update.py", scripts / "self_update.py")
-        os.chmod(script, 0o700)
-        os.chmod(helper, 0o700)
+        refresh_watchdog_scripts(home)
         unit_dir.mkdir(parents=True, exist_ok=True)
         python = python or os.environ.get("WINGLET_PYTHON") or shutil.which("python3") or "python3"
         service = (
@@ -283,7 +592,10 @@ def install_watchdog(home=None, *, python=None, runner: Optional[Callable] = Non
         return {"installed": False, "reason": f"systemd is unavailable: {exc}", "unit": str(unit_dir)}
     except Exception as exc:  # a fake runner in tests may simply say no
         return {"installed": False, "reason": str(exc) or "systemd is unavailable", "unit": str(unit_dir)}
-    return {"installed": True, "unit": str(unit_dir), "script": str(script)}
+    linger = _linger(runner=runner)
+    return {"installed": True, "unit": str(unit_dir), "script": str(script), "linger": linger,
+            "canFire": linger is True,
+            "reason": None if linger is True else "the user timer needs linger to fire while logged out"}
 
 
 def uninstall_watchdog(home=None, *, runner: Optional[Callable] = None) -> dict:
@@ -313,11 +625,14 @@ def watchdog_status(home=None, *, runner: Optional[Callable] = None) -> dict:
     root = hermes_home(home)
     unit_dir = _systemd_user_dir(root)
     present = (unit_dir / WATCHDOG_SERVICE).is_file() and (unit_dir / WATCHDOG_TIMER).is_file()
+    linger = _linger(runner=runner)
     if not present:
-        return {"installed": False, "reason": "the systemd unit is not installed", "unit": str(unit_dir)}
+        return {"installed": False, "reason": "the systemd unit is not installed", "unit": str(unit_dir),
+                "linger": linger, "canFire": False}
     try:
         result = _systemctl(["is-enabled", WATCHDOG_TIMER], runner=runner)
         enabled = getattr(result, "returncode", 1) == 0
     except Exception:
         enabled = None
-    return {"installed": True, "enabled": enabled, "unit": str(unit_dir)}
+    return {"installed": True, "enabled": enabled, "unit": str(unit_dir), "linger": linger,
+            "canFire": bool(enabled and linger), "reason": None if linger is True else "the user timer needs linger to fire while logged out"}

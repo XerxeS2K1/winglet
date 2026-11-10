@@ -27,12 +27,24 @@ def main(argv=None) -> int:
     parser.add_argument("--home", default=None, help="Hermes home (default: HERMES_HOME or ~/.hermes)")
     args = parser.parse_args(argv)
     root = self_update.hermes_home(args.home)
+    health = self_update.read_health(root)
     try:
         marker = self_update.read_marker(root)
     except ValueError as exc:
+        # A malformed marker is not evidence that the new version failed.  The
+        # health stamp is written independently on every start; only a stamp
+        # newer than the marker proves that this start came after it.
+        if health:
+            try:
+                marker_mtime = self_update.marker_path(root).stat().st_mtime
+            except OSError:
+                marker_mtime = None
+            if marker_mtime is None or float(health.get("ts") or 0) >= marker_mtime:
+                print(f"Winglet update watchdog: {exc}; the health stamp shows {health.get('version')} is serving. Leaving it.")
+                return 0
         print(f"Winglet update watchdog: {exc}")
         return 1
-    decision = self_update.watchdog_decision(marker, now=__import__("time").time())
+    decision = self_update.watchdog_decision(marker, now=__import__("time").time(), health=health)
     if decision == "idle":
         return 0
     if decision == "ok":

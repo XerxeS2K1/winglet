@@ -7,6 +7,7 @@ so it still runs when the installed plugin package cannot be imported at all.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shutil
 import sqlite3
@@ -24,33 +25,100 @@ except ImportError:  # installed as a standalone script next to update_rollback.
     import self_update  # type: ignore
 
 
+def _proc_start_time(pid: int) -> Optional[int]:
+    """Field 22 of /proc/<pid>/stat: the process start time in clock ticks."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        rest = text.rsplit(")", 1)[1].split()
+        return int(rest[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
 def _gateway_pid(home: Path) -> Optional[int]:
+    """The live gateway pid from Hermes's JSON pid file.
+
+    Hermes writes ``{"pid": 123, "start_time": 456, ...}``.  The recorded start
+    time is checked against /proc so a recycled pid cannot be mistaken for the
+    gateway.  A plain integer is accepted for older files, but only after the
+    liveness check.
+    """
     for candidate in (Path(home) / "gateway.pid", self_update.hermes_home(home) / "gateway.pid"):
         try:
-            pid = int(candidate.read_text(encoding="utf-8").strip())
-        except (OSError, ValueError):
+            raw = candidate.read_text(encoding="utf-8").strip()
+        except OSError:
             continue
-        if pid > 0:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+        try:
+            record = json.loads(raw)
+        except ValueError:
+            record = None
+        if isinstance(record, dict):
+            kind = record.get("kind")
+            if kind is not None and kind != "hermes-gateway":
                 continue
-            except PermissionError:
-                pass
+            pid = record.get("pid")
+            if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+                continue
+            recorded_start = record.get("start_time")
+            if recorded_start is not None:
+                actual = _proc_start_time(pid)
+                try:
+                    recorded = int(recorded_start)
+                except (TypeError, ValueError):
+                    continue
+                if actual is None or actual != recorded:
+                    continue  # the pid now belongs to another process
+            if _pid_is_alive(pid):
+                return pid
+            continue
+        try:
+            pid = int(raw)
+        except ValueError:
+            continue
+        if pid > 0 and _pid_is_alive(pid):
             return pid
     return None
 
 
-def _run_hermes(args, timeout=60) -> bool:
-    executable = shutil.which("hermes")
-    if not executable:
-        return False
+def _hermes_command(args) -> list:
+    explicit = os.environ.get("HERMES_BIN")
+    if explicit and Path(explicit).expanduser().is_file():
+        return [str(Path(explicit).expanduser()), *args]
+    found = shutil.which("hermes")
+    if found:
+        return [found, *args]
+    # A systemd --user unit has a minimal PATH, and the venv's console script
+    # may not be on it.  The interpreter that is running us can still import
+    # the same CLI.
+    return [sys.executable, "-m", "hermes_cli.main", *args]
+
+
+def _run_hermes(args, timeout=60, out=None) -> bool:
+    command = _hermes_command(args)
     try:
-        subprocess.run([executable, *args], check=False, timeout=timeout,
-                       stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        return True
-    except (OSError, subprocess.SubprocessError):
+        result = subprocess.run(command, check=False, timeout=timeout,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        if out:
+            out(f"Could not run `{command[0]}`: {exc}")
         return False
+    if result.returncode != 0:
+        tail = (result.stdout or b"").decode("utf-8", "replace").strip().splitlines()[-3:]
+        if out:
+            out(f"`{command[0]} {' '.join(command[1:])}` exited {result.returncode}."
+                + ((" " + " / ".join(tail)) if tail else ""))
+        return False
+    return True
 
 
 def _audit(root: Path, summary: str, outcome: str = "ok") -> None:
@@ -107,7 +175,7 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
     running = running or (lambda: _gateway_pid(root) is not None)
     was_running = bool(running())
     if was_running:
-        stopped = (stop or (lambda: _run_hermes(["gateway", "stop"])))()
+        stopped = (stop or (lambda: _run_hermes(["gateway", "stop"], out=out)))()
         deadline = time.monotonic() + 30
         while running() and time.monotonic() < deadline:
             time.sleep(0.5)
@@ -129,6 +197,10 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
         return 1
 
     try:
+        self_update.note_failure(to, root)
+    except ValueError as exc:
+        out(f"Restored, but the failed attempt could not be recorded: {exc}")
+    try:
         self_update.clear_marker(root)
     except ValueError as exc:
         out(f"Restored, but the marker could not be cleared: {exc}")
@@ -137,7 +209,7 @@ def rollback(home=None, *, now=None, stop: Optional[Callable[[], bool]] = None,
     out("Restored: " + ", ".join(report.get("done") or []) + ".")
     out(f"The failed version is kept in {report.get('kept')}.")
     _audit(root, f"restored {report.get('from')} after {to} failed")
-    started = (start or (lambda: _run_hermes(["gateway", "start"])))()
+    started = (start or (lambda: _run_hermes(["gateway", "start"], out=out)))()
     if started:
         out("The gateway was asked to start again.")
     else:

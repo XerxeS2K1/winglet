@@ -304,8 +304,6 @@ class Hub:
         self._self_update_task: Optional[asyncio.Task] = None
         self._watchdog_task: Optional[asyncio.Task] = None
         self._self_update_lock = asyncio.Lock()
-        self._self_update_attempts: Dict[str, str] = {}
-        self._self_update_failed_at: Optional[float] = None
         self.update_home: Optional[Path] = None
         self._watchdog_spawned = False
         from .handoffs import HandoffService
@@ -735,6 +733,11 @@ class Hub:
             if marker:
                 self._self_update_refused(str(marker.get("to") or ""), "attempt", "an update marker is already present")
                 return
+            try:
+                attempts = await asyncio.to_thread(self_update.read_attempts, self.update_home)
+            except ValueError as exc:
+                self._self_update_refused("", "attempt", str(exc))
+                return
             enabled = self_update.auto_update_enabled(self.store)
             try:
                 release = await asyncio.to_thread(h.latest_release, True)
@@ -745,14 +748,20 @@ class Hub:
                 return
             version = str(release.get("version") or "")
             self.audit("self_update.release_found", None, f"Winglet {version} is the newest release")
+            try:
+                await asyncio.to_thread(self_update.prune_attempts, version, self.update_home)
+                attempts = await asyncio.to_thread(self_update.read_attempts, self.update_home)
+            except ValueError as exc:
+                self._self_update_refused(version, "attempt", str(exc))
+                return
             idle = (not self._busy_job()) and await self._is_quiet(h)
-            now = time.monotonic()
+            now = time.time()
             early = self_update.gate_reason(
                 enabled=enabled, release=release, current_version=VERSION,
                 running_hermes=self.hermes_version() or "", idle=idle,
                 asset_ok=True, manifest_ok=True,
-                attempted_release=self._self_update_attempts.get(version) == self.boot_id,
-                failed_at=self._self_update_failed_at, now=now)
+                attempted_release=version in attempts["attempts"],
+                failed_at=attempts["failures"].get(version), now=now)
             if early:
                 self._self_update_refused(version, early)
                 return
@@ -768,17 +777,21 @@ class Hub:
                 enabled=enabled, release=release, current_version=VERSION,
                 running_hermes=self.hermes_version() or "", idle=idle,
                 asset_ok=True, manifest_ok=manifest_ok,
-                attempted_release=self._self_update_attempts.get(version) == self.boot_id,
-                failed_at=self._self_update_failed_at, now=now)
+                attempted_release=version in attempts["attempts"],
+                failed_at=attempts["failures"].get(version), now=now)
             if late:
                 self._self_update_refused(version, late)
                 return
-            self._self_update_attempts[version] = self.boot_id
+            try:
+                await asyncio.to_thread(self_update.note_attempt, version, self.update_home, now=now)
+            except ValueError as exc:
+                self._self_update_refused(version, "attempt", str(exc))
+                return
             job = await self._begin_system_job("winglet_update", {
                 "from": VERSION, "to": version, "message": "Updating Winglet automatically…",
                 "actor": "self-update"})
             self.audit("self_update.started", None, f"started a Winglet update to {version}")
-            self._spawn(self._run_winglet_update(job["id"], h, release))
+            self._spawn(self._run_winglet_update(job["id"], h, {**release, "_verified_asset": asset}))
 
     async def _begin_system_job(self, kind: str, detail: Dict[str, Any]) -> Dict[str, Any]:
         job, _ = self.store.create_job(kind, device_id="system", idem_key=None,
@@ -3323,7 +3336,13 @@ class Hub:
         body = await self._body(request)
         if "autoUpdate" not in body or not isinstance(body["autoUpdate"], bool):
             return _error(400, "autoUpdate must be true or false.")
+        was_enabled = self_update.auto_update_enabled(self.store)
         enabled = self_update.set_auto_update(self.store, body["autoUpdate"])
+        if enabled and not was_enabled:
+            try:
+                await asyncio.to_thread(self_update.clear_attempts, self.update_home)
+            except ValueError as exc:
+                return _error(500, f"autoUpdate was set, but the update attempt record could not be cleared: {exc}")
         self.audit("settings.auto_update", device, "on" if enabled else "off")
         return _json({"autoUpdate": enabled})
 
@@ -3337,10 +3356,14 @@ class Hub:
             can_pause = True
         except h.HermesUnavailable:
             paused, can_pause = None, False
+        last = self_update.last_success(self.update_home)
+        watchdog = self_update.watchdog_status(self.update_home)
         return _json({"version": VERSION, "hermes_version": self.hermes_version() or "",
                        "uptime_seconds": int(time.time() - self.started_at), "host": host,
                        "paused": paused, "can_pause": can_pause, "connection": self.connection,
                        "autoUpdate": self_update.auto_update_enabled(self.store),
+                       "updatedAt": last["updatedAt"] if last else None,
+                       "updateWatchdog": watchdog,
                        "devices": len(self.store.list_devices()), "jobs": self.store.list_jobs(limit=5)})
 
     def paused_for(self, device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -3516,6 +3539,7 @@ class Hub:
         """Safety net, install, check, then (and only then) restart so the new code loads. Every failure undoes the
         install and stops: nothing on a failure path restarts the gateway, because Kraig does that himself."""
         to = release["version"]
+        verified_asset = release.pop("_verified_asset", None)
         try:
             prepared = await asyncio.to_thread(h.begin_update, release, VERSION)
         except Exception as exc:
@@ -3539,9 +3563,24 @@ class Hub:
                 code, lines = -1, [f"The install couldn't start: {_clip(str(exc), 300)}"]
             if code == 0 and not await asyncio.to_thread(h.installed_version_is, to):
                 code, lines = 1, [*lines[-10:], f"The install finished, but the plugin is not at {to}."]
+            if code == 0 and isinstance(verified_asset, dict) and verified_asset.get("bytes"):
+                try:
+                    ok, why = await asyncio.to_thread(
+                        self_update.verify_installed_plugin,
+                        Path(__file__).resolve().parent, verified_asset["bytes"], verified_asset.get("manifest"))
+                except Exception as exc:
+                    ok, why = False, f"the installed plugin could not be checked: {_clip(str(exc), 300)}"
+                if not ok:
+                    code, lines = 1, [*lines[-10:], why]
             if code != 0:
                 await self._abandon_update(job_id, h, prepared, "The install didn't finish.", lines)
                 return
+            # The watchdog scripts ship with the plugin; an update that changes
+            # them must refresh the copies systemd runs, not only winglet setup.
+            try:
+                await asyncio.to_thread(self_update.refresh_watchdog_scripts, self.update_home)
+            except Exception:
+                logger.info("[winglet] could not refresh the update watchdog scripts", exc_info=True)
             await self._job_event(self.store.update_job(job_id, lines=lines[-12:]))
         except Exception as exc:
             logger.warning("[winglet] update stopped before the restart", exc_info=True)
@@ -3638,23 +3677,33 @@ class Hub:
                 return False
         return True
 
+    def _record_failed_release(self) -> None:
+        """Keep the failed version on disk even if the database is restored underneath us."""
+        try:
+            marker = self_update.read_marker(self.update_home)
+            to = marker.get("to") if isinstance(marker, dict) else None
+            if isinstance(to, str) and to:
+                self_update.note_failure(to, self.update_home)
+        except Exception:
+            logger.debug("[winglet] could not record the failed release", exc_info=True)
+
     async def _finish_gone(self, job_id: str) -> None:
+        self._record_failed_release()
         try:
             await asyncio.to_thread(self_update.clear_marker, self.update_home)
         except Exception:
             logger.debug("[winglet] update marker could not be cleared", exc_info=True)
-        self._self_update_failed_at = time.monotonic()
         await self._finish_job(job_id, "failed", "The previous version was already put back before the restart, so nothing was restarted. "
                                                  "Details were sent to your Telegram.")
 
     async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
         """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what
         happened. This never restarts the gateway."""
+        self._record_failed_release()
         try:
             await asyncio.to_thread(self_update.clear_marker, self.update_home)
         except Exception:
             logger.debug("[winglet] update marker could not be cleared", exc_info=True)
-        self._self_update_failed_at = time.monotonic()
         try:
             await asyncio.to_thread(h.cancel_update, prepared)
             message = f"{why} The previous version was put back, and the gateway was not restarted."

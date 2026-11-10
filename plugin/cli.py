@@ -299,6 +299,13 @@ def cmd_setup(args: argparse.Namespace) -> int:
         watchdog = self_update.install_watchdog()
         if watchdog.get("installed"):
             print("Update watchdog: installed (systemd timer).")
+            if watchdog.get("linger") is True:
+                print("Linger: on — the timer can run while you are logged out.")
+            elif watchdog.get("linger") is False:
+                print("Linger: off — the timer will not run while you are logged out.")
+                print("To make the watchdog reliable, an administrator can enable it with: loginctl enable-linger")
+            else:
+                print("Linger: unknown — could not ask loginctl; the timer may not run while you are logged out.")
         else:
             print(f"Update watchdog: missing — {watchdog.get('reason')}.")
             print("The plugin's janitor still checks the marker, but systemd will not restart a broken plugin.")
