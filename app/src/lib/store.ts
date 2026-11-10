@@ -658,6 +658,7 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     addServer: async (server) => {
+      const replaced = get().servers.find((s) => s.id === server.id);
       const others = get().servers.filter((s) => s.id !== server.id);
       set((state) => ({
         servers: [...others, server],
@@ -667,6 +668,12 @@ export const useApp = create<AppState>((set, get) => {
       await persist();
       await setJSON(SELECTION_KEY, get().selection);
       connect(server);
+      if (replaced) {
+        // Pairing again issues a new token and device id (a browser QR pair replaces the entry), and a server's
+        // other bots reach it the same way: without this they keep the dead token and read as "Signed out".
+        const shared = Object.fromEntries(Object.entries(server).filter(([k]) => SHARED_FIELDS.has(k)));
+        for (const child of get().servers.filter((s) => s.parent === server.id)) await get().updateServer(child.id, shared, true);
+      }
     },
 
     updateServer: async (serverId, change, reconnect = false) => {

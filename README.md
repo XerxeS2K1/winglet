@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.11.3](docs/releases/v0.11.3.md):** the browser sign-in QR shows on `/pair` even when a server is already saved, "Complete verification" offers the one-scan path instead of another code, and the self-updater follows GitHub's release-asset redirect (which had moved to a third hostname, so no release could be downloaded).
+> **New in [v0.11.4](docs/releases/v0.11.4.md):** pairing a browser again left a server's other bots holding the old token, so they read as "Signed out" — a re-pair now hands the new token to every bot on that server. Everything else is v0.11.3: the QR shows on `/pair` for returning users, one-scan verification, and the self-updater follows GitHub's release-asset redirect.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

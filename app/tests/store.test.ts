@@ -1154,3 +1154,16 @@ test('a socket still CONNECTING during the sign-out checks cancels it, and the c
   h.disconnect(); // an ordinary drop afterwards must still schedule a reconnect
   assert.ok(h.timers.length > 0);
 });
+
+test('pairing again hands the new token to the server\'s other bots', async () => {
+  const h = harness();
+  await h.connect(); // server 's' with token 'test'
+  await h.store.getState().syncBots('s', [{ name: 'research', title: 'Research' }]);
+  const child = () => h.store.getState().servers.find((s: any) => s.id === 's~research')!;
+  assert.equal(child().token, 'test');
+  // A browser QR pairing replaces the entry with a new device and a new token; before this the other bots kept
+  // the dead one and every request answered 401, which the app shows as "Signed out".
+  await h.store.getState().addServer({ id: 's', url: 'http://test', token: 'fresh', deviceId: 'dev2', bot: { title: 'Test' } });
+  assert.equal(child().token, 'fresh');
+  assert.equal(child().deviceId, 'dev2');
+});
