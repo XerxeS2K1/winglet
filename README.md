@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.11.1](docs/releases/v0.11.1.md):** the update sheet compares the installed binary's version rather than the JS bundle the server serves, so an older app can no longer be told it is already up to date and refuse to install. Everything else is v0.11.0: the server updates its own plugin when a release is newer, idle-safe, digest-checked and same-major.
+> **New in [v0.11.2](docs/releases/v0.11.2.md):** GitHub redirects a release download to its asset CDN, and the download only followed redirects to the two hostnames it knew — GitHub has moved to a third, so every self-update refused the asset while the release looked fine. Fixed, with the digest still checked. Everything else is v0.11.1: the app compares the installed binary, the server updates its own plugin when idle.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

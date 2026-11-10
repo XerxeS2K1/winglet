@@ -313,3 +313,25 @@ def test_json_comes_back_parsed_and_text_comes_back_as_text(monkeypatch):
     assert api._github_get(f"https://api.github.com/repos/{REPO}/releases") == [{"a": 1}]
     monkeypatch.setattr(urllib.request.OpenerDirector, "open", lambda self, *a, **k: Body(b"version: 1\n"))
     assert api._github_get(f"https://raw.githubusercontent.com/{REPO}/{SHA}/plugin/plugin.yaml", text=True) == "version: 1\n"
+
+
+def test_an_asset_download_may_follow_github_to_its_cdn():
+    """GitHub answers a release download with a redirect to its asset CDN, and has moved that host
+    before (objects. -> release-assets.). A miss here refuses every self-update: the live server
+    refused 0.11.1 with "redirect outside XerxeS2K1/winglet refused"."""
+    handler = api._SameRepoRedirect(asset_redirect=True)
+    req = urllib.request.Request(f"https://github.com/{REPO}/releases/download/v1.2.3/plugin.zip")
+    for host in ("release-assets.githubusercontent.com", "objects.githubusercontent.com",
+                 "github-releases.githubusercontent.com"):
+        target = f"https://{host}/github-production-release-asset/1/abc?sig=x"
+        assert handler.redirect_request(req, None, 302, "Found", {}, target) is not None, host
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(req, None, 302, "Found", {}, "https://release-assets.evil.example/x")
+
+
+def test_the_cdn_is_not_trusted_for_the_release_metadata():
+    handler = api._SameRepoRedirect()
+    req = urllib.request.Request(f"https://api.github.com/repos/{REPO}/releases")
+    with pytest.raises(urllib.error.URLError):
+        handler.redirect_request(req, None, 302, "Found", {},
+                                 "https://release-assets.githubusercontent.com/github-production-release-asset/1/abc")

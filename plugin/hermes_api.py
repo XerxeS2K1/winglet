@@ -690,7 +690,10 @@ RELEASE_CACHE_SECONDS = 600
 _API_PREFIX = f"https://api.github.com/repos/{RELEASE_REPO}/"
 _RAW_PREFIX = f"https://raw.githubusercontent.com/{RELEASE_REPO}/"
 _DOWNLOAD_PREFIX = f"https://github.com/{RELEASE_REPO}/releases/download/"
-_ASSET_REDIRECT_PREFIXES = ("https://objects.githubusercontent.com/", "https://github-releases.githubusercontent.com/")
+# GitHub redirects a release download to its asset CDN; the host it redirects to has changed before
+# (objects. → release-assets.), and a miss here refuses every self-update with "redirect outside".
+_ASSET_REDIRECT_PREFIXES = ("https://objects.githubusercontent.com/", "https://github-releases.githubusercontent.com/",
+                            "https://release-assets.githubusercontent.com/")
 _MAX_GITHUB_BYTES = 1_000_000
 _MAX_ASSET_BYTES = 32 * 1024 * 1024
 _VERSION = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\Z")
