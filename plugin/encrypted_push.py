@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 VERSION = 1
 MAX_AGE = 24 * 3600
 MAX_ENVELOPE = 3600
+PUSH_BODY_LIMIT = 600
 KIND = 'encrypted-v1'
 _ID = re.compile(r'^[a-f0-9]{32}$')
 
@@ -53,7 +54,13 @@ def seal(key: str, kid: str, server: str, device: str, note: dict, *, now=None, 
         raise ValueError('Invalid push key identifier')
     stamp = int(time.time() if now is None else now)
     selected = {name: _clip(note.get(name), limit) for name, limit in
-                [('title', 180), ('body', 600), ('url', 500), ('tag', 120), ('kind', 24), ('chat_id', 160)]}
+                [('title', 180), ('url', 500), ('tag', 120), ('kind', 24), ('chat_id', 160)]}
+    # An approval's body is the command the owner is being asked to run: never truncate it.
+    selected['body'] = (str(note.get('body') or '') if note.get('kind') == 'approval'
+                        else _clip(note.get('body'), PUSH_BODY_LIMIT))
+    for name in ('choices', 'sig', 'shade_expires'):
+        if name in note:
+            selected[name] = note[name]
     plain = json.dumps({'id': event_id or secrets.token_hex(16), 'issued': stamp, 'expires': stamp + MAX_AGE,
                         'note': selected}, ensure_ascii=False, separators=(',', ':')).encode('utf-8')
     if len(plain) > 2200:
