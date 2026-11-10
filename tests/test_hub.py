@@ -1,10 +1,12 @@
 import asyncio
+import os
+import time
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric import ec
 
 from plugin import webpush
-from plugin.hub import HOME_CHAT_ID, Hub
+from plugin.hub import HOME_CHAT_ID, MEDIA_KEEP_SECONDS, Hub
 from plugin.store import Store, normalize_code
 
 
@@ -385,19 +387,133 @@ async def test_static_serving_and_spa_fallback(client, hub):
     assert (await client.get("/api/nope")).status == 404
 
 
+async def test_query_tokens_are_only_for_the_websocket(client, hub):
+    token = await pair(client, hub)
+    assert (await client.get(f"/api/chats?token={token}")).status == 401
+    assert (await client.get("/api/chats", headers={"Authorization": f"Bearer {token}"})).status == 200
+
+
+async def test_a_corrupt_body_is_a_400_and_never_changes_pause_state(client, hub):
+    from test_trust import pair_phone
+    phone = await pair_phone(client, hub)
+    path = "/api/system/pause"
+    for body in (b'{"paused": tru', b"[]"):
+        resp = await client.post(path, data=body, headers=phone.signed("POST", path, body))
+        assert resp.status == 400
+        assert "JSON" in (await resp.json())["error"]
+    assert not any(a["action"] == "system.pause" for a in hub.store.list_audit())
+
+
 async def test_media_links_are_signed_and_need_no_token(client, hub, tmp_path):
     token = await pair(client, hub)
     f = tmp_path / "chart.png"
     f.write_bytes(b"\x89PNG fake")
     attachment = hub.add_media(str(f))
-    assert attachment["kind"] == "image" and "sig=" in attachment["url"] and token not in attachment["url"]
+    assert attachment["kind"] == "image" and "sig=" in attachment["url"] and "exp=" in attachment["url"] and token not in attachment["url"]
     resp = await client.get(attachment["url"])
     assert resp.status == 200 and await resp.read() == b"\x89PNG fake"
     assert resp.headers["Content-Disposition"].startswith("inline")
     unsigned = attachment["url"].split("?")[0]
     assert (await client.get(unsigned)).status == 401
     assert (await client.get(unsigned + "?sig=forged")).status == 401
-    assert (await client.get(f"{unsigned}?token={token}")).status == 200  # legacy links
+    assert (await client.get(f"{unsigned}?token={token}")).status == 401
+    assert (await client.get(unsigned, headers={"Authorization": f"Bearer {token}"})).status == 200
+
+
+async def test_deleting_a_message_removes_its_attachment_and_url(client, hub, tmp_path):
+    token = await pair(client, hub)
+    hub.store.ensure_chat("general", "General")
+    upload_id = "u-del-1"
+    hub.store.add_upload(upload_id, hub.store.device_for_token(token)["id"], "general", "secret.txt",
+                         "text/plain", "file", 6)
+    directory = hub.media_dir / upload_id
+    directory.mkdir(parents=True)
+    (directory / "secret.txt").write_text("secret")
+    message = hub.store.add_message("general", "user", "see attached")
+    hub.store.claim_uploads([upload_id], hub.store.device_for_token(token)["id"], "general", message["id"])
+    url = "/api/media/u-del-1/secret.txt?exp=9999999999&sig=" + hub.media_signature(upload_id, 9999999999)
+    assert (await client.get(url)).status == 200
+    assert await hub.delete_message(message["id"]) is True
+    assert hub.store.get_upload(upload_id) is None
+    assert not directory.exists()
+    assert hub.store.total_upload_bytes() == 0
+    assert (await client.get(url)).status == 404
+
+
+async def test_uploaded_media_links_do_not_expire(client, hub, tmp_path):
+    token = await pair(client, hub)
+    hub.store.ensure_chat("general", "General")
+    upload = hub.store.add_upload("u-forever", hub.store.device_for_token(token)["id"], "general",
+                                  "photo.png", "image/png", "image", 3)
+    directory = hub.media_dir / upload["id"]
+    directory.mkdir(parents=True)
+    (directory / upload["name"]).write_bytes(b"png")
+    public = hub._upload_public(upload)
+    assert "exp=" not in public["url"]
+    old = time.time() - MEDIA_KEEP_SECONDS - 60
+    os.utime(directory / upload["name"], (old, old))
+    assert (await client.get(public["url"])).status == 200
+
+
+async def test_old_agent_media_without_expiry_is_served_only_inside_retention(client, hub, tmp_path):
+    f = tmp_path / "old-agent.png"
+    f.write_bytes(b"png")
+    attachment = hub.add_media(str(f))
+    media_id = attachment["url"].split("/")[3]
+    unsigned = attachment["url"].split("?")[0]
+    legacy = f"{unsigned}?sig={hub.media_signature(media_id)}"
+    assert (await client.get(legacy)).status == 200
+    old = time.time() - MEDIA_KEEP_SECONDS - 60
+    os.utime(hub.media_dir / media_id / "old-agent.png", (old, old))
+    assert (await client.get(legacy)).status == 401
+
+
+async def test_deleting_a_chat_removes_only_its_attachments(client, hub, tmp_path):
+    from test_trust import pair_phone
+    owner = await pair_phone(client, hub)
+    chat = hub.store.create_chat("With files")
+    other = hub.store.create_chat("Keep files")
+    for upload_id, chat_id, size in (("chat-file", chat["id"], 6), ("other-file", other["id"], 4)):
+        hub.store.add_upload(upload_id, owner.id, chat_id, upload_id + ".txt", "text/plain", "file", size)
+        directory = hub.media_dir / upload_id
+        directory.mkdir(parents=True)
+        (directory / (upload_id + ".txt")).write_text("x" * size)
+    path = f"/api/chats/{chat['id']}"
+    assert (await client.delete(path, headers=owner.signed("DELETE", path))).status == 200
+    assert hub.store.get_upload("chat-file") is None
+    assert not (hub.media_dir / "chat-file").exists()
+    assert hub.store.get_upload("other-file") is not None
+    assert (hub.media_dir / "other-file").exists()
+    assert hub.store.total_upload_bytes() == 4
+
+
+async def test_agent_media_links_expire_and_old_media_is_swept(client, hub, tmp_path):
+    hub.media_dir.mkdir(parents=True, exist_ok=True)
+    f = tmp_path / "agent.png"
+    f.write_bytes(b"png")
+    attachment = hub.add_media(str(f))
+    media_id = attachment["url"].split("/")[3]
+    expires = int(attachment["url"].split("exp=")[1].split("&")[0])
+    assert expires > time.time()
+    assert (await client.get(attachment["url"])).status == 200
+    expired = f"/api/media/{media_id}/agent.png?exp={int(time.time()) - 1}&sig={hub.media_signature(media_id, int(time.time()) - 1)}"
+    assert (await client.get(expired)).status == 401
+
+    old = hub.media_dir / "old-agent"
+    old.mkdir()
+    (old / "x.bin").write_bytes(b"x")
+    os_time = time.time() - MEDIA_KEEP_SECONDS - 60
+    for path in (old, old / "x.bin"):
+        os.utime(path, (os_time, os_time))
+    kept = hub.media_dir / "row-owned"
+    kept.mkdir()
+    (kept / "k.bin").write_bytes(b"k")
+    hub.store.add_upload("row-owned", "dev", "general", "k.bin", "application/octet-stream", "file", 1)
+    for path in (kept, kept / "k.bin"):
+        os.utime(path, (os_time, os_time))
+    assert hub.sweep_media(now=time.time()) == 1
+    assert not old.exists()
+    assert kept.exists()
 
 
 async def test_active_documents_are_served_inert(client, hub, tmp_path):
@@ -679,3 +795,25 @@ def test_chat_previews_read_as_one_line(store):
     chat = store.create_chat("Food")
     store.add_message(chat["id"], "bot", "List:\n- a\n- b")
     assert store.get_chat(chat["id"])["preview"] == "List: a, b"
+
+
+async def test_a_revoked_file_stops_serving_even_if_its_delete_failed(client, hub, monkeypatch):
+    """A delete that cannot remove the file must not leave its link live: the row is gone, the bytes are not."""
+    token = await pair(client, hub)
+    hub.store.ensure_chat("general", "General")
+    upload = hub.store.add_upload("u-revoked", hub.store.device_for_token(token)["id"], "general",
+                                  "note.txt", "text/plain", "file", 4)
+    directory = hub.media_dir / upload["id"]
+    directory.mkdir(parents=True)
+    (directory / upload["name"]).write_text("note")
+    url = hub._upload_public(upload)["url"]
+    assert (await client.get(url)).status == 200
+
+    monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)  # the delete fails silently
+    hub._remove_upload(upload)
+    assert hub.store.get_upload("u-revoked") is None
+    assert (await client.get(url)).status == 404
+
+    monkeypatch.undo()
+    hub.sweep_media()  # the janitor clears the marked directory rather than waiting for its age
+    assert not directory.exists()

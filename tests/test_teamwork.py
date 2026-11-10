@@ -133,6 +133,36 @@ def test_origin_lookup_failure_does_not_prevent_delivery(team, monkeypatch):
     assert team.sent[-1][1].startswith("Message from 🤖 Hermes (@hermes): Dinner?")
 
 
+async def test_an_undeliverable_handoff_is_failed_with_a_visible_reason(team, tmp_path, monkeypatch):
+    import asyncio
+    from plugin.hub import Hub
+    from plugin.store import Store
+
+    store = Store(tmp_path / "state.db")
+    hub = Hub(store, web_root=tmp_path / "web")
+    chat = store.create_chat("Planning")
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(teamwork, "_handoff_origin", lambda: (hub, chat["id"], loop))
+    published = []
+
+    async def capture(event, **_kwargs):
+        published.append(event)
+
+    monkeypatch.setattr(hub, "_broadcast", capture)
+    team.result = Exception("authority is not ready")
+    try:
+        reply = json.loads(await asyncio.to_thread(teamwork.ask_bot, {"bot": "chef", "message": "Dinner?"}))
+        assert "isn't running" in reply["error"]
+        rows = store._all("SELECT * FROM handoffs")
+        assert len(rows) == 1 and rows[0]["state"] == "done"
+        notes = [m for m in store.list_messages(chat["id"]) if m["role"] == "bot"]
+        assert notes and "Nothing was sent" in notes[-1]["text"] and "isn't running" in notes[-1]["text"]
+        assert any(e.get("type") in ("message.new", "message.update") for e in published)
+    finally:
+        await hub.aclose()
+        store.close()
+
+
 async def test_an_answer_leaves_a_note_in_the_asking_chat(team, tmp_path, monkeypatch):
     import asyncio
     session = pytest.importorskip("gateway.session_context")

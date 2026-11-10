@@ -95,6 +95,11 @@ class HandoffService:
         return await self.hub.publish(
             lambda: self.hub.store.finish_handoff(delivery_id, answer, failed, notify=False), self._events)
 
+    async def finish_failed(self, delivery_id, reason):
+        """Close a hand-off that never reached the teammate, and publish the notice."""
+        return await self.hub.publish(
+            lambda: self.hub.store.finish_handoff(delivery_id, reason, True), self._events)
+
     async def watch(self):
         while True:
             try:

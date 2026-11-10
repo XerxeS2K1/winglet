@@ -668,9 +668,13 @@ class BranchService:
         return rows, attachments_by_message, cloned
 
     def _cleanup(self, new_chat_id: Optional[str], cloned: List[str]) -> None:
+        rows = self.hub.store.chat_uploads(new_chat_id) if new_chat_id else []
         if new_chat_id:
             with contextlib.suppress(Exception):
                 self.hub.store.delete_chat(new_chat_id)
+        for row in rows:
+            with contextlib.suppress(Exception):
+                self.hub._remove_upload(row)
         for upload_id in cloned:
             with contextlib.suppress(Exception):
                 row = self.hub.store.get_upload(upload_id)

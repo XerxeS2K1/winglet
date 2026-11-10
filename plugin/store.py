@@ -531,6 +531,7 @@ class Store:
             self._exec("INSERT OR IGNORE INTO message_deletions (id, chat_id, deleted_at) "
                        "SELECT id, chat_id, ? FROM messages WHERE chat_id = ?", (now, chat_id))
             self._exec("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            self._exec("DELETE FROM uploads WHERE chat_id = ?", (chat_id,))
             self._exec("DELETE FROM chat_branches WHERE chat_id = ?", (chat_id,))
             return self._exec("DELETE FROM chats WHERE id = ?", (chat_id,)) == 1
 
@@ -630,6 +631,8 @@ class Store:
                 return target  # Never recreate a deleted asking chat.
             text = (f"{row['title']} ended the hand-off without a confirmed answer." if failed else
                     f"{row['title']} finished the handed-off task.") if notify else f"Asked {row['title']}"
+            if failed and notify and answer:
+                text += f" {answer[:300]}"
             meta: Dict[str, Any] = {"asked": {"bot": row["title"], "question": row["question"], "answer": answer[:6000],
                               "failed": failed, "state": state, "delivery_id": delivery_id}}
             if not notify:
@@ -677,6 +680,7 @@ class Store:
             if current is not None:
                 self._exec("INSERT OR IGNORE INTO message_deletions (id, chat_id, deleted_at) VALUES (?, ?, ?)",
                            (message_id, current["chat_id"], _now()))
+                self._exec("UPDATE uploads SET message_id = NULL WHERE message_id = ?", (message_id,))
                 self._exec("DELETE FROM messages WHERE id = ?", (message_id,))
                 latest = self._one("SELECT text FROM messages WHERE chat_id = ? "
                                    "AND COALESCE(json_extract(meta, '$.hidden'), 0) != 1 "
@@ -889,6 +893,9 @@ class Store:
 
     def chat_uploads(self, chat_id: str) -> List[Dict[str, Any]]:
         return [dict(r) for r in self._all("SELECT * FROM uploads WHERE chat_id = ?", (chat_id,))]
+
+    def message_uploads(self, message_id: str) -> List[Dict[str, Any]]:
+        return [dict(r) for r in self._all("SELECT * FROM uploads WHERE message_id = ?", (message_id,))]
 
     def delete_upload(self, upload_id: str) -> None:
         self._exec("DELETE FROM uploads WHERE id = ?", (upload_id,))

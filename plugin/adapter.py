@@ -450,9 +450,13 @@ class WingletAdapter(BasePlatformAdapter):
             voice = f.get("kind") == "voice"
             try:
                 path, media_type, kind = await hermes_api.cache_media(f["path"], f["name"], f["mime"], voice=voice)
-            except Exception:
+            except Exception as exc:
                 logger.warning("[%s] could not pass %s to Hermes", self.name, f.get("name"), exc_info=True)
-                continue
+                if self._hub is not None:
+                    await self._hub.post_message(
+                        chat["id"], "⚠️ An attachment couldn't be prepared, so the message was not sent. "
+                        "Try sending it again.", role="system", push=False)
+                return
             media_urls.append(path)
             media_types.append(media_type)
             kinds.append("voice" if voice else kind)
@@ -506,14 +510,16 @@ class WingletAdapter(BasePlatformAdapter):
             link = {'routine_id': job_id, **({'run_id': run_id} if run_id else {})}
             message = await hub.post_message(chat_id, text, push=False, meta={'routine': name, **link})
             if message is None:
-                return SendResult(success=True)
+                return SendResult(success=False, error="chat deleted")
             await hub.add_inbox("result", chat_id, f"Routine result: {name}"[:120] if name else "Routine result", text,
                                 {"message_id": message["id"], "job_id": job_id, **link})
         elif metadata.get("expect_edits"):
             message = await hub.post_message(chat_id, text, status="streaming")
         else:
             message = await hub.post_message(chat_id, text)
-        return SendResult(success=True, message_id=message["id"] if message else None)
+        if message is None:
+            return SendResult(success=False, error="chat deleted")
+        return SendResult(success=True, message_id=message["id"])
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *,
                            finalize: bool = False) -> SendResult:
@@ -933,10 +939,12 @@ class WingletAdapter(BasePlatformAdapter):
              "labels": labels, "styles": styles, "session_key": prompt.session_key,
              "request_id": request_id, "smart_denied": prompt.smart_denied})
         if item is None:
-            return SendResult(success=True)
+            return SendResult(success=False, error="chat deleted")
         message = await hub.post_message(prompt.chat_id, prompt.description or "Approval needed", role="system",
                                          meta={"inbox_id": item["id"], "kind": "approval"}, push=False)
-        return SendResult(success=True, message_id=message["id"] if message else None)
+        if message is None:
+            return SendResult(success=False, error="chat deleted")
+        return SendResult(success=True, message_id=message["id"])
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
                            session_key: str, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
@@ -956,10 +964,12 @@ class WingletAdapter(BasePlatformAdapter):
             {"question": question, "choices": [str(c) for c in (choices or [])], "clarify_id": clarify_id,
              "session_key": session_key, "multi_select": multi})
         if item is None:
-            return SendResult(success=True)
+            return SendResult(success=False, error="chat deleted")
         message = await hub.post_message(chat_id, question, role="system",
                                          meta={"inbox_id": item["id"], "kind": "question"}, push=False)
-        return SendResult(success=True, message_id=message["id"] if message else None)
+        if message is None:
+            return SendResult(success=False, error="chat deleted")
+        return SendResult(success=True, message_id=message["id"])
 
     async def retire_clarify_card(self, clarify_id: str, notice: Optional[str] = None) -> None:
         hub = self._hub
