@@ -11,6 +11,7 @@ import { Sheet } from '../components/Sheet';
 import { Button, Card, Chip, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
 import { describeTestPush, enableNtfy, enableWebPush, openNtfySubscribe, sendTestPush, webPushServer, webPushState, type PushState } from '../lib/push';
 import { pushPrefsKey, quietHours, usePushPrefs } from '../lib/pushPrefs';
+import { loadShadeApprovals, saveShadeApprovals, SHADE_PREVIEW_NOTE, shadeSavedNote, shadeToggleView, type ShadeApprovals } from '../lib/shadeApprovals';
 import { homeChat, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Server } from '../lib/types';
@@ -23,6 +24,9 @@ export default function NotificationsScreen() {
   return (
     <Screen title="Notifications">
       {Platform.OS === 'web' ? <WebPushSettings servers={servers} /> : servers.map((srv) => pushNative ? <EncryptedPushSettings key={srv.id} server={srv} /> : <NtfySettings key={srv.id} server={srv} />)}
+      {Platform.OS === 'android' ? servers.map((srv) => (
+        <ShadeApprovalsSetting key={`shade-${srv.id}`} server={srv} named={servers.length > 1} />
+      )) : null}
       {(Platform.OS === 'web' ? [webPushServer(servers)].filter((x): x is Server => !!x) : servers).map((srv) => (
         <QuietSettings key={srv.id} server={srv} named={servers.length > 1} />
       ))}
@@ -105,6 +109,50 @@ function QuietSettings({ server, named }: { server: Server; named: boolean }) {
           ))}
         </ScrollView>
       </Sheet>
+    </>
+  );
+}
+
+
+/** Per-device opt-in for answering approvals from the shade. Everyone can read it; only a verified
+ * owner can change it, and the server says so through can_enable. */
+function ShadeApprovalsSetting({ server, named }: { server: Server; named: boolean }) {
+  const t = useTheme();
+  const s = useStyles();
+  const me = useApp((st) => st.runtime[server.id]?.me);
+  const [state, setState] = useState<ShadeApprovals | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [saved, setSaved] = useState('');
+  useEffect(() => {
+    let live = true;
+    setError('');
+    loadShadeApprovals(server).then((next) => { if (live) setState(next); })
+      .catch((e) => { if (live) setError((e as Error).message); });
+    return () => { live = false; };
+  }, [server.id, server.token]);
+  const view = shadeToggleView(state, me);
+  const change = async (enabled: boolean) => {
+    if (!state?.can_enable || busy) return;
+    setBusy(true); setError(''); setSaved('');
+    try {
+      const next = await saveShadeApprovals(server, enabled);
+      setState(next);
+      setSaved(shadeSavedNote(state, next));
+    } catch (e) { setError((e as Error).message); }
+    setBusy(false);
+  };
+  return (
+    <>
+      <SectionHeader title={named ? `${server.bot.title}: approval actions` : 'Approval actions'} />
+      <ListGroup>
+        <ListRow title="Approve from notifications" subtitle={view.note}
+          right={<Toggle label="Approve from notifications" value={view.value}
+            disabled={view.disabled || busy} onValueChange={change} />} />
+      </ListGroup>
+      {error ? <Text style={[s.note, { color: t.colors.danger, marginTop: 8 }]} accessibilityLiveRegion="polite">{error}</Text> : null}
+      {saved ? <Text style={[s.note, { marginTop: 8 }]} accessibilityLiveRegion="polite">{saved}</Text> : null}
+      <Text style={[s.note, { marginTop: 8 }]}>{SHADE_PREVIEW_NOTE}</Text>
     </>
   );
 }

@@ -11,7 +11,7 @@ export function PushSecurityBridge(){
   const loaded=usePrefs(st=>st.loaded),appLock=usePrefs(st=>st.prefs.appLock);
   const ready=useApp(st=>st.ready),foreground=useApp(st=>st.foreground),servers=useApp(st=>st.servers);
   const online=useApp(st=>st.servers.filter(s=>!s.parent && st.runtime[s.id]?.status==='online').map(s=>s.id).sort().join('|'));
-  const retained=useApp(st=>JSON.stringify(st.servers.filter(s=>!s.parent && st.runtime[s.id]?.status!=='unauthorized').map(s=>({server:s.id,device:s.deviceId}))));
+  const retained=useApp(st=>JSON.stringify(st.servers.filter(s=>!s.parent && st.runtime[s.id]?.status!=='unauthorized').map(s=>({server:s.id,device:s.deviceId,url:s.url,token:s.token}))));
   useLayoutEffect(()=>{
     if(!pushNative)return;
     const state=useLock.getState();

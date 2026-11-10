@@ -4,8 +4,10 @@ import android.app.Notification
 import android.app.KeyguardManager
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.app.RemoteInput
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import android.os.Build
 import android.net.Uri
 import org.json.JSONObject
@@ -13,6 +15,17 @@ import org.unifiedpush.android.connector.FailedReason
 import org.unifiedpush.android.connector.PushService
 import org.unifiedpush.android.connector.data.PushEndpoint
 import org.unifiedpush.android.connector.data.PushMessage
+
+internal const val ACTION_APPROVE="expo.modules.wingletpush.APPROVE"
+internal const val ACTION_DECLINE="expo.modules.wingletpush.DECLINE"
+internal const val ACTION_REPLY="expo.modules.wingletpush.REPLY"
+internal const val EXTRA_SCOPE="winglet.scope"
+internal const val EXTRA_TAG="winglet.tag"
+internal const val EXTRA_ITEM="winglet.item"
+internal const val EXTRA_CHOICE="winglet.choice"
+internal const val EXTRA_SIG="winglet.sig"
+internal const val EXTRA_CHAT="winglet.chat"
+internal const val EXTRA_REPLY="winglet.reply"
 
 internal object PushVisibility {
   @Volatile var online:Set<String> = emptySet()
@@ -82,19 +95,58 @@ class WingletPushService : PushService() {
     if(manager.getNotificationChannel(channel).importance==NotificationManager.IMPORTANCE_NONE || PushChannels.legacyBlocked(manager))return false
     val generic="Open Winglet to review the latest update."
     val deviceLocked=(getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager).isDeviceLocked
-    val details=entry.optBoolean("previews",false) && !deviceLocked && !PushVisibility.locked && !getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("private",true)
+    val privatePolicy=getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("private",true)
+    val details=entry.optBoolean("previews",false) && !deviceLocked && !PushVisibility.locked && !privatePolicy
+    val approval=note.optString("kind")=="approval"
+    val item=note.optString("item_id")
+    val sigs=note.optJSONObject("sig") ?: JSONObject()
+    val choices=note.optJSONArray("choices")
+    val choiceNames=buildSet<String>{ if(choices!=null){ for(i in 0 until choices.length())add(choices.optString(i)) } }
+    val expires=note.optDouble("shade_expires",0.0)
+    val live=expires<=0.0 || expires>System.currentTimeMillis()/1000.0
+    // Only offer an action when the notification can show what it is for. A locked screen, the app
+    // lock or private notifications leave the generic body, so none of Approve, Decline or Reply is
+    // offered: someone holding the phone must not act as the owner without unlocking it.
+    val canAct=!deviceLocked && !PushVisibility.locked && !privatePolicy
+    val approve=approval && canAct && live && item.isNotBlank() && choiceNames.contains("once") && sigs.optString("once").isNotBlank()
+    val decline=approval && canAct && item.isNotBlank() && choiceNames.contains("deny") && sigs.optString("deny").isNotBlank()
+    val reply=!approval && canAct && note.optString("chat_id").isNotBlank() && entry.optString("token").isNotBlank()
+    val showBody=details || approve || decline
     val path=PushLinks.safePath(note.optString("url"),entry.getString("server"))
     val scheme=if(packageName.endsWith(".dev"))"winglet-dev" else "winglet"
     val intent=Intent(Intent.ACTION_VIEW,Uri.parse(scheme+":"+"/"+path)).setPackage(packageName)
       .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
     val pending=PendingIntent.getActivity(this,0,intent,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     val public=brand(Notification.Builder(this,channel)).setContentTitle("Winglet").setContentText(generic).build()
-    val notification=brand(Notification.Builder(this,channel))
-      .setContentTitle(if(details)note.optString("title").take(120) else "Winglet")
-      .setContentText(if(details)note.optString("body").take(400) else generic)
-      .setContentIntent(pending).setAutoCancel(true).setVisibility(if(details)Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE).setPublicVersion(public).build()
-    manager.notify(PushStore.noteTag(instance,note.optString("tag")),1,notification)
+    val tag=note.optString("tag")
+    val body=note.optString("body")
+    val builder=brand(Notification.Builder(this,channel))
+      .setContentTitle(if(showBody)note.optString("title").take(120) else "Winglet")
+      .setContentText(if(showBody)body.take(400) else generic)
+      .setContentIntent(pending).setAutoCancel(true)
+      .setVisibility(if(showBody)Notification.VISIBILITY_SECRET else Notification.VISIBILITY_PRIVATE)
+      .setPublicVersion(public)
+    if(showBody && body.length>180)builder.setStyle(Notification.BigTextStyle().bigText(body))
+    val icon=Icon.createWithResource(this,R.drawable.ic_stat_winglet)
+    if(approve)builder.addAction(Notification.Action.Builder(icon,"Approve",
+      actionIntent(ACTION_APPROVE,instance,tag,item,"once",sigs.optString("once"),"",false)).build())
+    if(decline)builder.addAction(Notification.Action.Builder(icon,"Decline",
+      actionIntent(ACTION_DECLINE,instance,tag,item,"deny",sigs.optString("deny"),"",false)).build())
+    if(reply){
+      val remote=RemoteInput.Builder(EXTRA_REPLY).setLabel("Reply").build()
+      builder.addAction(Notification.Action.Builder(icon,"Reply",
+        actionIntent(ACTION_REPLY,instance,tag,"","","",note.optString("chat_id"),true))
+        .addRemoteInput(remote).setAllowGeneratedReplies(true).build())
+    }
+    manager.notify(PushStore.noteTag(instance,tag),1,builder.build())
     return true
+  }
+  private fun actionIntent(action: String,instance: String,tag: String,item: String,choice: String,sig: String,chat: String,mutable: Boolean): PendingIntent {
+    val intent=Intent(this,WingletActionReceiver::class.java).setAction(action)
+      .putExtra(EXTRA_SCOPE,instance).putExtra(EXTRA_TAG,tag).putExtra(EXTRA_ITEM,item)
+      .putExtra(EXTRA_CHOICE,choice).putExtra(EXTRA_SIG,sig).putExtra(EXTRA_CHAT,chat)
+    val flags=PendingIntent.FLAG_UPDATE_CURRENT or (if(mutable && Build.VERSION.SDK_INT>=31)PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE)
+    return PendingIntent.getBroadcast(this,(tag+"|"+item+"|"+choice+"|"+action).hashCode(),intent,flags)
   }
   /** Winglet mark: white glyph for the status bar plus the accent colour. Same for every notification, so it reveals nothing. */
   private fun brand(builder: Notification.Builder): Notification.Builder {

@@ -83,7 +83,7 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     void permissionStep().then(ok=>{if(!ok)return;void run(async signal=>{
       currentPairing(server,signal);
       const {public_key}=await api<{public_key:string}>(server,'/api/push/vapid');currentPairing(server,signal);
-      await native.prepare(server.id,server.deviceId,distributor,public_key,rotate);currentPairing(server,signal);
+      await native.prepare(server.id,server.deviceId,distributor,public_key,rotate,server.url,server.token);currentPairing(server,signal);
       if(alive.current)setMessage('Waiting for your push distributor…');
       let registered=false;
       for(let attempt=0;attempt<24;attempt++){

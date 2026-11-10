@@ -201,13 +201,16 @@ export function ListRow({ icon, iconColor, title, subtitle, value, right, onPres
   );
 }
 
-export function Toggle({ value, onValueChange, label }: { value: boolean; onValueChange: (v: boolean) => void; label: string }) {
+export function Toggle({ value, onValueChange, label, disabled }: { value: boolean; onValueChange: (v: boolean) => void; label: string; disabled?: boolean }) {
   const t = useTheme();
   return (
     <Switch
       accessibilityLabel={label}
+      accessibilityState={{ disabled: !!disabled }}
+      disabled={disabled}
       value={value}
       onValueChange={(v) => {
+        if (disabled) return;
         haptic.selection();
         onValueChange(v);
       }}

@@ -74,6 +74,21 @@ class WingletPushModule : Module() {
       lastLocked=isLocked;lastForeground=foreground
       locked=isLocked;visible=foreground;PushVisibility.locked=isLocked
       PushVisibility.allowed=pairs.map{PushStore.scope(it["server"] ?: "",it["device"] ?: "")}.toSet()
+      // Keep the server URL and this pairing's token beside the push key so notification actions can
+      // answer while the app is closed. They live in the same Keystore-encrypted record, never in the
+      // notification itself. Security is called on state changes, so only write when something moved.
+      synchronized(PushStore.mutex){
+        for(pair in pairs){
+          val server=pair["server"] ?: "";val device=pair["device"] ?: ""
+          if(server.isBlank() || device.isBlank())continue
+          val scope=PushStore.scope(server,device)
+          val entry=runCatching{PushStore.read(context,scope)}.getOrNull() ?: continue
+          val url=pair["url"] ?: "";val token=pair["token"] ?: ""
+          if(entry.optString("server_url")==url && entry.optString("token")==token)continue
+          entry.put("server_url",url).put("token",token)
+          runCatching{PushStore.write(context,scope,entry)}
+        }
+      }
       // Behind the app lock (or before the app is ready) nothing on screen is readable, so nothing counts as open.
       PushVisibility.online=if(foreground && !isLocked)online.toSet() else emptySet()
       // No user content or credentials, and persisted for cold-start privacy.
@@ -114,12 +129,12 @@ class WingletPushModule : Module() {
       else promise.resolve(mapOf("granted" to true))
     }
     AsyncFunction("status"){server:String,device:String -> guard(server,device);synchronized(PushStore.mutex){status(PushStore.scope(server,device))}}
-    AsyncFunction("prepare"){server:String,device:String,distributor:String,vapid:String,rotate:Boolean ->
+    AsyncFunction("prepare"){server:String,device:String,distributor:String,vapid:String,rotate:Boolean,url:String,token:String ->
       guard(server,device)
       if(distributor !in UnifiedPush.getDistributors(context))throw CodedException("Install or choose an available UnifiedPush distributor, such as ntfy or the built-in option.")
       synchronized(PushStore.mutex){
         val (scope,entry)=PushStore.prepare(context,server,device,rotate)
-        entry.put("registrationPending",true).put("error","")
+        entry.put("registrationPending",true).put("error","").put("server_url",url).put("token",token)
         PushStore.write(context,scope,entry)
         UnifiedPush.saveDistributor(context,distributor)
         UnifiedPush.register(context,instance=scope,messageForDistributor="Winglet",vapid=vapid)
