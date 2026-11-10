@@ -13,7 +13,14 @@ out-of-process rollback possible.
 from __future__ import annotations
 
 import contextlib
-import fcntl
+try:  # POSIX
+    import fcntl
+except ImportError:  # Windows: the gateway runs on Linux, but the suite imports this everywhere
+    fcntl = None
+try:
+    import msvcrt
+except ImportError:  # POSIX
+    msvcrt = None
 import hashlib
 import json
 import os
@@ -134,17 +141,36 @@ def read_attempts(home=None) -> Dict[str, Any]:
     return {"attempts": attempts, "failures": failures, "permanent": permanent}
 
 
+def _lock_file(handle) -> None:
+    """Serialize the attempts file across processes. POSIX flocks; Windows locks a byte."""
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+    elif msvcrt is not None:
+        handle.seek(0)
+        # getattr keeps type checkers quiet on POSIX, where the module has no locking().
+        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_LOCK"), 1)
+    # Neither available: no lock, which is why the watchdog path is POSIX-only anyway.
+
+
+def _unlock_file(handle) -> None:
+    if fcntl is not None:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    elif msvcrt is not None:
+        handle.seek(0)
+        getattr(msvcrt, "locking")(handle.fileno(), getattr(msvcrt, "LK_UNLCK"), 1)
+
+
 @contextlib.contextmanager
 def _attempts_lock(home=None):
     """An on-disk lock: the watchdog rollback is a different process."""
     path = attempts_path(home).with_suffix(".lock")
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+", encoding="utf-8") as handle:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        _lock_file(handle)
         try:
             yield
         finally:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            _unlock_file(handle)
 
 
 def _write_attempts(data: Dict[str, Any], home=None) -> None:
