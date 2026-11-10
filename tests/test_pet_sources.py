@@ -488,3 +488,14 @@ def test_hermes_wont_install_over_a_pet_that_has_the_same_name(hermes_home, net,
 def test_an_unreachable_codex_gallery_is_a_plain_refusal(hermes_home, net):
     with pytest.raises(hermes_home.HermesRefused, match="codex-pets.net"):
         hermes_home.pet_catalog_from("codex", "", 0)
+
+
+def test_a_slow_trickle_hits_the_total_deadline():
+    import time
+
+    class Trickle:
+        def read(self, _n):
+            return b"x"
+
+    with pytest.raises(petsource.PetSourceError, match="took too long"):
+        petsource._read_capped(Trickle(), 1000, deadline=time.monotonic() - 1)

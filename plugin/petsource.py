@@ -105,10 +105,16 @@ def _asset_url(url: Any) -> str:
     return url if urlsplit(url).path.startswith("/assets/pets/") else ""
 
 
-def _read_capped(response, limit: int) -> bytes:
-    """Read at most limit + 1 bytes, so an oversize body is noticed without being held whole."""
+def _read_capped(response, limit: int, deadline: Optional[float] = None) -> bytes:
+    """Read at most limit + 1 bytes, so an oversize body is noticed without being held whole.
+
+    ``deadline`` is a monotonic absolute time: a server that trickles bytes just under the socket
+    timeout still cannot hold the download open indefinitely.
+    """
     chunks, size = [], 0
     while size <= limit:
+        if deadline is not None and time.monotonic() > deadline:
+            raise PetSourceError("That download took too long, so it was stopped.")
         chunk = response.read(min(65536, limit + 1 - size))
         if not chunk:
             break
@@ -131,7 +137,8 @@ def _hop(url: str, timeout: float, limit: int) -> Tuple[int, Dict[str, str], byt
         declared = headers.get("content-length", "")
         if declared.isdigit() and int(declared) > limit:
             return response.status, headers, b"\0" * (limit + 1)  # too big: not read
-        return response.status, headers, _read_capped(response, limit)
+        # Per-connection total, not just per-read: a trickle cannot keep the socket alive forever.
+        return response.status, headers, _read_capped(response, limit, time.monotonic() + timeout * 2)
     finally:
         conn.close()
 
