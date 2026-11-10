@@ -1,0 +1,464 @@
+"""The server updates itself: gates, marker, watchdog and rollback.
+
+The app is deliberately absent here.  These tests exercise the plugin-side
+contract in docs/design/self-updating-server.md.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import io
+import json
+import sqlite3
+import time
+import zipfile
+from pathlib import Path
+
+import pytest
+
+from plugin import hermes_api as api
+from plugin import rollback as rollback_module
+from plugin import self_update, update_rollback
+from plugin import hub as hub_module
+from test_control import client, hub, store, settle  # noqa: F401
+from test_trust import pair_phone
+
+
+async def put_signed(client, phone, path, data):
+    body = json.dumps(data).encode()
+    return await client.put(path, data=body, headers=phone.signed("PUT", path, body))
+
+
+@pytest.fixture(autouse=True)
+def isolated_hermes_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    return tmp_path / "hermes"
+
+
+# -- the gates, in the design's order ------------------------------------------------------------------------------
+
+BASE_GATE = dict(enabled=True, release={"version": "0.11.0"}, current_version="0.10.11",
+                 running_hermes="0.23.0", idle=True, asset_ok=True, manifest_ok=True,
+                 attempted_release=False, failed_at=None, now=1000.0)
+
+
+@pytest.mark.parametrize("change,expected", [
+    ({"enabled": False}, "autoUpdate"),
+    ({"release": {"version": "0.10.11"}}, "newer"),
+    ({"release": {"version": "0.10.9"}}, "newer"),
+    ({"release": {"version": "1.0.0"}}, "major"),
+    ({"idle": False}, "busy"),
+    ({"asset_ok": False}, "asset"),
+    ({"manifest_ok": False}, "manifest"),
+    ({"attempted_release": True}, "attempt"),
+    ({"failed_at": 1000.0 - 10}, "retry"),
+])
+def test_each_gate_refuses(change, expected):
+    args = {**BASE_GATE, **change}
+    assert self_update.gate_reason(**args) == expected
+
+
+def test_all_gates_allow_an_update():
+    assert self_update.gate_reason(**BASE_GATE) is None
+
+
+def test_the_retry_gate_expires_after_thirty_minutes():
+    args = {**BASE_GATE, "failed_at": 1000.0 - self_update.RETRY_AFTER_FAILURE_SECONDS}
+    assert self_update.gate_reason(**args) is None
+
+
+# -- gate 5 and 6: the published asset and its manifest -------------------------------------------------------------
+
+ZIP_URL = "https://github.com/XerxeS2K1/winglet/releases/download/v0.11.0/winglet-plugin.zip"
+RELEASE = {"version": "0.11.0", "tag": "v0.11.0", "sha": "a" * 40}
+
+
+def plugin_zip(version="0.11.0", requires=">=0.22.7") -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("plugin.yaml", f"name: winglet\nversion: {version}\nrequires_hermes: \"{requires}\"\n")
+        archive.writestr("plugin/__init__.py", "")
+    return buffer.getvalue()
+
+
+def asset_fetch(data: bytes, *, digest=None, name="winglet-plugin.zip", assets=None):
+    digest = digest if digest is not None else "sha256:" + hashlib.sha256(data).hexdigest()
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url.endswith("/releases/tags/v0.11.0"):
+            return {"assets": assets if assets is not None else [{
+                "name": name, "browser_download_url": ZIP_URL, "digest": digest}]}
+        assert url == ZIP_URL
+        return data
+
+    fetch.calls = calls
+    return fetch
+
+
+def test_a_published_digest_and_matching_zip_manifest_pass_the_asset_gate():
+    data = plugin_zip()
+    found = api.release_plugin_asset(RELEASE, fetch=asset_fetch(data))
+    assert found["manifest"]["version"] == "0.11.0"
+    assert found["digest"].startswith("sha256:")
+
+
+def test_a_missing_plugin_asset_is_refused():
+    with pytest.raises(api.ReleaseCheckFailed, match="no plugin asset"):
+        api.release_plugin_asset(RELEASE, fetch=asset_fetch(b"", assets=[]))
+
+
+def test_a_download_that_does_not_match_githubs_digest_is_refused():
+    data = plugin_zip()
+    fake = asset_fetch(data, digest="sha256:" + "0" * 64)
+    with pytest.raises(api.ReleaseCheckFailed, match="does not match"):
+        api.release_plugin_asset(RELEASE, fetch=fake)
+
+
+def test_an_asset_without_a_published_sha256_is_refused():
+    fake = asset_fetch(plugin_zip(), digest="")
+    with pytest.raises(api.ReleaseCheckFailed, match="no published sha256"):
+        api.release_plugin_asset(RELEASE, fetch=fake)
+
+
+def test_a_zip_whose_plugin_yaml_names_another_version_is_refused():
+    data = plugin_zip("0.10.9")
+    with pytest.raises(api.ReleaseCheckFailed, match="contains Winglet 0.10.9"):
+        api.release_plugin_asset(RELEASE, fetch=asset_fetch(data))
+
+
+def test_an_asset_hosted_outside_the_winglet_repository_is_refused():
+    fake = asset_fetch(plugin_zip(), name="winglet-plugin.zip")
+    original = fake
+
+    def fetch(url):
+        if url.endswith("/releases/tags/v0.11.0"):
+            return {"assets": [{"name": "winglet-plugin.zip",
+                                "browser_download_url": "https://evil.example/winglet-plugin.zip",
+                                "digest": "sha256:" + "0" * 64}]}
+        return original(url)
+
+    with pytest.raises(api.ReleaseCheckFailed, match="not hosted"):
+        api.release_plugin_asset(RELEASE, fetch=fetch)
+
+
+def test_a_too_new_hermes_requirement_is_a_gate_not_a_crash():
+    assert api.hermes_supports(">=0.24.0", "0.23.0") is False
+    assert api.hermes_supports(">=0.22.7", "0.23.0") is True
+
+
+# -- marker lifecycle ----------------------------------------------------------------------------------------------
+
+def test_the_marker_is_written_before_the_swap_and_cleared_only_by_the_new_version(tmp_path):
+    marker = self_update.write_marker(from_version="0.10.11", to_version="0.11.0",
+                                      backup=tmp_path / "backup", started=123.0, home=tmp_path)
+    assert marker == tmp_path / "winglet-update.json"
+    assert json.loads(marker.read_text()) == {"from": "0.10.11", "to": "0.11.0",
+                                              "backup": str(tmp_path / "backup"), "started": 123.0}
+    assert self_update.record_health("0.10.11", home=tmp_path) is False
+    assert marker.exists()
+    assert self_update.record_health("0.11.0", home=tmp_path) is True
+    assert not marker.exists()
+
+
+def test_a_wrong_version_never_clears_the_marker(tmp_path):
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0",
+                             backup=tmp_path / "backup", home=tmp_path)
+    assert self_update.record_health("0.12.0", home=tmp_path) is False
+    assert self_update.read_marker(tmp_path)["to"] == "0.11.0"
+
+
+def test_a_malformed_marker_is_reported_not_treated_as_no_marker(tmp_path):
+    (tmp_path / "winglet-update.json").write_text("not json")
+    with pytest.raises(ValueError, match="not valid JSON"):
+        self_update.read_marker(tmp_path)
+
+
+# -- watchdog decision ----------------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("marker,now,expected", [
+    (None, 1000, "idle"),
+    ({"from": "0.10.11", "to": "0.11.0", "backup": "/b", "started": 1000}, 1000 + 60, "wait"),
+    ({"from": "0.10.11", "to": "0.11.0", "backup": "/b", "started": 1000},
+     1000 + self_update.WATCHDOG_GRACE_SECONDS, "rollback"),
+    ({"from": "0.10.11", "to": "0.11.0", "backup": "/b", "started": "yesterday"}, 1000, "broken"),
+    ({"from": "0.10.11", "to": "0.11.0", "backup": "", "started": 1000}, 1000, "broken"),
+    ({"from": "0.10.11", "to": "0.11.0", "backup": "/b", "started": 1000}, 1000, "ok"),
+])
+def test_watchdog_decision(marker, now, expected):
+    version = "0.11.0" if expected == "ok" else None
+    assert self_update.watchdog_decision(marker, now=now, current_version=version) == expected
+
+
+# -- settings endpoint ----------------------------------------------------------------------------------------------
+
+async def test_auto_update_defaults_on_and_only_the_owner_can_change_it(client, hub):
+    owner = await pair_phone(client, hub)
+    member = await pair_phone(client, hub, "Alex", role="member")
+    assert (await (await client.get("/api/settings", headers=owner.auth)).json()) == {"autoUpdate": True}
+    assert (await put_signed(client, member, "/api/settings", {"autoUpdate": False})).status == 403
+    resp = await put_signed(client, owner, "/api/settings", {"autoUpdate": False})
+    assert resp.status == 200 and (await resp.json()) == {"autoUpdate": False}
+    assert (await (await client.get("/api/settings", headers=owner.auth)).json()) == {"autoUpdate": False}
+    assert (await (await client.get("/api/system", headers=owner.auth)).json())["autoUpdate"] is False
+    assert any(a["action"] == "settings.auto_update" and a["summary"] == "off"
+               for a in hub.store.list_audit())
+
+
+async def test_auto_update_rejects_a_non_boolean(client, hub):
+    owner = await pair_phone(client, hub)
+    resp = await put_signed(client, owner, "/api/settings", {"autoUpdate": "yes"})
+    assert resp.status == 400
+
+
+# -- the self-check -------------------------------------------------------------------------------------------------
+
+async def test_self_check_refuses_while_a_chat_is_busy(client, hub):
+    owner = await pair_phone(client, hub)  # noqa: F841
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+
+    async def busy(_h):
+        return False
+
+    hub._is_quiet = busy
+    await hub._self_update_once()
+    jobs = hub.store.list_jobs()
+    assert not [j for j in jobs if j["kind"] == "winglet_update"]
+    assert any(a["action"] == "self_update.refused" and "busy" in a["summary"]
+               for a in hub.store.list_audit())
+
+
+async def test_self_check_refuses_while_a_job_is_running(client, hub):
+    owner = await pair_phone(client, hub)  # noqa: F841
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    hub.store.create_job("restart", detail={"boot": hub.boot_id})
+    await hub._self_update_once()
+    assert not [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"]
+    assert any("busy" in a["summary"] for a in hub.store.list_audit() if a["action"] == "self_update.refused")
+
+
+async def test_self_check_starts_the_same_job_the_phone_uses(client, hub, monkeypatch):
+    owner = await pair_phone(client, hub)  # noqa: F841
+    hub.hermes_version = lambda: "0.23.0"
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+
+    async def quiet(_h):
+        return True
+
+    started = []
+
+    async def fake_run(job_id, h, release):
+        started.append((job_id, release))
+
+    hub._is_quiet = quiet
+    monkeypatch.setattr(hub, "_run_winglet_update", fake_run)
+    await hub._self_update_once()
+    await settle(hub)
+    assert len(started) == 1, [(a["action"], a["summary"]) for a in hub.store.list_audit()]
+    job = hub.store.get_job(started[0][0])
+    assert job["kind"] == "winglet_update" and job["detail"]["actor"] == "self-update"
+    assert job["detail"]["to"] == "0.10.12"
+    actions = {a["action"] for a in hub.store.list_audit()}
+    assert {"self_update.release_found", "self_update.started"} <= actions
+
+
+async def test_only_one_attempt_per_release_per_boot(client, hub, monkeypatch):
+    await pair_phone(client, hub)
+    hub.hermes_version = lambda: "0.23.0"
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+
+    async def quiet(_h):
+        return True
+
+    started = []
+    monkeypatch.setattr(hub, "_run_winglet_update", lambda job_id, h, release: started.append(job_id) or _done())
+    hub._is_quiet = quiet
+    await hub._self_update_once()
+    hub.store.update_job(started[0], state="succeeded")
+    await hub._self_update_once()
+    assert len(started) == 1
+    assert any("attempt" in a["summary"] for a in hub.store.list_audit()
+               if a["action"] == "self_update.refused"), [(a["action"], a["summary"]) for a in hub.store.list_audit()]
+
+
+async def _done():
+    return None
+
+
+async def test_a_marker_already_present_blocks_a_second_attempt(client, hub, tmp_path):
+    await pair_phone(client, hub)
+    hub.update_home = tmp_path / "hermes"
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0",
+                             backup=tmp_path / "backup", home=hub.update_home)
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    await hub._self_update_once()
+    assert [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"] == []
+    assert any("marker is already present" in a["summary"] for a in hub.store.list_audit())
+
+
+async def test_auto_update_off_refuses_but_still_audits_the_release(client, hub):
+    await pair_phone(client, hub)
+    self_update.set_auto_update(hub.store, False)
+    hub.hermes.release = {**hub.hermes.release, "version": "0.10.12", "tag": "v0.10.12"}
+    await hub._self_update_once()
+    assert not [j for j in hub.store.list_jobs() if j["kind"] == "winglet_update"]
+    assert any(a["action"] == "self_update.release_found" for a in hub.store.list_audit())
+    assert any(a["action"] == "self_update.refused" and "autoUpdate" in a["summary"]
+               for a in hub.store.list_audit())
+
+
+# -- systemd watchdog installation ----------------------------------------------------------------------------------
+
+class FakeSystemctl:
+    def __init__(self, fail=False):
+        self.calls = []
+        self.fail = fail
+
+    def __call__(self, args, **kwargs):
+        self.calls.append(args)
+        if self.fail:
+            raise OSError("systemd is not running")
+        return type("Result", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+
+def test_the_watchdog_unit_and_timer_are_installed_and_removed(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    fake = FakeSystemctl()
+    result = self_update.install_watchdog(tmp_path / "hermes", python="/usr/bin/python3", runner=fake)
+    assert result["installed"] is True
+    unit_dir = tmp_path / "config" / "systemd" / "user"
+    assert (unit_dir / self_update.WATCHDOG_SERVICE).is_file()
+    timer = (unit_dir / self_update.WATCHDOG_TIMER).read_text()
+    assert "OnBootSec=2min" in timer and "OnUnitActiveSec=10min" in timer
+    service = (unit_dir / self_update.WATCHDOG_SERVICE).read_text()
+    assert "winglet-update-watchdog.py" in service and "/usr/bin/python3" in service
+    assert (tmp_path / "hermes" / "scripts" / "update_rollback.py").is_file()
+    assert (tmp_path / "hermes" / "scripts" / "self_update.py").is_file()
+    assert ["systemctl", "--user", "daemon-reload"] in fake.calls
+    assert ["systemctl", "--user", "enable", "--now", self_update.WATCHDOG_TIMER] in fake.calls
+
+    removed = self_update.uninstall_watchdog(tmp_path / "hermes", runner=fake)
+    assert removed["uninstalled"] is True
+    assert not (unit_dir / self_update.WATCHDOG_SERVICE).exists()
+
+
+def test_systemd_unavailable_is_reported_not_raised(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
+    result = self_update.install_watchdog(tmp_path / "hermes", runner=FakeSystemctl(fail=True))
+    assert result["installed"] is False
+    assert "systemd is unavailable" in result["reason"]
+
+
+# -- rollback against a real fake backup ----------------------------------------------------------------------------
+
+def make_home(tmp_path) -> tuple[Path, Path, Path]:
+    home = tmp_path / "hermes"
+    plugin = home / "plugins" / "winglet"
+    plugin.mkdir(parents=True)
+    (plugin / "plugin.yaml").write_text("name: winglet\nversion: 0.10.11\n")
+    (plugin / "old.py").write_text("old = True\n")
+    db = home / "plugin-data" / "winglet" / "data.db"
+    db.parent.mkdir(parents=True)
+    with sqlite3.connect(db) as conn:
+        conn.execute("CREATE TABLE notes (text TEXT)")
+        conn.execute("INSERT INTO notes VALUES ('before')")
+        conn.execute("CREATE TABLE audit (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, "
+                     "device_id TEXT NOT NULL DEFAULT '', device_name TEXT NOT NULL DEFAULT '', "
+                     "role TEXT NOT NULL DEFAULT '', action TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '', "
+                     "outcome TEXT NOT NULL DEFAULT 'ok')")
+    backup = update_rollback.create_backup(plugin_dir=plugin, db_path=db, from_version="0.10.11",
+                                            to_version="0.11.0", now=1000.0)
+    # The update replaced the plugin and wrote to the database.
+    (plugin / "plugin.yaml").write_text("name: winglet\nversion: 0.11.0\n")
+    (plugin / "new.py").write_text("new = True\n")
+    with sqlite3.connect(db) as conn:
+        conn.execute("INSERT INTO notes VALUES ('after')")
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0", backup=backup,
+                             started=1000.0, home=home)
+    return home, plugin, db
+
+
+def test_hermes_winglet_rollback_restores_the_backup_and_clears_the_marker(tmp_path):
+    home, plugin, db = make_home(tmp_path)
+    lines = []
+    code = rollback_module.rollback(home, running=lambda: False, start=lambda: True, out=lines.append)
+    assert code == 0
+    assert "version: 0.10.11" in (plugin / "plugin.yaml").read_text()
+    assert (plugin / "old.py").is_file() and not (plugin / "new.py").exists()
+    with sqlite3.connect(db) as conn:
+        assert conn.execute("SELECT text FROM notes ORDER BY rowid").fetchall() == [("before",)]
+        assert conn.execute("SELECT action, outcome FROM audit WHERE action='self_update.rollback'").fetchall()
+    assert not (home / "winglet-update.json").exists()
+    assert any("Restored Winglet 0.10.11" in line for line in lines)
+
+
+def test_the_cli_rollback_command_uses_the_marker_and_fake_backup(tmp_path):
+    from plugin import cli
+    home, plugin, _db = make_home(tmp_path)
+    assert cli.cmd_rollback(argparse.Namespace(home=str(home), no_restart=True)) == 0
+    assert "version: 0.10.11" in (plugin / "plugin.yaml").read_text()
+    assert not (home / "winglet-update.json").exists()
+
+
+def test_rollback_never_restores_the_database_under_a_running_gateway(tmp_path):
+    home, plugin, _db = make_home(tmp_path)
+    lines = []
+    code = rollback_module.rollback(home, running=lambda: True, stop=lambda: False,
+                                    start=lambda: True, out=lines.append)
+    assert code == 2
+    assert "version: 0.11.0" in (plugin / "plugin.yaml").read_text()
+    assert (home / "winglet-update.json").exists()
+    assert any("did not stop" in line for line in lines)
+
+
+def test_rollback_with_no_marker_is_a_no_op(tmp_path):
+    lines = []
+    assert rollback_module.rollback(tmp_path, running=lambda: False, start=lambda: True, out=lines.append) == 0
+    assert any("nothing to roll back" in line for line in lines)
+
+
+def test_rollback_refuses_a_backup_outside_the_winglet_backups_folder(tmp_path):
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "manifest.json").write_text("{}")
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0", backup=tmp_path / "elsewhere",
+                             home=home)
+    lines = []
+    assert rollback_module.rollback(home, running=lambda: False, start=lambda: True, out=lines.append) == 1
+    assert any("not a Winglet backup" in line for line in lines)
+
+
+# -- the janitor fallback when systemd is unavailable ---------------------------------------------------------------
+
+def test_the_janitor_spawns_the_watchdog_when_systemd_is_unavailable(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir(parents=True)
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0", backup=tmp_path / "backup",
+                             started=time.time() - self_update.WATCHDOG_GRACE_SECONDS - 1, home=home)
+    hub = hub_module.Hub.__new__(hub_module.Hub)
+    hub.update_home = home
+    hub._watchdog_spawned = False
+    spawned = []
+    monkeypatch.setattr(hub_module.self_update, "watchdog_status", lambda _home: {"installed": False})
+    monkeypatch.setattr(hub_module.subprocess, "Popen", lambda argv, **kw: spawned.append((argv, kw)))
+    hub._maybe_spawn_watchdog()
+    assert len(spawned) == 1
+    assert spawned[0][0][1].endswith("update_watchdog.py")
+    assert hub._watchdog_spawned is True
+    hub._maybe_spawn_watchdog()
+    assert len(spawned) == 1
+
+
+def test_the_janitor_does_not_race_an_enabled_systemd_timer(tmp_path, monkeypatch):
+    home = tmp_path / "hermes"
+    home.mkdir(parents=True)
+    self_update.write_marker(from_version="0.10.11", to_version="0.11.0", backup=tmp_path / "backup",
+                             started=time.time() - self_update.WATCHDOG_GRACE_SECONDS - 1, home=home)
+    hub = hub_module.Hub.__new__(hub_module.Hub)
+    hub.update_home = home
+    hub._watchdog_spawned = False
+    monkeypatch.setattr(hub_module.self_update, "watchdog_status", lambda _home: {"installed": True, "enabled": True})
+    monkeypatch.setattr(hub_module.subprocess, "Popen", lambda *a, **k: pytest.fail("should not spawn"))
+    hub._maybe_spawn_watchdog()
+    assert hub._watchdog_spawned is False

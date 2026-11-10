@@ -28,6 +28,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     p_setup.add_argument("--connection", choices=("quick", "direct"), default=None,
                          help="Automatic Cloudflare HTTPS for new installs, or your own LAN/VPN/public URL")
     p_setup.add_argument("--no-start", action="store_true", help="Prepare settings without starting/restarting the gateway")
+    p_setup.add_argument("--no-watchdog", action="store_true", help="Do not install the out-of-process update watchdog")
+    p_setup.add_argument("--remove-watchdog", action="store_true", help="Uninstall the update watchdog and exit")
     p_pair = subs.add_parser("pair", help="Show a QR code to pair a phone, or to verify one already paired")
     p_pair.add_argument("--public-url", default=None, help="Override the URL encoded in the QR code")
     p_pair.add_argument("--member", action="store_true",
@@ -39,6 +41,9 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     p_role.add_argument("device_id", help="Device id from `hermes winglet devices`")
     p_role.add_argument("role", choices=("owner", "member"))
     subs.add_parser("rotate-key", help="Replace the key phones encrypt secrets to (paired phones follow automatically)")
+    p_rollback = subs.add_parser("rollback", help="Restore the plugin from the last update's backup")
+    p_rollback.add_argument("--home", default=None, help="Hermes home (default: HERMES_HOME or ~/.hermes)")
+    p_rollback.add_argument("--no-restart", action="store_true", help="Restore without asking the gateway to start again")
     subs.add_parser("status", help="Show whether Winglet is running and how to reach it")
     parser.set_defaults(func=main)
 
@@ -46,7 +51,8 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 def main(args: argparse.Namespace) -> int:
     sub = getattr(args, "winglet_command", None) or "status"
     handler = {"setup": cmd_setup, "pair": cmd_pair, "devices": cmd_devices, "unpair": cmd_unpair,
-               "role": cmd_role, "rotate-key": cmd_rotate_key, "status": cmd_status}.get(sub)
+               "role": cmd_role, "rotate-key": cmd_rotate_key, "rollback": cmd_rollback,
+               "status": cmd_status}.get(sub)
     if handler is None:
         print(f"unknown subcommand: {sub}", file=sys.stderr)
         return 2
@@ -218,6 +224,15 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 1
     if not ensure_ready(install=True):
         return 1
+    if getattr(args, "remove_watchdog", False):
+        from . import self_update
+        result = self_update.uninstall_watchdog()
+        if result.get("uninstalled"):
+            print("Update watchdog: removed.")
+        else:
+            print(f"Update watchdog: could not remove it: {result.get('reason')}")
+            return 1
+        return 0
     from hermes_cli.config import save_env_value
     mode = getattr(args, "connection", None)
     if mode == "quick" and args.public_url:
@@ -276,6 +291,17 @@ def cmd_setup(args: argparse.Namespace) -> int:
         save_env_value("WINGLET_PUBLIC_URL", args.public_url.rstrip("/"))
     print("Dependencies: ready (server, push notifications, QR pairing).")
     print("🪽 Winglet is enabled for this profile.\n")
+    _print_auto_update()
+    if getattr(args, "no_watchdog", False):
+        print("Update watchdog: skipped (--no-watchdog).")
+    else:
+        from . import self_update
+        watchdog = self_update.install_watchdog()
+        if watchdog.get("installed"):
+            print("Update watchdog: installed (systemd timer).")
+        else:
+            print(f"Update watchdog: missing — {watchdog.get('reason')}.")
+            print("The plugin's janitor still checks the marker, but systemd will not restart a broken plugin.")
     info = _running()
     if mode == "quick":
         print("Cloudflare Quick Tunnels are free, temporary, and have no uptime guarantee.")
@@ -410,6 +436,32 @@ def cmd_unpair(args: argparse.Namespace) -> int:
         store.close()
     print("Removed." if removed else "No device with that id.")
     return 0 if removed else 1
+
+
+def cmd_rollback(args: argparse.Namespace) -> int:
+    # Deliberately imports only the standalone rollback module: this command must
+    # work when the installed plugin package (hub/adapter) cannot be imported.
+    from . import rollback
+    home = getattr(args, "home", None)
+    out = print
+    if getattr(args, "no_restart", False):
+        return rollback.rollback(home, start=lambda: False, out=out)
+    return rollback.rollback(home, out=out)
+
+
+def _print_auto_update() -> None:
+    try:
+        from .adapter import open_store
+        from . import self_update
+        store = open_store()
+        try:
+            on = self_update.auto_update_enabled(store)
+            default = store.get_kv(self_update.AUTO_UPDATE_KEY) is None
+        finally:
+            store.close()
+        print(f"Auto-update: {'on' if on else 'off'}" + (" (default)" if default else ""))
+    except Exception as exc:
+        print(f"Auto-update: unknown ({exc})")
 
 
 def cmd_status(args: argparse.Namespace) -> int:

@@ -25,10 +25,13 @@ import json
 import logging
 import math
 import mimetypes
+import random
 import re
 import os
 import secrets
 import shutil
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
@@ -36,7 +39,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from aiohttp import WSMsgType, web
 
-from . import checkpoints as checkpoints_api, encrypted_push, keys, live_voice, recovery, uploads, webpush
+from . import checkpoints as checkpoints_api, encrypted_push, keys, live_voice, recovery, self_update, uploads, webpush
 from .projects import ProjectConflict, ProjectError, Projects
 from .event_replay import EventStream, MAX_PAYLOAD
 from .handoffs import delivery_id_from_request
@@ -173,6 +176,7 @@ ROUTE_POLICY = {
     "h_pet": "device", "h_pet_sheet": "public", "h_pet_thumb": "public", "h_pets": "owner", "h_pet_catalog": "owner",
     "h_pet_display": "owner_signed", "h_pet_adopt": "owner_signed", "h_pet_remove": "owner_signed",
     "h_system": "owner", "h_system_updates": "owner", "h_jobs": "owner", "h_job": "owner", "h_logs": "owner",
+    "h_settings": "device", "h_settings_put": "owner_signed",
     "h_schedule": "owner", "h_schedule_parse": "owner",
     "h_pause": "owner_signed", "h_restart": "owner_signed", "h_update": "owner_signed",
     "h_routine_create": "owner_signed", "h_routine_edit": "owner_signed", "h_routine_delete": "owner_signed",
@@ -297,6 +301,13 @@ class Hub:
         self._recovery_lock = asyncio.Lock()
         self._janitor: Optional[asyncio.Task] = None
         self._bots_watch: Optional[asyncio.Task] = None
+        self._self_update_task: Optional[asyncio.Task] = None
+        self._watchdog_task: Optional[asyncio.Task] = None
+        self._self_update_lock = asyncio.Lock()
+        self._self_update_attempts: Dict[str, str] = {}
+        self._self_update_failed_at: Optional[float] = None
+        self.update_home: Optional[Path] = None
+        self._watchdog_spawned = False
         from .handoffs import HandoffService
         self.handoffs = HandoffService(self)
         self.activity_provider: Optional[Callable[[], Dict[str, Any]]] = None
@@ -480,6 +491,8 @@ class Hub:
         r.add_get("/api/pets/{slug}/sheet", self.h_pet_sheet)
         r.add_get("/api/pets/{slug}/thumb", self.h_pet_thumb)
         r.add_get("/api/system", self.h_system)
+        r.add_get("/api/settings", self.h_settings)
+        r.add_put("/api/settings", self.h_settings_put)
         r.add_get("/api/system/updates", self.h_system_updates)
         r.add_post("/api/system/pause", self.h_pause)
         r.add_post("/api/system/restart", self.h_restart)
@@ -541,10 +554,19 @@ class Hub:
             self._janitor = asyncio.create_task(self._janitor_loop())
             self._spawn(self.reconcile_jobs())
             self._spawn(self.handoffs.watch())
+            try:
+                if await asyncio.to_thread(self_update.record_health, VERSION, self.update_home):
+                    self.audit("self_update.ok", None, f"Winglet {VERSION} started after an update")
+            except Exception:
+                logger.debug("[winglet] update health could not be recorded", exc_info=True)
         if self._bots_watch is None and self.bots_provider is not None:
             self._bots_watch = asyncio.create_task(self._watch_bots())
         if self.activity_provider is not None:
             self._spawn(self._watch_bot_activity())
+        if self._self_update_task is None:
+            self._self_update_task = asyncio.create_task(self._self_update_loop())
+        if self._watchdog_task is None:
+            self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
     def _unknown_bot_activity(self) -> Dict[str, Any]:
         names = {"default", *self._bot_activity,
@@ -639,6 +661,130 @@ class Hub:
             except Exception:
                 logger.warning("[winglet] cleanup failed", exc_info=True)
             await asyncio.sleep(JANITOR_SECONDS)
+
+    async def _watchdog_loop(self) -> None:
+        """The in-process half of the fallback: check once a minute, so a missing
+        systemd timer still rolls back within the design's ten-minute grace."""
+        while True:
+            try:
+                await asyncio.to_thread(self._maybe_spawn_watchdog)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("[winglet] watchdog check failed", exc_info=True)
+            await asyncio.sleep(60)
+
+    def _maybe_spawn_watchdog(self) -> None:
+        """If systemd is missing, the plugin's own loop runs the same watchdog once
+        the marker is ten minutes old. A detached process does the stopping and
+        restoring, never the process about to be stopped."""
+        if self._watchdog_spawned:
+            return
+        try:
+            marker = self_update.read_marker(self.update_home)
+            decision = self_update.watchdog_decision(marker, now=time.time())
+            if decision != "rollback":
+                return
+            status = self_update.watchdog_status(self.update_home)
+            if status.get("installed") and status.get("enabled") is True:
+                return
+            script = Path(__file__).resolve().parent / "update_watchdog.py"
+            if not script.is_file():
+                return
+            root = self_update.hermes_home(self.update_home)
+            subprocess.Popen([sys.executable, str(script), "--home", str(root)], stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            self._watchdog_spawned = True
+        except Exception:
+            logger.debug("[winglet] in-process watchdog check failed", exc_info=True)
+
+    # -- unattended server updates -----------------------------------------------------
+
+    async def _self_update_loop(self) -> None:
+        """Wait a jittered moment after startup, then check every six hours."""
+        delay = self_update.CHECK_START_DELAY_SECONDS + random.uniform(0, self_update.CHECK_START_JITTER_SECONDS)
+        try:
+            await asyncio.sleep(delay)
+            while True:
+                try:
+                    await self._self_update_once()
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.warning("[winglet] unattended update check failed", exc_info=True)
+                await asyncio.sleep(self_update.CHECK_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            raise
+
+    def _self_update_refused(self, version: str, gate: str, reason: str = "") -> None:
+        detail = f"Winglet {version or '?'}: {gate}" + (f" ({reason})" if reason else "")
+        self.audit("self_update.refused", None, detail, outcome="refused")
+
+    async def _self_update_once(self) -> None:
+        """One pass of the design's gates.  Starts the *same* job a phone update
+        starts, so the existing backup/install/verify/restart path is reused."""
+        h = self.hermes
+        if h is None:
+            return
+        async with self._self_update_lock:
+            try:
+                marker = await asyncio.to_thread(self_update.read_marker, self.update_home)
+            except ValueError as exc:
+                self._self_update_refused("", "marker", str(exc))
+                return
+            if marker:
+                self._self_update_refused(str(marker.get("to") or ""), "attempt", "an update marker is already present")
+                return
+            enabled = self_update.auto_update_enabled(self.store)
+            try:
+                release = await asyncio.to_thread(h.latest_release, True)
+            except Exception as exc:
+                logger.info("[winglet] unattended release lookup failed: %s", exc)
+                return
+            if not release:
+                return
+            version = str(release.get("version") or "")
+            self.audit("self_update.release_found", None, f"Winglet {version} is the newest release")
+            idle = (not self._busy_job()) and await self._is_quiet(h)
+            now = time.monotonic()
+            early = self_update.gate_reason(
+                enabled=enabled, release=release, current_version=VERSION,
+                running_hermes=self.hermes_version() or "", idle=idle,
+                asset_ok=True, manifest_ok=True,
+                attempted_release=self._self_update_attempts.get(version) == self.boot_id,
+                failed_at=self._self_update_failed_at, now=now)
+            if early:
+                self._self_update_refused(version, early)
+                return
+            try:
+                asset = await asyncio.to_thread(h.release_plugin_asset, release)
+            except Exception as exc:
+                self._self_update_refused(version, "asset", _clip(str(exc), 240))
+                return
+            manifest = asset.get("manifest") if isinstance(asset, dict) else None
+            manifest_ok = bool(manifest) and h.hermes_supports(
+                (manifest or {}).get("requires_hermes"), self.hermes_version()) is not False
+            late = self_update.gate_reason(
+                enabled=enabled, release=release, current_version=VERSION,
+                running_hermes=self.hermes_version() or "", idle=idle,
+                asset_ok=True, manifest_ok=manifest_ok,
+                attempted_release=self._self_update_attempts.get(version) == self.boot_id,
+                failed_at=self._self_update_failed_at, now=now)
+            if late:
+                self._self_update_refused(version, late)
+                return
+            self._self_update_attempts[version] = self.boot_id
+            job = await self._begin_system_job("winglet_update", {
+                "from": VERSION, "to": version, "message": "Updating Winglet automatically…",
+                "actor": "self-update"})
+            self.audit("self_update.started", None, f"started a Winglet update to {version}")
+            self._spawn(self._run_winglet_update(job["id"], h, release))
+
+    async def _begin_system_job(self, kind: str, detail: Dict[str, Any]) -> Dict[str, Any]:
+        job, _ = self.store.create_job(kind, device_id="system", idem_key=None,
+                                       detail={**detail, "boot": self.boot_id})
+        await self._job_event(job)
+        return job
 
     def _prune_memory(self) -> None:
         """Forget picker cards nobody answered and pairing failures older than the throttle's minute."""
@@ -3165,6 +3311,22 @@ class Hub:
 
     # -- control center: health, pause, restart, updates, logs, schedule --------------------------
 
+    async def h_settings(self, request: web.Request) -> web.Response:
+        """The plugin settings the app and CLI can read.  Owner-only to change."""
+        self._require(request)
+        return _json({"autoUpdate": self_update.auto_update_enabled(self.store)})
+
+    async def h_settings_put(self, request: web.Request) -> web.Response:
+        device = self._require(request)
+        if device.get("role") != "owner":
+            return _error(403, "Only the owner can change server settings.")
+        body = await self._body(request)
+        if "autoUpdate" not in body or not isinstance(body["autoUpdate"], bool):
+            return _error(400, "autoUpdate must be true or false.")
+        enabled = self_update.set_auto_update(self.store, body["autoUpdate"])
+        self.audit("settings.auto_update", device, "on" if enabled else "off")
+        return _json({"autoUpdate": enabled})
+
     async def h_system(self, request: web.Request) -> web.Response:
         """Everything the Server screen shows at once: versions, host health, pause and recent jobs."""
         self._require(request)
@@ -3178,6 +3340,7 @@ class Hub:
         return _json({"version": VERSION, "hermes_version": self.hermes_version() or "",
                        "uptime_seconds": int(time.time() - self.started_at), "host": host,
                        "paused": paused, "can_pause": can_pause, "connection": self.connection,
+                       "autoUpdate": self_update.auto_update_enabled(self.store),
                        "devices": len(self.store.list_devices()), "jobs": self.store.list_jobs(limit=5)})
 
     def paused_for(self, device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -3360,6 +3523,15 @@ class Hub:
             await self._finish_job(job_id, "failed", f"The update didn't start, and nothing was changed: {_clip(str(exc), 300)}")
             return
         try:
+            await asyncio.to_thread(self_update.write_marker, from_version=VERSION, to_version=to,
+                                    backup=prepared["backup"], home=self.update_home)
+        except Exception as exc:
+            logger.warning("[winglet] update marker could not be written", exc_info=True)
+            await self._abandon_update(job_id, h, prepared,
+                                       f"The update didn't start because its rollback marker could not be written: {_clip(str(exc), 300)}.",
+                                       [])
+            return
+        try:
             await self._job_event(self.store.update_job(job_id, backup=Path(prepared["backup"]).name, message=f"Installing Winglet {to}…"))
             try:
                 code, lines = await h.install_release(release["sha"])
@@ -3467,12 +3639,22 @@ class Hub:
         return True
 
     async def _finish_gone(self, job_id: str) -> None:
+        try:
+            await asyncio.to_thread(self_update.clear_marker, self.update_home)
+        except Exception:
+            logger.debug("[winglet] update marker could not be cleared", exc_info=True)
+        self._self_update_failed_at = time.monotonic()
         await self._finish_job(job_id, "failed", "The previous version was already put back before the restart, so nothing was restarted. "
                                                  "Details were sent to your Telegram.")
 
     async def _abandon_update(self, job_id: str, h: Any, prepared: Dict[str, Any], why: str, lines: List[str]) -> None:
         """Undo a failed install (files and install record; the new code never ran, so the database stays) and say what
         happened. This never restarts the gateway."""
+        try:
+            await asyncio.to_thread(self_update.clear_marker, self.update_home)
+        except Exception:
+            logger.debug("[winglet] update marker could not be cleared", exc_info=True)
+        self._self_update_failed_at = time.monotonic()
         try:
             await asyncio.to_thread(h.cancel_update, prepared)
             message = f"{why} The previous version was put back, and the gateway was not restarted."

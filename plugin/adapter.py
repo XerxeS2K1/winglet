@@ -297,6 +297,7 @@ class WingletAdapter(BasePlatformAdapter):
             store.settle_interrupted_streams()
             hub = Hub(store, web_root=Path(__file__).parent / "web", bot_info=profile_info,
                       ntfy_server=self._ntfy_server)
+            hub.update_home = hermes_api._home()
             hub.connection = {"mode": self._connection, "url": None}
             hub.public_url = self._public_url or None
             hub.listen = f"{self._host}:{self._port}"

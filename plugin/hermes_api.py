@@ -11,6 +11,7 @@ import contextlib
 import contextvars
 import functools
 import hashlib
+import io
 import json
 import logging
 import math
@@ -20,6 +21,7 @@ import time
 import unicodedata
 import urllib.error
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import List, Optional
 
@@ -687,7 +689,10 @@ RELEASE_REPO = "XerxeS2K1/winglet"
 RELEASE_CACHE_SECONDS = 600
 _API_PREFIX = f"https://api.github.com/repos/{RELEASE_REPO}/"
 _RAW_PREFIX = f"https://raw.githubusercontent.com/{RELEASE_REPO}/"
+_DOWNLOAD_PREFIX = f"https://github.com/{RELEASE_REPO}/releases/download/"
+_ASSET_REDIRECT_PREFIXES = ("https://objects.githubusercontent.com/", "https://github-releases.githubusercontent.com/")
 _MAX_GITHUB_BYTES = 1_000_000
+_MAX_ASSET_BYTES = 32 * 1024 * 1024
 _VERSION = re.compile(r"(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\.(0|[1-9][0-9]{0,3})\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _RELEASE_CACHE: dict = {}
@@ -716,16 +721,20 @@ def is_newer(candidate, current) -> bool:
     return a is not None and b is not None and a > b
 
 
-def _url_allowed(url) -> bool:
-    return (isinstance(url, str) and url.startswith((_API_PREFIX, _RAW_PREFIX)) and ".." not in url
+def _url_allowed(url, *, asset_redirect: bool = False) -> bool:
+    prefixes = (_API_PREFIX, _RAW_PREFIX, _DOWNLOAD_PREFIX) + (_ASSET_REDIRECT_PREFIXES if asset_redirect else ())
+    return (isinstance(url, str) and url.startswith(prefixes) and ".." not in url
             and not any(c.isspace() or c == "\\" or ord(c) < 32 for c in url))
 
 
 class _SameRepoRedirect(urllib.request.HTTPRedirectHandler):
     """GitHub may move an address; it may not send us to a different repository or host."""
 
+    def __init__(self, *, asset_redirect: bool = False):
+        self.asset_redirect = asset_redirect
+
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        if not _url_allowed(newurl):
+        if not _url_allowed(newurl, asset_redirect=self.asset_redirect):
             raise urllib.error.URLError(f"redirect outside {RELEASE_REPO} refused")
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
@@ -746,6 +755,99 @@ def _github_get(url: str, *, text: bool = False):
         raise
     except (OSError, ValueError) as exc:  # URLError and HTTPError are OSErrors; bad JSON and bad UTF-8 are ValueErrors
         raise ReleaseCheckFailed(f"GitHub could not be read: {exc}") from exc
+
+
+def _github_bytes(url: str) -> bytes:
+    """One bounded GET for a release asset, only from the Winglet repository."""
+    if not _url_allowed(url):
+        raise ReleaseCheckFailed("that address is not part of the Winglet repository")
+    request = urllib.request.Request(url, headers={"User-Agent": "winglet-plugin"})
+    try:
+        with urllib.request.build_opener(_SameRepoRedirect(asset_redirect=True)).open(request, timeout=30) as response:
+            data = response.read(_MAX_ASSET_BYTES + 1)
+        if len(data) > _MAX_ASSET_BYTES:
+            raise ReleaseCheckFailed("the plugin asset was unexpectedly large")
+        return data
+    except ReleaseCheckFailed:
+        raise
+    except OSError as exc:
+        raise ReleaseCheckFailed(f"the plugin asset could not be read: {exc}") from exc
+
+
+def release_plugin_asset(release, fetch=None) -> dict:
+    """Download the release's plugin zip and prove it is the published one.
+
+    Returns ``{asset, manifest, digest, bytes}``.  Raises ReleaseCheckFailed when
+    the release has no plugin zip, GitHub published no digest, the downloaded
+    bytes do not match that digest, or the zip's ``plugin.yaml`` names another
+    version.  This is gate 5 and gate 6; it never installs anything.
+    """
+    _check_release(release)
+    tag = release["tag"]
+    if fetch is None:
+        entry = _github_get(f"{_API_PREFIX}releases/tags/{tag}")
+        asset_fetch = _github_bytes
+    else:
+        entry = fetch(f"{_API_PREFIX}releases/tags/{tag}")
+        asset_fetch = fetch
+    if not isinstance(entry, dict):
+        raise ReleaseCheckFailed("GitHub's release record was not a record")
+    assets = entry.get("assets")
+    if not isinstance(assets, list):
+        raise ReleaseCheckFailed("the release has no assets")
+    candidates = [asset for asset in assets if isinstance(asset, dict)
+                  and isinstance(asset.get("name"), str) and asset["name"].lower().endswith(".zip")
+                  and ("plugin" in asset["name"].lower() or "winglet" in asset["name"].lower())]
+    if not candidates:
+        raise ReleaseCheckFailed("the release has no plugin asset")
+    problems = []
+    for asset in candidates:
+        digest = asset.get("digest")
+        if not isinstance(digest, str) or not re.fullmatch(r"sha256:[0-9a-fA-F]{64}", digest):
+            problems.append(f"{asset['name']} has no published sha256")
+            continue
+        url = asset.get("browser_download_url")
+        if not isinstance(url, str) or not _url_allowed(url):
+            problems.append(f"{asset['name']} is not hosted by the Winglet repository")
+            continue
+        try:
+            data = asset_fetch(url)
+        except TypeError:  # a test fake written only for the JSON getter
+            problems.append(f"{asset['name']} was not downloaded")
+            continue
+        if not isinstance(data, (bytes, bytearray)):
+            problems.append(f"{asset['name']} was not downloaded")
+            continue
+        actual = "sha256:" + hashlib.sha256(data).hexdigest()
+        if actual.lower() != digest.lower():
+            problems.append(f"{asset['name']} does not match its published digest")
+            continue
+        manifest = _plugin_manifest_from_zip(bytes(data))
+        if manifest.get("version") != release["version"]:
+            problems.append(f"{asset['name']} contains Winglet {manifest.get('version') or 'with no version'}, "
+                            f"not {release['version']}")
+            continue
+        return {"asset": asset, "manifest": manifest, "digest": digest, "bytes": bytes(data)}
+    raise ReleaseCheckFailed("; ".join(problems) or "the release has no usable plugin asset")
+
+
+def _plugin_manifest_from_zip(data: bytes) -> dict:
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(data))
+    except (zipfile.BadZipFile, OSError) as exc:
+        raise ReleaseCheckFailed(f"the plugin asset is not a readable zip: {exc}") from exc
+    with archive:
+        names = [name for name in archive.namelist() if name == "plugin.yaml" or name.endswith("/plugin.yaml")]
+        if not names:
+            raise ReleaseCheckFailed("the plugin asset has no plugin.yaml")
+        # Prefer the shallowest manifest: a release zip may contain the plugin
+        # folder itself rather than the repository root.
+        names.sort(key=lambda name: (name.count("/"), len(name)))
+        try:
+            text = archive.read(names[0]).decode("utf-8")
+        except (KeyError, UnicodeDecodeError, OSError) as exc:
+            raise ReleaseCheckFailed("the plugin asset's manifest cannot be read") from exc
+    return {"version": _manifest_field(text, "version"), "requires_hermes": _manifest_field(text, "requires_hermes")}
 
 
 def _tag_commit(tag: str, fetch) -> str:

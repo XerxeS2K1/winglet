@@ -147,6 +147,12 @@ class FakeHermes:
             raise self.release
         return self.release
 
+    def release_plugin_asset(self, release):
+        self.calls.append(("asset", release.get("version")))
+        return {"asset": {"name": "winglet-plugin.zip", "digest": "sha256:" + "0" * 64},
+                "manifest": {"version": release.get("version"), "requires_hermes": ">=0.22.7"},
+                "digest": "sha256:" + "0" * 64, "bytes": b""}
+
     def read_log(self, name, lines=300, level="", query=""):
         if name not in ("agent", "gateway", "errors"):
             raise Refused("unknown log")
