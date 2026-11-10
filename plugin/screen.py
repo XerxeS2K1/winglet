@@ -14,6 +14,12 @@ Known limitation: the target picker takes the newest real page.  That means an
 OAuth popup becomes the page being driven.  This is deliberate for now because
 a popup is often exactly what the owner wants to take over; switching back to
 the original tab needs a target chooser, which this spike does not have.
+
+Frames are for the human, never for the model.  A JPEG pushed to the phone costs
+bandwidth and nothing else; the same JPEG fed into a turn would cost image tokens
+on every later turn of that conversation.  The agent reads the page as text
+(``browser_exec`` returning DOM text) and this module supplies pixels only to the
+phone.  Do not "improve" this by handing a frame to the agent.
 """
 
 from __future__ import annotations
