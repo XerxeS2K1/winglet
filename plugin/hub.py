@@ -90,6 +90,8 @@ PAIR_FAILURES_PER_MINUTE = 10
 ALIVE_CACHE_SECONDS = 2.0
 MAX_ATTACHMENTS = 10
 UNSENT_UPLOAD_SECONDS = 24 * 3600
+# A revoked file keeps this marker until the janitor removes it, so a failed delete cannot leave a link live.
+REVOKED_MARKER = ".revoked"
 # Agent-produced media has no message row until the next delete; keep it for a month and expire its URL.
 MEDIA_KEEP_SECONDS = 30 * 86400
 JANITOR_SECONDS = 3600
@@ -844,6 +846,10 @@ class Hub:
         for child in children:
             if not child.is_dir():
                 continue
+            if (child / REVOKED_MARKER).exists():
+                shutil.rmtree(child, ignore_errors=True)  # a revoked file that outlived its row
+                removed += 1
+                continue
             try:
                 if child.stat().st_mtime >= cutoff:
                     continue
@@ -859,6 +865,11 @@ class Hub:
     def _remove_upload(self, row: Dict[str, Any]) -> None:
         directory = (self.media_dir / row["id"]).resolve()
         if self.media_dir.resolve() in directory.parents:
+            # Mark it before deleting anything: if the delete fails, or a crash lands between the row and the
+            # files, the link must stop working at once rather than until the file ages out.
+            with contextlib.suppress(OSError):
+                if directory.is_dir():
+                    (directory / REVOKED_MARKER).write_text("", encoding="utf-8")
             shutil.rmtree(directory, ignore_errors=True)
         self.store.delete_upload(row["id"])
 
@@ -2283,6 +2294,8 @@ class Hub:
         media_id, name = request.match_info["media_id"], request.match_info["name"]
         sig = request.query.get("sig", "")
         upload = self.store.get_upload(media_id)
+        if (self.media_dir / media_id / REVOKED_MARKER).exists():
+            return _error(404, "not found")  # deleted, even if the files outlived the row
         path = (self.media_dir / media_id / name).resolve()
         inside = self.media_dir.resolve() in path.parents
         try:

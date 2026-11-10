@@ -795,3 +795,25 @@ def test_chat_previews_read_as_one_line(store):
     chat = store.create_chat("Food")
     store.add_message(chat["id"], "bot", "List:\n- a\n- b")
     assert store.get_chat(chat["id"])["preview"] == "List: a, b"
+
+
+async def test_a_revoked_file_stops_serving_even_if_its_delete_failed(client, hub, monkeypatch):
+    """A delete that cannot remove the file must not leave its link live: the row is gone, the bytes are not."""
+    token = await pair(client, hub)
+    hub.store.ensure_chat("general", "General")
+    upload = hub.store.add_upload("u-revoked", hub.store.device_for_token(token)["id"], "general",
+                                  "note.txt", "text/plain", "file", 4)
+    directory = hub.media_dir / upload["id"]
+    directory.mkdir(parents=True)
+    (directory / upload["name"]).write_text("note")
+    url = hub._upload_public(upload)["url"]
+    assert (await client.get(url)).status == 200
+
+    monkeypatch.setattr("shutil.rmtree", lambda *a, **k: None)  # the delete fails silently
+    hub._remove_upload(upload)
+    assert hub.store.get_upload("u-revoked") is None
+    assert (await client.get(url)).status == 404
+
+    monkeypatch.undo()
+    hub.sweep_media()  # the janitor clears the marked directory rather than waiting for its age
+    assert not directory.exists()
