@@ -34,7 +34,9 @@ export const useAppUpdate = create<State>((set, get) => ({
     void setJSON(KEY, null).catch(() => {});
   },
   check: async (force = false) => {
-    const current = Constants.expoConfig?.version ?? '';
+    // The native binary's version, not the JS bundle's: the web bundle is served by the server, so
+    // expoConfig can report the server's release and make an older APK look up to date.
+    const current = Constants.nativeAppVersion || Constants.expoConfig?.version || '';
     if (!appUpdateSupported || !current || get().checking) return;
     set({ checking: true });
     // Secure storage can be unavailable. A cache failure must not disable update checks.
@@ -55,7 +57,7 @@ export const useAppUpdate = create<State>((set, get) => ({
       await setJSON(KEY, { checkedAt, current, update } satisfies Saved).catch(() => {});
     } catch {
       // Offline or rate-limited: keep what we knew and try again next time.
-      set({ update: saved?.current === current ? saved.update : get().update, failed: true });
+      set({ update: saved && saved.current === current ? saved.update : get().update, failed: true });
     } finally {
       clearTimeout(timeout);
       set({ checking: false });

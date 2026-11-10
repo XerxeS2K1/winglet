@@ -31,7 +31,7 @@ export default function AboutScreen() {
   const [resetError, setResetError] = useState(false);
   const cacheStatus = useSyncExternalStore(subscribeCacheStatus, getCacheStatus, getCacheStatus);
   useEffect(() => { void checkCacheStatus(); }, []);
-  const appVersion = Constants.expoConfig?.version ?? '';
+  const appVersion = Constants.nativeAppVersion || Constants.expoConfig?.version || '';
   return (
     <Screen title="About">
       <View style={s.hero}>

@@ -38,7 +38,7 @@ export function UpdatePrompt() {
   // Unmount the native modal immediately when locked; Sheet otherwise animates closed over the lock.
   // Stale offer: once Android has installed the release the process can still be the old build, so the
   // sheet used to say "0.10.10 is out. You have 0.10.9" on a phone that already had 0.10.10.
-  const running = Constants.expoConfig?.version ?? '';
+  const running = Constants.nativeAppVersion || Constants.expoConfig?.version || '';
   const stale = !!update && !!running && compareVersions(update.version, running) <= 0;
   if (!appUpdateSupported || !enabled || !update || stale || skipped === undefined || locked) return null;
   const visible = update.version !== skipped && !putOff.has(update.version);
@@ -54,7 +54,7 @@ export function UpdatePrompt() {
   return (
     <Sheet visible={visible} dismissible={!busy} onClose={later} title="Update available">
       <View style={s.body}>
-        <Text style={s.lead}>Winglet {update.version} is out. You have {Constants.expoConfig?.version}.</Text>
+        <Text style={s.lead}>Winglet {update.version} is out. You have {Constants.nativeAppVersion || Constants.expoConfig?.version}.</Text>
         {update.notes ? <Text style={s.notes} numberOfLines={6}>{update.notes}</Text> : null}
         <InstallButton update={update} />
         {busy ? null : (
@@ -76,7 +76,7 @@ export function InstallButton({ update }: { update?: AppUpdate | null }) {
   const downloading = useAppInstall((st) => st.phase === 'downloading');
   const progress = useAppInstall((st) => st.progress);
   // Same stale-offer rule as the sheet: a release this build already has is not an update.
-  const running = Constants.expoConfig?.version ?? '';
+  const running = Constants.nativeAppVersion || Constants.expoConfig?.version || '';
   const offer = update && (!running || compareVersions(update.version, running) > 0) ? update : null;
   if (!offer) return null;
   const start = async () => {

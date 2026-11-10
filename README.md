@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.11.0](docs/releases/v0.11.0.md):** the server updates its own plugin when a release is newer, idle-safe, digest-checked and same-major; a systemd watchdog rolls back a version that never reports health. The app goes back to being an app — download the APK, install it, and read the server's version. A 0.x minor change still needs your tap.
+> **New in [v0.11.1](docs/releases/v0.11.1.md):** the update sheet compares the installed binary's version rather than the JS bundle the server serves, so an older app can no longer be told it is already up to date and refuse to install. Everything else is v0.11.0: the server updates its own plugin when a release is newer, idle-safe, digest-checked and same-major.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

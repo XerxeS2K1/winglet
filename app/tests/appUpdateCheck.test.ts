@@ -9,10 +9,11 @@ function harness(over: Record<string, any> = {}) {
   let calls = 0;
   let timeout: () => void = () => {};
   let cleared = false;
+  let seen = '';
   const update = { version: '0.2.1', page: 'https://github.com/VIKASRP24/winglet/releases/tag/v0.2.1' };
   const exports: any = {};
   const modules: Record<string, unknown> = {
-    'expo-constants': { expoConfig: { version: '0.2.0' } },
+    'expo-constants': { expoConfig: { version: over.expoVersion ?? '0.2.0' }, nativeAppVersion: over.native },
     'react-native': { Platform: { OS: over.platform ?? 'android' } },
     'expo-device': { supportedCpuArchitectures: ['arm64-v8a', 'armeabi-v7a'] },
     zustand: { create: (init: any) => {
@@ -20,7 +21,7 @@ function harness(over: Record<string, any> = {}) {
       return { getState: () => state };
     } },
     './appUpdate': { RELEASES_URL: 'https://api.github.com/repos/VIKASRP24/winglet/releases',
-      checkIsFresh: () => over.fresh ?? false, newestUpdate: () => update },
+      checkIsFresh: () => over.fresh ?? false, newestUpdate: (_r: any, current: string) => { seen = current; return update; } },
     './storage': { getJSON: over.read ?? (async () => null), setJSON: over.write ?? (async () => {}) },
   };
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/lib/appUpdateCheck.ts', import.meta.url), 'utf8'), {
@@ -30,7 +31,7 @@ function harness(over: Record<string, any> = {}) {
     clearTimeout: () => { cleared = true; },
     fetch: (...args: any[]) => { calls++; return over.fetch ? over.fetch(...args) : Promise.resolve({ ok: true, json: async () => [] }); },
   });
-  return { state: exports.useAppUpdate.getState(), update, expire: () => timeout(),
+  return { state: exports.useAppUpdate.getState(), update, seen: () => seen, expire: () => timeout(),
     calls: () => calls, cleared: () => cleared };
 }
 
@@ -96,4 +97,18 @@ test('a development build never offers a public release as an in-place update', 
   await h.state.check(true);
   assert.equal(h.calls(), 0);
   assert.equal(h.state.update, null);
+});
+
+test('the version compared is the installed binary, not the JS bundle the server serves', async () => {
+  // A phone on an older APK can be served a newer web bundle, so expoConfig reports the server's
+  // release. Comparing that made an older app think it was up to date and refuse the install.
+  const h = harness({ native: '0.1.0', expoVersion: '0.2.0' });
+  await h.state.check();
+  assert.equal(h.seen(), '0.1.0');
+});
+
+test('without a native version the manifest is used', async () => {
+  const h = harness({ expoVersion: '0.2.0' });
+  await h.state.check();
+  assert.equal(h.seen(), '0.2.0');
 });
