@@ -233,9 +233,12 @@ def _error(status: int, message: str) -> web.Response:
     return _json({"error": message}, status=status)
 
 
-def _busy(exc: sqlite3.OperationalError) -> web.Response:
+def _busy(exc: sqlite3.OperationalError, projects: Optional[Dict[str, Any]] = None) -> web.Response:
     """A locked SQLite database is transient: ask the app to retry, never answer a bare 500."""
-    response = _json({"error": "The server is busy saving that change. Try again in a moment."}, status=503)
+    body: Dict[str, Any] = {"error": "The server is busy saving that change. Try again in a moment."}
+    if projects is not None:
+        body["projects"] = projects
+    response = _json(body, status=503)
     response.headers["Retry-After"] = "1"
     return response
 
@@ -1501,6 +1504,12 @@ class Hub:
                 body[key] = request.query[key]
         return body
 
+    def _projects_snapshot(self, device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            return self.projects.snapshot(device, _BOT.get())
+        except Exception:
+            return None
+
     async def _project_change(self, request: web.Request, action: str, summary: str, call) -> web.Response:
         device = self._require(request)
         try:
@@ -1516,7 +1525,7 @@ class Hub:
             return _error(exc.status, str(exc))
         except sqlite3.OperationalError as exc:
             if _is_contention(exc):
-                return _busy(exc)
+                return _busy(exc, self._projects_snapshot(device))
             raise
 
     async def h_projects(self, request: web.Request) -> web.Response:
@@ -1570,7 +1579,7 @@ class Hub:
             return _error(exc.status, str(exc))
         except sqlite3.OperationalError as exc:
             if _is_contention(exc):
-                return _busy(exc)
+                return _busy(exc, self._projects_snapshot(device))
             raise
         try:
             await self.broadcast_projects(_BOT.get())
@@ -1580,7 +1589,7 @@ class Hub:
             return _json({**result, 'projects': self.projects.snapshot(device, _BOT.get())})
         except sqlite3.OperationalError as exc:
             if _is_contention(exc):
-                return _busy(exc)
+                return _busy(exc, self._projects_snapshot(device))
             raise
 
     async def h_project_create(self, request: web.Request) -> web.Response:
@@ -1654,7 +1663,12 @@ class Hub:
         device = self._device(request)
         if device is None:
             return _error(401, "This pairing was revoked. Reconnect before sending.")
-        self._visible_chat(device, request.match_info["chat_id"])
+        try:
+            self._visible_chat(device, request.match_info["chat_id"])
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
         signed = False
         if device["role"] == "owner" and self._signed_only_command(str(body.get("text") or "")):
             problem = await self._signature_problem(request, device)
@@ -1672,6 +1686,10 @@ class Hub:
                                               hidden=body.get("hidden") is True, quote=body.get("quote"), signed=signed)
         except MessageRejected as exc:
             return _error(400, str(exc))
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
         if message is None:
             return _error(400, "empty message")
         return _json({"message": message})
