@@ -178,8 +178,10 @@ def _plan_at(visible: List[Dict[str, Any]], rows: List[Dict[str, Any]], message_
         later = len(visible) - copy_end
         if not (text or "").strip():
             raise BranchRefused("unsupported", "Type the replacement message first.", 400)
+        if len(text.strip()) > MAX_TEXT:
+            raise BranchRefused("unsupported", f"Type a replacement of {MAX_TEXT:,} characters or fewer.", 400)
         return Plan("edit", message_id, copy, rows[:transcript_end], transcript_end, later,
-                    prompt=target, send_text=text.strip()[:MAX_TEXT],
+                    prompt=target, send_text=text.strip(),
                     reply_to=(target.get("meta") or {}).get("reply_to"), user_row_index=prompt_row)
 
     if mode == "regenerate":

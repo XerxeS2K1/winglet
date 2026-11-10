@@ -11,6 +11,7 @@ import { attachFiles, canSend, removeFile, retryFile, sendDraft } from '../lib/a
 import { stopTask } from '../lib/actions';
 import { loadCommands, matchCommands, type Command } from '../lib/commands';
 import { focusRegisteredComposer, registerComposer } from '../lib/composerFocus';
+import { MAX_MESSAGE } from '../lib/limits';
 import { haptic } from '../lib/haptics';
 import { formatDuration, pickFiles, pickMedia, takePhoto, type PickedFile } from '../lib/media';
 import { easeOut, useReducedMotion } from '../lib/motion';
@@ -261,6 +262,8 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
             onFocus={() => onFocusChange?.(true)}
             onBlur={() => onFocusChange?.(false)}
             onChangeText={setText}
+            // The server refuses anything longer rather than cutting it, so stop it here first.
+            maxLength={MAX_MESSAGE}
             placeholder={placeholder}
             placeholderTextColor={t.colors.textTertiary}
             multiline
