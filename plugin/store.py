@@ -246,6 +246,27 @@ class Store:
             return self._db.execute(sql, args).rowcount
 
     @contextlib.contextmanager
+    def _reader(self):
+        """A short-lived read-only connection of its own, for scans that must not hold ``_lock``.
+
+        Everything else shares one connection under one lock, so a long scan on it stalls every
+        send, publish and push. In WAL mode a separate reader sees a committed snapshot and neither
+        blocks nor is blocked by the writer. In-memory databases cannot be opened a second time,
+        so they fall back to the shared connection.
+        """
+        if self.path in ("", ":memory:") or self.path.startswith("file::memory:"):
+            with self._lock:
+                yield self._db
+            return
+        reader = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False, isolation_level=None)
+        try:
+            reader.row_factory = sqlite3.Row
+            reader.execute("PRAGMA query_only=ON")
+            yield reader
+        finally:
+            reader.close()
+
+    @contextlib.contextmanager
     def transaction(self):
         """Run several statements as one atomic write; nested use joins the outer transaction.
 
@@ -960,11 +981,13 @@ class Store:
             args.append(max(1, int(before_position)))
         args.extend(f"%{w}%" for w in words)
         args.append(limit)
-        rows = self._all(
-            f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks}) AND {before}"
-            f"role != 'system' AND {likes} AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
-            "ORDER BY rowid DESC LIMIT ?",
-            tuple(args))
+        # The scan reads on its own connection, so it never holds the store's global lock.
+        with self._reader() as reader:
+            rows = reader.execute(
+                f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks}) AND {before}"
+                f"role != 'system' AND {likes} AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
+                "ORDER BY rowid DESC LIMIT ?",
+                tuple(args)).fetchall()
         found = [self._message(r) for r in rows]
         return found, (int(found[-1]["position"]) if len(found) >= limit else None)
 
