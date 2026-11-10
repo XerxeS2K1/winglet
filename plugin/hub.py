@@ -300,9 +300,13 @@ class Hub:
         # socket sees seq order and can advance its cursor to the highest seq it applied.
         self._publish_lock = asyncio.Lock()
         # Explicit delivery tickets keep stream order without holding a global lock across I/O.
-        self._delivery_condition = asyncio.Condition()
         self._delivery_seq = 0
         self._delivery_turn = 0
+        # Tickets that finished (or were cancelled) before their turn came, and the waiter for each
+        # ticket still queued. All bookkeeping is synchronous, so a cancelled task cannot be
+        # interrupted half way through handing its turn on.
+        self._delivery_done: set = set()
+        self._delivery_waiters: Dict[int, "asyncio.Future[None]"] = {}
         self.events = EventStream(store)
         self._push_tasks: Dict[str, asyncio.Task] = {}
         self._pushed_messages: Dict[str, None] = {}
@@ -2748,16 +2752,37 @@ class Hub:
         self._delivery_seq += 1
         return ticket
 
+    def _finish_delivery(self, ticket: int) -> None:
+        """Retire a ticket and wake the next live one. Never awaits, so cancellation cannot skip it.
+
+        A ticket that is cancelled while still queued is only marked done; when the turn reaches it,
+        it is stepped over. Earlier tickets are never overtaken.
+        """
+        self._delivery_done.add(ticket)
+        while self._delivery_turn in self._delivery_done:
+            self._delivery_done.discard(self._delivery_turn)
+            self._delivery_turn += 1
+        waiter = self._delivery_waiters.get(self._delivery_turn)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
+
     async def _deliver_in_order(self, ticket: int, items: List[tuple]) -> None:
         """Deliver these events only after every earlier ticket has finished.
 
-        The condition makes order explicit; it does not depend on which task happens to acquire a
-        lock first. Delivery still runs outside ``_publish_lock``, so socket I/O cannot block writes.
+        Order is explicit, not a side effect of lock acquisition. Waiting for the turn is inside the
+        same ``try`` that retires the ticket: a handler cancelled while queued (aiohttp cancels it when
+        its client disconnects) or one whose broadcast fails still hands its turn on, so it cannot
+        wedge the stream. Delivery runs outside ``_publish_lock``, so socket I/O cannot block writes.
         """
-        async with self._delivery_condition:
-            while ticket != self._delivery_turn:
-                await self._delivery_condition.wait()
         try:
+            if ticket != self._delivery_turn:
+                waiter = asyncio.get_running_loop().create_future()
+                self._delivery_waiters[ticket] = waiter
+                try:
+                    await waiter
+                finally:
+                    if self._delivery_waiters.get(ticket) is waiter:
+                        del self._delivery_waiters[ticket]
             for event, scope, prepared in items:
                 if prepared is None and scope is None:
                     await self._broadcast(event)
@@ -2766,9 +2791,7 @@ class Hub:
                 else:
                     await self._broadcast(event, scope=scope, prepared_chats=prepared)
         finally:
-            async with self._delivery_condition:
-                self._delivery_turn += 1
-                self._delivery_condition.notify_all()
+            self._finish_delivery(ticket)
 
     async def publish(self, write: Callable[[], Any], event_of: Callable[[Any], Any]) -> Any:
         """Commit a change, journal its event or events and send them, in that order and in stream order.

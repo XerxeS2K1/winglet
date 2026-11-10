@@ -1,6 +1,7 @@
 """The hub stays quick as chats grow: indexed paging, fewer writes, work shared across sockets, bounded memory."""
 
 import asyncio
+import contextlib
 import json
 import time
 
@@ -307,3 +308,43 @@ async def test_two_concurrent_publishes_keep_their_journal_order(hub):
     release.set()
     await asyncio.gather(first, second)
     assert received == [1, 2]
+
+
+async def test_a_cancelled_publish_does_not_wedge_later_events(hub):
+    device, token = hub.store.add_device("Phone")
+    first_started, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    class Socket:
+        async def send_str(self, text):
+            n = json.loads(text)["n"]
+            received.append(n)
+            if n == 0:
+                first_started.set()
+                await release.wait()
+
+        async def close(self, **_kwargs):
+            pass
+
+    hub._sockets[Socket()] = {"device": device, "bot": None, "auth_token": token}
+
+    def publish(n):
+        return asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": n}))
+
+    first = publish(0)
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = publish(1)
+    await asyncio.sleep(0.05)
+    third = publish(2)
+    await asyncio.sleep(0.05)
+    second.cancel()  # the client that made this request went away while it queued
+    await asyncio.sleep(0.05)
+    assert received == [0], "the cancelled ticket must not let a later one overtake the first"
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, third), timeout=1)
+    assert received == [0, 2]
+    with contextlib.suppress(asyncio.CancelledError):
+        await second
+    # The stream is still usable afterwards.
+    await asyncio.wait_for(publish(3), timeout=1)
+    assert received == [0, 2, 3]
