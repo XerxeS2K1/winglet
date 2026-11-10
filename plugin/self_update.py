@@ -50,6 +50,7 @@ RETRY_ATTEMPTS = 3
 WATCHDOG_GRACE_SECONDS = 10 * 60
 
 WATCHDOG_SERVICE = "winglet-update-watchdog.service"
+SUPPORTED = os.name != "nt"  # systemd, /proc and fcntl: Linux only
 WATCHDOG_TIMER = "winglet-update-watchdog.timer"
 WATCHDOG_SCRIPT = "winglet-update-watchdog.py"
 ROLLBACK_SCRIPT = "winglet-update-watch.py"

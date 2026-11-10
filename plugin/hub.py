@@ -724,6 +724,10 @@ class Hub:
         h = self.hermes
         if h is None:
             return
+        if not self_update.SUPPORTED:
+            # systemd, /proc and fcntl are the safety net; without them it must not run.
+            self._self_update_refused("", "unsupported", "Self-update needs a POSIX server.")
+            return
         async with self._self_update_lock:
             try:
                 marker = await asyncio.to_thread(self_update.read_marker, self.update_home)

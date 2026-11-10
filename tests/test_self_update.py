@@ -18,6 +18,11 @@ import zipfile
 from pathlib import Path
 
 import pytest
+import sys
+
+# The self-updater installs systemd units, reads /proc for a pid's start time and locks with
+# fcntl: none of that exists on Windows, so the feature is off there and these tests skip.
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="the self-updater is POSIX-only")
 
 from plugin import hermes_api as api
 from plugin import rollback as rollback_module
