@@ -226,14 +226,20 @@ def ask_bot(args: dict, **_: Any) -> str:
     try:
         record = _deliver(bot["name"], content, me, delivery_id=delivery_id, wait_seconds=wait)
     except Exception as exc:
+        reason = f"Nothing was sent: {bot['title']} isn't running."
+        if "authority is not ready" not in str(exc).lower() and "not ready" not in str(exc).lower():
+            reason = f"Nothing was sent: couldn't reach {bot['title']} ({exc})."
         if origin:
-            origin[0].store.handoff_state(delivery_id, "waiting")
+            with contextlib.suppress(Exception):
+                origin[0].store.finish_handoff(delivery_id, reason, True)
         # find_canonical_live_owner raises ValueError when the authority isn't ready;
         # await_delivery may time out (returns a pending record, not an exception).
         if "authority is not ready" in str(exc).lower() or "not ready" in str(exc).lower():
-            return _error(f"{bot['title']} isn't running right now (its gateway authority isn't ready).")
+            return _error(f"{bot['title']} isn't running right now (its gateway authority isn't ready).",
+                          reason=reason)
         logger.warning("[winglet] asking %s failed", bot["name"], exc_info=True)
-        return _error(f"Couldn't confirm delivery to {bot['title']}; do not resend automatically: {exc}", delivery_id=delivery_id)
+        return _error(f"Couldn't confirm delivery to {bot['title']}; do not resend automatically: {exc}",
+                      delivery_id=delivery_id, reason=reason)
     # Interpret the receipt record.
     status = record.get("status") if isinstance(record, dict) else None
     if origin:

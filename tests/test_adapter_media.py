@@ -1,5 +1,6 @@
 """The adapter hands uploads, voice notes and replies to Hermes the way other platforms do."""
 
+import asyncio
 import importlib.util
 import sys
 from pathlib import Path
@@ -12,6 +13,44 @@ from plugin.store import Store
 
 KINDS = SimpleNamespace(TEXT="text", COMMAND="command", PHOTO="photo", VOICE="voice", DOCUMENT="document",
                         VIDEO="video", AUDIO="audio")
+
+
+def test_cache_media_reports_hermes_unavailable_when_the_import_moves(tmp_path, monkeypatch):
+    from plugin import hermes_api
+    f = tmp_path / "p.png"
+    f.write_bytes(b"png")
+    monkeypatch.setitem(sys.modules, "gateway.platforms.base", ModuleType("gateway.platforms.base"))
+    with pytest.raises(hermes_api.HermesUnavailable, match="attachments unavailable"):
+        asyncio.run(hermes_api.cache_media(str(f), "p.png", "image/png"))
+
+
+async def test_a_cache_failure_fails_the_send_instead_of_dropping_the_photo(adapter, monkeypatch):
+    adapter._hub.store.ensure_chat("general", "General")
+    chat = adapter._hub.store.get_chat("general")
+    device = {"id": "dev", "name": "Pixel"}
+
+    async def broken(*args, **kwargs):
+        raise ImportError("gateway.platforms.base moved")
+
+    monkeypatch.setattr(adapter.module.hermes_api, "cache_media", broken)
+    await adapter._on_user_message(chat, "", device, {"id": "m-broken"}, files=[
+        {"path": "/up/p.png", "name": "p.png", "mime": "image/png", "kind": "image"}])
+    assert adapter.handled == []
+    messages = adapter._hub.store.list_messages("general")
+    assert any("was not sent" in m["text"] for m in messages)
+
+
+async def test_a_deleted_chat_never_reports_an_approval_or_routine_as_delivered(adapter, monkeypatch):
+    gone = adapter._hub.store.create_chat("Gone")
+    adapter._hub.store.delete_chat(gone["id"])
+    result = await adapter.send(gone["id"], "Routine result", metadata={"job_id": "job-1"})
+    assert result.success is False and result.error == "chat deleted"
+    prompt = SimpleNamespace(chat_id=gone["id"], session_key="s1", command="ls", description="Inspect",
+                             metadata={}, choices=["once", "deny"], smart_denied=False,
+                             actions=[("Allow once", "once", "primary")], request_id="req-1")
+    monkeypatch.setattr(adapter.module.bridge, "queued_approvals", lambda _session: [{"request_id": "req-1"}])
+    result = await adapter._send_exec_approval_prompt(prompt)
+    assert result.success is False and result.error == "chat deleted"
 
 
 async def test_model_picker_merges_the_full_catalog_without_truncating(adapter, monkeypatch):

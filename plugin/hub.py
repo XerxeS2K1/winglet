@@ -90,6 +90,8 @@ PAIR_FAILURES_PER_MINUTE = 10
 ALIVE_CACHE_SECONDS = 2.0
 MAX_ATTACHMENTS = 10
 UNSENT_UPLOAD_SECONDS = 24 * 3600
+# Agent-produced media has no message row until the next delete; keep it for a month and expire its URL.
+MEDIA_KEEP_SECONDS = 30 * 86400
 JANITOR_SECONDS = 3600
 REPLY_EXCERPT = 280
 # How long a model/choice/confirm picker stays answerable (Hermes's own slash confirmations time out
@@ -652,6 +654,7 @@ class Hub:
         while True:
             try:
                 await asyncio.to_thread(self.sweep_uploads)
+                await asyncio.to_thread(self.sweep_media)
                 self.expire_jobs()
                 self.store.prune()
                 self._prune_memory()
@@ -830,6 +833,29 @@ class Hub:
             removed += 1
         return removed
 
+    def sweep_media(self, now: Optional[float] = None) -> int:
+        """Delete agent media older than the retention period, and dirs whose upload row is gone."""
+        cutoff = (now or time.time()) - MEDIA_KEEP_SECONDS
+        removed = 0
+        try:
+            children = list(self.media_dir.iterdir())
+        except OSError:
+            return 0
+        for child in children:
+            if not child.is_dir():
+                continue
+            try:
+                if child.stat().st_mtime >= cutoff:
+                    continue
+            except OSError:
+                continue
+            if self.store.get_upload(child.name) is not None:
+                continue  # an upload row owns this directory; its own janitor handles it
+            if self.media_dir.resolve() in child.resolve().parents:
+                shutil.rmtree(child, ignore_errors=True)
+                removed += 1
+        return removed
+
     def _remove_upload(self, row: Dict[str, Any]) -> None:
         directory = (self.media_dir / row["id"]).resolve()
         if self.media_dir.resolve() in directory.parents:
@@ -872,7 +898,7 @@ class Hub:
 
     def _device(self, request: web.Request) -> Optional[Dict[str, Any]]:
         auth = request.headers.get("Authorization", "")
-        token = auth[7:].strip() if auth.lower().startswith("bearer ") else request.query.get("token", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
         return self.store.device_for_token(token)
 
     def _require(self, request: web.Request) -> Dict[str, Any]:
@@ -1726,7 +1752,7 @@ class Hub:
     def _upload_public(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """What the app sees about an upload: never the server path."""
         return {"id": row["id"], "name": row["name"], "mime": row["mime"], "kind": row["kind"], "size": row["size"],
-                "url": f"/api/media/{row['id']}/{quote(row['name'])}?sig={self.media_signature(row['id'])}"}
+                "url": self._media_url(row["id"], row["name"])}
 
     async def h_upload(self, request: web.Request) -> web.Response:
         """Receive one file for a chat. It's held for a day until a message attaches it."""
@@ -2196,11 +2222,15 @@ class Hub:
         return message
 
     async def delete_message(self, message_id: str) -> bool:
+        files = self.store.message_uploads(message_id)
         gone = await self.publish(
             lambda: self.store.delete_message(message_id),
             lambda row: [{"type": "message.delete", "chat_id": row["chat_id"], "message_id": message_id},
                          {"type": "chat.update", "chat": self.store.get_chat(row["chat_id"])}])
-        return gone is not None
+        if gone is None:
+            return False
+        await asyncio.to_thread(lambda: [self._remove_upload(row) for row in files])
+        return True
 
     def busy_chats(self) -> List[str]:
         """This bot's chats with a reply running now, by name. A workspace restore waits for them."""
@@ -2234,23 +2264,41 @@ class Hub:
         kind = "image" if mime in INLINE_IMAGE_TYPES else mime.split("/")[0] if mime.split("/")[0] in (
             "audio", "video") else "file"
         # The link carries a signature for this one file, never the device's bearer token.
-        return {"url": f"/api/media/{media_id}/{quote(name)}?sig={self.media_signature(media_id)}", "name": name,
+        return {"url": self._media_url(media_id, name), "name": name,
                 "mime": mime, "kind": kind, "size": (dest_dir / name).stat().st_size}
 
-    def media_signature(self, media_id: str) -> str:
+    def _media_url(self, media_id: str, name: str) -> str:
+        expires = int(time.time()) + MEDIA_KEEP_SECONDS
+        return f"/api/media/{media_id}/{quote(name)}?exp={expires}&sig={self.media_signature(media_id, expires)}"
+
+    def media_signature(self, media_id: str, expires: Optional[int] = None) -> str:
         key = self.store.secret("media_key").encode()
-        return hmac.new(key, media_id.encode(), hashlib.sha256).hexdigest()[:32]
+        value = f"{media_id}:{int(expires)}" if expires is not None else media_id
+        return hmac.new(key, value.encode(), hashlib.sha256).hexdigest()[:32]
 
     async def h_media(self, request: web.Request) -> web.StreamResponse:
         media_id, name = request.match_info["media_id"], request.match_info["name"]
         sig = request.query.get("sig", "")
-        if not (sig and hmac.compare_digest(sig, self.media_signature(media_id))):
+        upload = self.store.get_upload(media_id)
+        valid = False
+        if sig:
+            expires_text = request.query.get("exp", "")
+            if expires_text:
+                try:
+                    expires = int(expires_text)
+                except ValueError:
+                    expires = 0
+                valid = expires >= int(time.time()) and hmac.compare_digest(
+                    sig, self.media_signature(media_id, expires))
+            elif upload is not None:
+                # Older links to uploaded media stay valid; agent media never had a row, so it must expire.
+                valid = hmac.compare_digest(sig, self.media_signature(media_id))
+        if not valid:
             self._require(request)  # older links used the device token
         path = (self.media_dir / media_id / name).resolve()
         if self.media_dir.resolve() not in path.parents or not path.is_file():
             return _error(404, "not found")
         # Uploads were sniffed on arrival; never trust a file's extension over its bytes.
-        upload = self.store.get_upload(media_id)
         mime = upload["mime"] if upload else mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         inline = mime in INLINE_IMAGE_TYPES or mime.startswith(("audio/", "video/"))
         # Agent output is untrusted: an HTML or SVG file must never run as part of the app's origin.
@@ -2267,9 +2315,11 @@ class Hub:
     # -- websocket -------------------------------------------------------------------------
 
     async def h_ws(self, request: web.Request) -> web.StreamResponse:
-        legacy = bool(request.query.get("token")) or request.headers.get("Authorization", "").lower().startswith("bearer ")
-        device = self._device(request) if legacy else None
-        socket_token = request.query.get("token") or request.headers.get("Authorization", "").partition(" ")[2]
+        query_token = request.query.get("token") or ""
+        header_token = request.headers.get("Authorization", "").partition(" ")[2]
+        legacy = bool(query_token) or request.headers.get("Authorization", "").lower().startswith("bearer ")
+        device = self.store.device_for_token(query_token or header_token) if legacy else None
+        socket_token = query_token or header_token
         if legacy and device is None:
             return _error(401, "not paired")
         ws = web.WebSocketResponse(heartbeat=25, max_msg_size=1024 * 1024)
@@ -3264,7 +3314,7 @@ class Hub:
 
     async def h_pet_display(self, request: web.Request) -> web.Response:
         device = self._require(request)
-        on = bool((await self._body(request)).get("enabled"))
+        on = self._required_bool(await self._body(request), "enabled")
         pet = await self._call(self._need_hermes().show_pet, on)
         self.audit("pet", device, f"showed {pet['name']}" if pet else "turned the pet off")
         await self._pet_changed()
@@ -3388,11 +3438,20 @@ class Hub:
     def _member_pause(state: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         return {"reason": None, "engaged_at": state.get("engaged_at")} if state else None
 
+    @staticmethod
+    def _required_bool(body: Dict[str, Any], key: str) -> bool:
+        value = body.get(key)
+        if not isinstance(value, bool):
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": f"{key} must be true or false."}),
+                content_type="application/json")
+        return value
+
     async def h_pause(self, request: web.Request) -> web.Response:
         """Hold all new work (Hermes's /pause) or let it continue. Running turns are not cut off."""
         device = self._require(request)
         body = await self._body(request)
-        on = bool(body.get("paused"))
+        on = self._required_bool(body, "paused")
         reason = _clip(str(body.get("reason") or ""), 200) or f"Paused from {device['name']}"
         state = await self._call(self._need_hermes().set_paused, on, reason)
         self.audit("system.pause", device, f"paused new work: {reason}" if on else "resumed new work")
@@ -3902,7 +3961,7 @@ class Hub:
                 value = str(body.get(key) or "").strip()
                 if len(value) > limit:
                     raise web.HTTPBadRequest(text=json.dumps({"error": f"The {key} is too long."}), content_type="application/json")
-                if key != "name" and not value:
+                if not value:
                     raise web.HTTPBadRequest(text=json.dumps({"error": f"The {key} is required."}), content_type="application/json")
                 out[key] = value
         return out
@@ -4012,7 +4071,7 @@ class Hub:
     async def h_skill_toggle(self, request: web.Request) -> web.Response:
         device = self._require(request)
         name = self._ability_name(request)
-        enabled = bool((await self._body(request)).get("enabled"))
+        enabled = self._required_bool(await self._body(request), "enabled")
         await self._call(self._need_hermes().set_skill_enabled, name, enabled)
         self.audit("skill.toggle", device, f"{name} turned {'on' if enabled else 'off'}")
         return _json({"ok": True, "name": name, "enabled": enabled})
@@ -4120,7 +4179,7 @@ class Hub:
     async def h_toolset_toggle(self, request: web.Request) -> web.Response:
         device = self._require(request)
         name = self._ability_name(request)
-        enabled = bool((await self._body(request)).get("enabled"))
+        enabled = self._required_bool(await self._body(request), "enabled")
         await self._call(self._need_hermes().set_toolset, name, enabled)
         self.audit("toolset.toggle", device, f"{name} turned {'on' if enabled else 'off'}")
         return _json({"ok": True, "name": name, "enabled": enabled})
@@ -4140,6 +4199,10 @@ class Hub:
         toolsets = body.get("toolsets")
         if not isinstance(toolsets, list) or not all(isinstance(t, str) and _ABILITY_NAME.match(t) for t in toolsets):
             return _error(400, "toolsets must be a list of toolset names")
+        if "limited" in body and not isinstance(body["limited"], bool):
+            return _error(400, "limited must be true or false")
+        if "mcp" in body and not isinstance(body["mcp"], bool):
+            return _error(400, "mcp must be true or false")
         if body.get("limited") and not self.limits_members:
             return _error(400, "This version of Hermes can't limit what members use. Update Hermes to turn this on.")
         known = {t["name"] for t in await self._call(self._need_hermes().toolsets)}
@@ -4281,7 +4344,7 @@ class Hub:
     async def h_mcp_toggle(self, request: web.Request) -> web.Response:
         device = self._require(request)
         name = self._ability_name(request)
-        enabled = bool((await self._body(request)).get("enabled"))
+        enabled = self._required_bool(await self._body(request), "enabled")
         await self._call(self._need_hermes().set_mcp_enabled, name, enabled)
         self.mcp_changed = True
         self.audit("mcp.toggle", device, f"{name} turned {'on' if enabled else 'off'}")
@@ -4634,8 +4697,14 @@ class Hub:
         try:
             data = await request.json()
         except Exception:
-            return {}
-        return data if isinstance(data, dict) else {}
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": "The request body is not valid JSON."}),
+                content_type="application/json") from None
+        if not isinstance(data, dict):
+            raise web.HTTPBadRequest(
+                text=json.dumps({"error": "The request body must be a JSON object."}),
+                content_type="application/json")
+        return data
 
 
 class _TooLarge(Exception):

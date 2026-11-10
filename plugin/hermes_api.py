@@ -51,12 +51,18 @@ async def cache_media(path: str, name: str, mime: str, voice: bool = False):
     Returns (cached path, media type, kind)."""
     import asyncio
     from pathlib import Path
-    from gateway.platforms.base import cache_media_bytes_async
+    try:
+        from gateway.platforms.base import cache_media_bytes_async
+    except Exception as exc:
+        raise HermesUnavailable("attachments unavailable") from exc
     data = await asyncio.to_thread(Path(path).read_bytes)
     if voice:
         # Hermes files .webm under video by its extension; a voice note is always audio, so it goes
         # straight to the audio cache, where speech-to-text picks it up.
-        from gateway.platforms.base import cache_audio_from_bytes_async
+        try:
+            from gateway.platforms.base import cache_audio_from_bytes_async
+        except Exception as exc:
+            raise HermesUnavailable("voice attachments unavailable") from exc
         ext = Path(name).suffix.lower()
         ext = {".mp4": ".m4a", "": ".ogg"}.get(ext, ext)
         return await cache_audio_from_bytes_async(data, ext=ext), mime, "audio"

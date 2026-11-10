@@ -400,6 +400,12 @@ async def test_routines_create_edit_pause_run_delete(client, hub):
     resp = await client.patch(path, data=body, headers=owner.signed("PATCH", path, body))
     assert (await resp.json())["routine"]["schedule_display"] == "every weekday at 8am"
 
+    blank = json.dumps({"name": "   "}).encode()
+    resp = await client.patch(path, data=blank, headers=owner.signed("PATCH", path, blank))
+    assert resp.status == 400
+    listed = await (await client.get("/api/schedule", headers=owner.auth)).json()
+    assert listed["routines"][0]["name"] == "Morning brief"
+
     resp = await post_signed(client, owner, f"{path}/pause", {})
     assert (await resp.json())["routine"]["state"] == "paused"
     resp = await post_signed(client, owner, f"{path}/run", {})
