@@ -33,12 +33,17 @@ const CLEAR = 'Winglet';
 
 /** Build the notification people see. The server decides what is offered; this only hides an
  * approval when the phone's switch is off or its short-lived signature has already expired. */
-export function notificationModel(note: NotificationNote, options: { shadeApprovals: boolean; now?: number }): NotificationModel {
+export function notificationModel(note: NotificationNote, options: { shadeApprovals: boolean; now?: number; canAct?: boolean }): NotificationModel {
   const now = options.now ?? Date.now() / 1000;
   const sigs = note.sig ?? {};
   const choices = new Set(note.choices ?? []);
   const actions: NotificationAction[] = [];
-  if (note.kind === 'approval') {
+  // Mirrors the phone: when previews are off or the phone/app is locked nothing can be acted on,
+  // not Approve, not Decline and not Reply, so someone holding the phone cannot answer as the owner.
+  const canAct = options.canAct ?? true;
+  if (!canAct) {
+    // no actions
+  } else if (note.kind === 'approval') {
     const live = note.shade_expires === undefined || note.shade_expires > now;
     if (options.shadeApprovals && live && choices.has('once') && sigs.once)
       actions.push({ id: 'approve', title: 'Approve', choice: 'once', sig: sigs.once });

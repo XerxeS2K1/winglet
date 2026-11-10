@@ -17,7 +17,7 @@ export function shadeToggleView(state: ShadeApprovals | null, me: ShadeRole) {
     value: state.shade_approvals,
     disabled: false,
     note: state.shade_approvals
-      ? 'Approvals can be answered from the notification shade.'
+      ? 'Approve and Decline can appear on notifications. Approve needs the command visible, so it is hidden while previews are off or the phone is locked.'
       : 'Off. Approvals still open the full card.',
   };
   if (me?.role && me.role !== 'owner') return {
@@ -42,3 +42,11 @@ export function saveShadeApprovals(server: Server, enabled: boolean): Promise<Sh
   // The server's reviewed setting name is shade_approvals; it also returns the new epoch.
   return signedApi<ShadeApprovals>(server, 'PUT', '/api/push/shade', { shade_approvals: enabled });
 }
+
+/** What to tell the person after a save. The epoch stays in the data; it is not shown. */
+export function shadeSavedNote(before: ShadeApprovals, after: ShadeApprovals): string {
+  return after.epoch !== before.epoch ? 'Saved. Older notifications can no longer approve.' : 'Saved.';
+}
+
+export const SHADE_PREVIEW_NOTE =
+  'Approve needs the command to be visible, so it will not appear while notification previews are off or the phone is locked. Decline and Reply follow the same rule.';

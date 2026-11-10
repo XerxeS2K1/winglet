@@ -49,6 +49,23 @@ test('an ordinary message gets a text reply action', () => {
   assert.deepEqual(Array.from(view.actions, (a: any) => ({ id: a.id, textInput: a.textInput })), [{ id: 'reply', textInput: true }]);
 });
 
+test('a locked phone or private previews offer no action at all, reply included', () => {
+  const message = { kind: 'message', title: 'Hermes', body: 'Done', chat_id: 'general' };
+  assert.deepEqual(Array.from(actions.notificationModel(message, { shadeApprovals: true, canAct: false }).actions), []);
+  assert.deepEqual(Array.from(actions.notificationModel(approval, { shadeApprovals: true, now: 100, canAct: false }).actions), []);
+  assert.equal(actions.notificationModel(message, { shadeApprovals: true, canAct: true }).actions.length, 1);
+});
+
+test('the native service gates Reply, Approve and Decline on the same canAct rule', () => {
+  const source = readFileSync(new URL('../modules/winglet-push/android/src/main/java/expo/modules/wingletpush/WingletPushService.kt', import.meta.url), 'utf8');
+  const canAct = source.match(/val canAct=([^\n]+)/)?.[1] ?? '';
+  for (const part of ['!deviceLocked', '!PushVisibility.locked', '!privatePolicy']) assert.ok(canAct.includes(part), part);
+  for (const name of ['approve', 'decline', 'reply']) {
+    const line = source.match(new RegExp(`val ${name}=([^\\n]+)`))?.[1] ?? '';
+    assert.ok(line.includes('canAct'), `${name} must require canAct`);
+  }
+});
+
 test('approve and deny post only the short-lived signature', () => {
   const approve = actions.approvalResponseRequest('item 1', 'once', 'once-sig');
   assert.equal(approve.path, '/api/inbox/item%201/respond');
@@ -110,4 +127,13 @@ test('can_enable false disables the toggle and explains why', () => {
   const owner = h.lib.shadeToggleView({ shade_approvals: true, epoch: 1, can_enable: true }, { role: 'owner', verified: true });
   assert.equal(owner.disabled, false);
   assert.equal(owner.value, true);
+});
+
+test('the saved message is plain words, not the epoch', () => {
+  const h = settingsHarness();
+  const before = { shade_approvals: false, epoch: 1, can_enable: true };
+  assert.equal(h.lib.shadeSavedNote(before, { ...before, shade_approvals: true, epoch: 2 }), 'Saved. Older notifications can no longer approve.');
+  assert.equal(h.lib.shadeSavedNote(before, before), 'Saved.');
+  assert.doesNotMatch(h.lib.shadeSavedNote(before, { ...before, epoch: 2 }), /epoch/i);
+  assert.match(h.lib.SHADE_PREVIEW_NOTE, /previews are off or the phone is locked/);
 });

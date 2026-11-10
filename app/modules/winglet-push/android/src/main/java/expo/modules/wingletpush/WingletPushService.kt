@@ -104,12 +104,13 @@ class WingletPushService : PushService() {
     val choiceNames=buildSet<String>{ if(choices!=null){ for(i in 0 until choices.length())add(choices.optString(i)) } }
     val expires=note.optDouble("shade_expires",0.0)
     val live=expires<=0.0 || expires>System.currentTimeMillis()/1000.0
-    // Only offer an action when the notification can show what it is for. A locked screen or the
-    // app lock leaves the generic body, so it gets no approve button.
+    // Only offer an action when the notification can show what it is for. A locked screen, the app
+    // lock or private notifications leave the generic body, so none of Approve, Decline or Reply is
+    // offered: someone holding the phone must not act as the owner without unlocking it.
     val canAct=!deviceLocked && !PushVisibility.locked && !privatePolicy
     val approve=approval && canAct && live && item.isNotBlank() && choiceNames.contains("once") && sigs.optString("once").isNotBlank()
     val decline=approval && canAct && item.isNotBlank() && choiceNames.contains("deny") && sigs.optString("deny").isNotBlank()
-    val reply=!approval && note.optString("chat_id").isNotBlank() && entry.optString("token").isNotBlank()
+    val reply=!approval && canAct && note.optString("chat_id").isNotBlank() && entry.optString("token").isNotBlank()
     val showBody=details || approve || decline
     val path=PushLinks.safePath(note.optString("url"),entry.getString("server"))
     val scheme=if(packageName.endsWith(".dev"))"winglet-dev" else "winglet"

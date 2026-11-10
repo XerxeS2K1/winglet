@@ -11,7 +11,7 @@ import { Sheet } from '../components/Sheet';
 import { Button, Card, Chip, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
 import { describeTestPush, enableNtfy, enableWebPush, openNtfySubscribe, sendTestPush, webPushServer, webPushState, type PushState } from '../lib/push';
 import { pushPrefsKey, quietHours, usePushPrefs } from '../lib/pushPrefs';
-import { loadShadeApprovals, saveShadeApprovals, shadeToggleView, type ShadeApprovals } from '../lib/shadeApprovals';
+import { loadShadeApprovals, saveShadeApprovals, SHADE_PREVIEW_NOTE, shadeSavedNote, shadeToggleView, type ShadeApprovals } from '../lib/shadeApprovals';
 import { homeChat, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Server } from '../lib/types';
@@ -138,9 +138,7 @@ function ShadeApprovalsSetting({ server, named }: { server: Server; named: boole
     try {
       const next = await saveShadeApprovals(server, enabled);
       setState(next);
-      setSaved(next.epoch !== state.epoch
-        ? `Saved. Approval answers now use token epoch ${next.epoch}.`
-        : 'Saved.');
+      setSaved(shadeSavedNote(state, next));
     } catch (e) { setError((e as Error).message); }
     setBusy(false);
   };
@@ -154,7 +152,7 @@ function ShadeApprovalsSetting({ server, named }: { server: Server; named: boole
       </ListGroup>
       {error ? <Text style={[s.note, { color: t.colors.danger, marginTop: 8 }]} accessibilityLiveRegion="polite">{error}</Text> : null}
       {saved ? <Text style={[s.note, { marginTop: 8 }]} accessibilityLiveRegion="polite">{saved}</Text> : null}
-      <Text style={[s.note, { marginTop: 8 }]}>Decline is always available from a notification. Approve shows the full command first.</Text>
+      <Text style={[s.note, { marginTop: 8 }]}>{SHADE_PREVIEW_NOTE}</Text>
     </>
   );
 }
