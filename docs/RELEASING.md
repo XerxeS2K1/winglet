@@ -121,3 +121,11 @@ pull requests.
 Manual runs from the Actions tab build test artifacts only. Without the key secrets those APKs are
 signed with the public debug key and named `…-debugkey.apk`: fine for trying things out, not for
 sharing.
+
+## Trying a smaller build (R8), off by default
+
+A release build made with `WINGLET_MINIFY=1` in the environment turns on R8 (code shrinking) and resource shrinking
+for the release variant, using the keep rules in `app/plugins/withMinify.js`. Without the variable nothing changes.
+It is a test, not a release setting: it has not yet been measured or run on a phone, and a wrong keep rule shows up as
+a crash at run time, not as a build error. Build it next to a normal one, compare the APK sizes and the R8 warnings, and
+open the app on a phone (chat, push, voice, share) before trusting it. Release publishing does not set it.
