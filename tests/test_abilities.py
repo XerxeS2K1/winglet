@@ -671,3 +671,42 @@ def test_a_sign_in_only_accepts_its_own_state(monkeypatch):
     denied = FakeFlow("notion", "s3")
     hermes_api._sign_ins["f3"] = denied
     assert hermes_api.finish_mcp_sign_in("notion", code=None, state="s3", error="access_denied", iss=None) == "denied"
+
+
+def test_the_default_model_switch_uses_hermes_config_mutation_lock(monkeypatch):
+    import contextlib
+    import sys
+    import types
+
+    events = []
+
+    class Lock:
+        def __enter__(self):
+            events.append("lock")
+
+        def __exit__(self, *_exc):
+            events.append("unlock")
+
+    config = types.ModuleType("hermes_cli.config")
+    config.load_config = lambda: events.append("load") or {}
+    web_config = types.ModuleType("hermes_cli.web_server_config")
+    web_config._prepare_main_assignment = lambda *_args: events.append("prepare") or ("", object())
+
+    def apply(*_args, **_kwargs):
+        assert events[-1] == "lock", "the config write must be inside Hermes's mutation lock"
+        events.append("apply")
+        return {"provider": "openai", "model": "gpt-test"}
+
+    web_config._apply_model_assignment_sync = apply
+    common = types.ModuleType("hermes_cli.web_routers._common")
+    common._CONFIG_MUTATION_LOCK = Lock()
+    for name, module in [("hermes_cli", types.ModuleType("hermes_cli")), ("hermes_cli.config", config),
+                         ("hermes_cli.web_server_config", web_config),
+                         ("hermes_cli.web_routers", types.ModuleType("hermes_cli.web_routers")),
+                         ("hermes_cli.web_routers._common", common)]:
+        monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(hermes_api, "_profile_scope", contextlib.nullcontext)
+
+    result = hermes_api.set_default_model("openai", "gpt-test", confirm=True)
+    assert result == {"ok": True, "provider": "openai", "model": "gpt-test"}
+    assert events == ["load", "prepare", "lock", "apply", "unlock"]

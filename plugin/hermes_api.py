@@ -436,6 +436,7 @@ def set_default_model(provider: str, model: str, *, confirm: bool = False) -> di
     try:
         from hermes_cli.web_server_config import _apply_model_assignment_sync, _prepare_main_assignment
         from hermes_cli.config import load_config
+        from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK
     except Exception as exc:
         raise HermesUnavailable("model assignment unavailable") from exc
     if not confirm:
@@ -448,7 +449,9 @@ def set_default_model(provider: str, model: str, *, confirm: bool = False) -> di
             return {"ok": False, "confirm_required": True, "confirm_message": str(getattr(warning, "message", warning))}
     try:
         prepared = _prepare_main_assignment(load_config(), provider, model, "", "")
-        result = _apply_model_assignment_sync("main", provider, model, "", "", "", prepared=prepared)
+        # Hermes's own route prepares outside this lock, then applies and saves under it.
+        with _CONFIG_MUTATION_LOCK:
+            result = _apply_model_assignment_sync("main", provider, model, "", "", "", prepared=prepared)
     except Exception as exc:
         if type(exc).__name__ == "HTTPException" or isinstance(exc, ValueError):
             raise HermesRefused(_detail(exc)) from exc
