@@ -40,6 +40,7 @@ from urllib.parse import quote, unquote, urlsplit
 from aiohttp import WSMsgType, web
 
 from . import checkpoints as checkpoints_api, encrypted_push, keys, live_voice, recovery, self_update, uploads, webpush
+from . import screen as screen_api
 from .projects import ProjectConflict, ProjectError, Projects
 from .event_replay import EventStream, MAX_PAYLOAD
 from .handoffs import delivery_id_from_request
@@ -200,6 +201,7 @@ ROUTE_POLICY = {
     "h_voice_stop": "device", "h_voice_end": "device", "h_voice_audio": "public",
     # Branching: paired devices, scoped to a chat they can see (same rule as sending a message).
     "h_config_catalog": "owner", "h_config_preview": "owner_signed", "h_config_apply": "owner_signed",
+    "h_screen_frame": "owner", "h_screen_input": "owner",
     "h_branch_state": "device", "h_branch_create": "device", "h_branch_regenerate": "device",
 }
 
@@ -267,7 +269,7 @@ class Hub:
     def __init__(self, store: Store, *, web_root: Optional[Path] = None,
                  bot_info: Optional[Callable[[], Dict[str, Any]]] = None,
                  ntfy_server: str = "https://ntfy.sh", http_client: Any = None,
-                 media_dir: Optional[Path] = None):
+                 media_dir: Optional[Path] = None, screen: Optional[screen_api.ScreenCapture] = None):
         self.store = store
         from .wear import WearRelay
         self.wear = WearRelay(self)
@@ -381,6 +383,8 @@ class Hub:
         self.hermes_version: Callable[[], str] = lambda: ""
         # Turn-based hands-free voice: sessions, signed speech files and cancellation.
         self.voice = live_voice.VoiceBridge(self)
+        # Live browser screen + takeover, only when the screen_watch switch is on.
+        self.screen: Optional[screen_api.ScreenCapture] = screen
         # Server-persisted projects (folders). Additive tables, created in place.
         self.projects = Projects(store)
         self.store.ensure_chat(HOME_CHAT_ID, "Updates", kind="home")
@@ -419,6 +423,10 @@ class Hub:
         r.add_get("/api/checkpoints", self.h_checkpoints)
         r.add_get("/api/checkpoints/{hash}", self.h_checkpoint)
         r.add_post("/api/checkpoints/{hash}/restore", self.h_checkpoint_restore)
+        # Registered always so a flag-off route is a real 404 rather than the web app's index fallback.
+        # Both handlers refuse with 404 while screen_watch is off.
+        r.add_get("/screen/frame", self.h_screen_frame)
+        r.add_post("/screen/input", self.h_screen_input)
         r.add_get("/api/goals", self.h_goals)
         r.add_get("/api/search", self.h_search)
         r.add_get("/api/projects", self.h_projects)
@@ -926,6 +934,9 @@ class Hub:
     async def _policy(self, request: web.Request, handler):
         if request.match_info.http_exception is not None:
             return await handler(request)  # 404/405: nothing to protect
+        if self.screen is None and request.path in ("/screen/frame", "/screen/input"):
+            # The switch being off is indistinguishable from the feature not existing.
+            return _error(404, "Live screen is off.")
         name = getattr(request.match_info.route.handler, "__name__", "")
         level = ROUTE_POLICY.get(name, "owner_signed")
         if level == "public":
@@ -1167,7 +1178,8 @@ class Hub:
                 "process_stop": self.processes is not None and self.processes.available(),
                 **{key: self.hermes is not None and self._has(self.hermes, "config_available")
                    for key in ("config_catalog", "config_validate", "config_edit")},
-                "connection_status": True, "projects": True, "event_replay": True, "quoted_comments": True}
+                "connection_status": True, "projects": True, "event_replay": True, "quoted_comments": True,
+                "screen_watch": self.screen is not None}
 
     def about(self) -> Dict[str, Any]:
         return {"version": VERSION, "protocol": PROTOCOL, "min_app_protocol": MIN_APP_PROTOCOL,
@@ -2010,6 +2022,28 @@ class Hub:
         await self.broadcast({"type": "checkpoint.restored", "bot": _BOT.get(), "at": time.time(),
                               "result": result, "by": device["name"]})
         return _json({"result": result})
+
+    async def h_screen_frame(self, request: web.Request) -> web.Response:
+        """One JPEG of the agent's current browser page, only while screen_watch is on."""
+        device = self._require(request)
+        if self.screen is None:
+            return _error(404, "Live screen is off.")
+        frame, reason = await asyncio.to_thread(self.screen.capture_frame)
+        if frame is None:
+            return _error(503, reason or "The browser screen isn't available.")
+        return web.Response(body=frame["jpeg"], content_type="image/jpeg",
+                            headers={"Cache-Control": "no-store", "X-Winglet-Screen": "1"})
+
+    async def h_screen_input(self, request: web.Request) -> web.Response:
+        """Apply one click, scroll, type or key action to the agent's page."""
+        device = self._require(request)
+        if self.screen is None:
+            return _error(404, "Live screen is off.")
+        body = await self._body(request)
+        ok, reason = await asyncio.to_thread(self.screen.dispatch_input, body)
+        if not ok:
+            return _error(400, reason or "That input wasn't accepted.")
+        return _json({"ok": True})
 
     async def h_commands(self, request: web.Request) -> web.Response:
         """Slash commands this Hermes accepts from the app, with their hints."""

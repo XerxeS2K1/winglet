@@ -26,6 +26,7 @@ FIELDS = {
     "memory.user_profile_enabled": Field("User profile", "Memory", "boolean", description="Include the user profile in future prompts.", applies="new_session"),
     "memory.memory_char_limit": Field("Memory size", "Memory", "integer", 100, 100000, "Character budget for agent memory.", applies="new_session"),
     "memory.user_char_limit": Field("User profile size", "Memory", "integer", 100, 100000, "Character budget for the user profile.", applies="new_session"),
+    "screen_watch": Field("Live browser screen", "Browser", "boolean", description="Stream the agent's browser page to the phone and allow takeover. Off by default.", applies="restart"),
     "compression.enabled": Field("Automatic compression", "Context", "boolean", description="Allow Hermes to compact long conversations."),
     "compression.threshold": Field("Compression threshold", "Context", "number", .1, 1, "Fraction of the context window that triggers compression. Hermes may apply a model-specific floor."),
     "compression.target_ratio": Field("Recent context ratio", "Context", "number", .01, .9, "Fraction of the compression threshold preserved as recent context."),
