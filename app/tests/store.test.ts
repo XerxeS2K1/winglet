@@ -68,6 +68,7 @@ function harness(os = 'web') {
   const helpers = compile('../src/lib/messages.ts', {});
   const handled = compile('../src/lib/handledNotifications.ts', {});
   const cleared: any[] = [];
+  const perfCalls: any[] = [];
   const taskModel = compile('../src/features/execution/model.ts', {});
   const replayProtocol = compile('../src/features/event-replay/protocol.ts', {});
   const replaySession = compile('../src/features/event-replay/session.ts', { './protocol': replayProtocol });
@@ -99,6 +100,7 @@ function harness(os = 'web') {
     // Same logic, but no real waiting between the re-checks.
     './authCheck': { ...authCheck, AUTH_RECHECK_DELAYS_MS: [1, 1], pause: async () => {} },
     './handledNotifications': handled,
+    './perf': { perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]) },
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
     './sounds': { sound: { reply: () => played.push('reply'), needsYou: () => played.push('needsYou'), tap: () => {}, sent: () => {} } },
@@ -107,7 +109,7 @@ function harness(os = 'web') {
   });
   const tick = () => new Promise(resolve => setImmediate(resolve));
   return {
-    store, cache, played, phoneCalls, cleared, taskModel, setRequest: (fn: typeof request) => { request = fn; },
+    store, cache, played, phoneCalls, cleared, perfCalls, taskModel, setRequest: (fn: typeof request) => { request = fn; },
     setRecovery: (fn: typeof recoveryRequest) => { recoveryRequest = fn; },
     disconnect: () => { socket.readyState = 3; socket.onclose?.({ code: 1006 }); },
     retry: () => timers.shift()?.(), timers, sockets, persisted: () => persisted, socket: () => socket, tick,
@@ -1166,4 +1168,23 @@ test('pairing again hands the new token to the server\'s other bots', async () =
   await h.store.getState().addServer({ id: 's', url: 'http://test', token: 'fresh', deviceId: 'dev2', bot: { title: 'Test' } });
   assert.equal(child().token, 'fresh');
   assert.equal(child().deviceId, 'dev2');
+});
+
+test('the dev timing hooks see a send and a streamed reply, and only for the bot', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  await h.store.getState().sendMessage('s', 'general', 'hello');
+  assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'sent'), [['sent', 's:general']]);
+  const bot = (id: string, text: string, status: string) => ({ ...msg(1), id, text, status });
+  h.event({ type: 'message.new', chat_id: 'general', message: bot('r', '', 'streaming') });
+  h.event({ type: 'message.update', chat_id: 'general', message: { ...bot('r', 'Hi', 'streaming'), updated_at: 2 } });
+  h.event({ type: 'message.update', chat_id: 'general', message: { ...bot('r', 'Hi there', 'final'), updated_at: 3 } });
+  h.event({ type: 'message.new', chat_id: 'general', message: { ...bot('u', 'hello', 'final'), role: 'user' } });
+  const updates = h.perfCalls.filter((c) => c[0] === 'update');
+  assert.deepEqual(updates.map((c) => [c[1], c[2].id, c[2].streaming, c[2].hasText, c[3]]), [
+    ['s:general', 'r', true, false, false],
+    ['s:general', 'r', true, true, false],
+    ['s:general', 'r', false, true, false],
+  ]);
 });

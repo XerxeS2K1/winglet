@@ -10,7 +10,8 @@ import { cacheGet, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
-import { isNotifiable, markFailed, mergeMessages } from './messages';
+import { isActivity, isNotifiable, markFailed, mergeMessages } from './messages';
+import { perfMessageSent, perfMessageUpdate } from './perf';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { refreshNetworkNow } from './network';
@@ -426,6 +427,7 @@ export const useApp = create<AppState>((set, get) => {
         const m = ev.message as Message;
         const before = get().runtime[serverId]?.messages[ev.chat_id]?.find((x) => x.id === m.id);
         upsertMessage(serverId, ev.chat_id, m);
+        if (m.role === 'bot') perfMessageUpdate(`${serverId}:${ev.chat_id}`, { id: m.id, streaming: m.status === 'streaming', hasText: !isActivity(m) && m.text.trim() !== '' }, replayed);
         const clientId = m.meta?.client_id;
         if (m.role === 'user' && clientId && get().runtime[serverId]?.outbox.some((o) => o.client_id === clientId)) {
           // The server has it (the HTTP reply may have been lost): it's no longer ours to resend.
@@ -945,6 +947,7 @@ export const useApp = create<AppState>((set, get) => {
           ...(o.attachments?.length ? { attachments: o.attachments } : {}), ...(o.replyTo ? { reply_to: o.replyTo } : {}) };
       updateOutbox(serverId, (o) => [...o.filter((x) => x.client_id !== clientId), entry]);
       upsertMessage(serverId, chatId, { ...localMessage(entry), status: get().runtime[serverId]?.status === 'online' ? 'pending' : 'queued' });
+      if (!retryClientId) perfMessageSent(`${serverId}:${chatId}`);
       if (retryClientId) sendPaused.delete(serverId);
       await enqueue(serverId, entry);
     },

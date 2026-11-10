@@ -20,6 +20,7 @@ import { organizeChats } from '../../lib/chatOrganization';
 import { chatActivity, chatActivityLabel, draftPreview, matchesChatFilter, type ChatFilter } from '../../lib/chatActivity';
 import { useActivityClock } from '../../lib/useActivityClock';
 import { usePrefs } from '../../lib/prefs';
+import { perfFirstContent } from '../../lib/perf';
 import { homeChat, useApp, useServerState } from '../../lib/store';
 import { alpha, WIDE_BREAKPOINT } from '../../lib/theme';
 import { makeStyles, useTheme } from '../../lib/themeContext';
@@ -91,6 +92,7 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
   const projectChips = (projects?.projects ?? []).filter((p) => !p.archived);
   const archivedCount = inScope(groups.archived).length;
   const loading = !rt || (rt.status !== 'online' && !Object.keys(rt.chats).length);
+  useEffect(() => { if (!loading) perfFirstContent('chat list'); }, [loading]);
   const found = useMessageSearch(server, rt?.info?.features?.search ? query : '');
   const scopedIds = new Set(side.map((c) => c.id));
   const results = found.results.filter((r) => scopedIds.has(r.chat.id)
