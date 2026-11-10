@@ -129,3 +129,27 @@ async def test_files_lists_everything_shared_newest_first(client, hub):
     assert files[0]["message_id"]
     member = await pair_phone(client, hub, "Alex", role="member")
     assert (await client.get("/api/chats/trip/files", headers=member.auth)).status == 404
+
+
+async def test_search_is_capped_paged_and_runs_off_the_event_loop(client, hub, monkeypatch):
+    import threading
+    owner = await pair_phone(client, hub)
+    for i in range(8):
+        hub.store.add_message("general", "user", f"needle {i}")
+    found, next_before = hub.store.search_page("needle", ["general"], limit=2, scan_limit=3)
+    assert len(found) == 2 and next_before is not None
+    older, _ = hub.store.search_page("needle", ["general"], limit=2, before_position=next_before, scan_limit=3)
+    assert {m["id"] for m in older}.isdisjoint({m["id"] for m in found})
+
+    calls = []
+    real = hub.store.search_page
+
+    def tracked(*args, **kwargs):
+        calls.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hub.store, "search_page", tracked)
+    data = await (await client.get("/api/search?q=needle", headers=owner.auth)).json()
+    assert len(data["results"]) <= 60
+    assert "next_before" in data
+    assert calls and calls[0] != threading.get_ident()

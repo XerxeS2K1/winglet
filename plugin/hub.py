@@ -1920,7 +1920,7 @@ class Hub:
         device = self._require(request)
         query = " ".join((request.query.get("q") or "").split())[:200]
         if len(query) < 2:
-            return _json({"results": []})
+            return _json({"results": [], "next_before": None})
         project_id = (request.query.get("project_id") or "").strip()
         if project_id:
             try:
@@ -1930,11 +1930,21 @@ class Hub:
             chats = {c["id"]: c for c in self.visible_chats(device) if c["id"] in allowed}
         else:
             chats = {c["id"]: c for c in self.visible_chats(device)}
-        found = self.store.search_messages(query, list(chats), limit=60)
+        before: Optional[int] = None
+        raw_before = (request.query.get("before_position") or "").strip()
+        if raw_before:
+            try:
+                before = max(1, int(raw_before))
+            except ValueError:
+                return _error(400, "before_position must be a whole number.")
+        # The LIKE scan is bounded and runs off the event loop; the response gains an additive
+        # next_before cursor while keeping the results array the app already parses.
+        found, next_before = await asyncio.to_thread(
+            self.store.search_page, query, list(chats), limit=60, before_position=before)
         results = [{"message": {k: m[k] for k in ("id", "chat_id", "role", "created_at", "position")},
                     "chat": {"id": m["chat_id"], "title": chats[m["chat_id"]]["title"], "kind": chats[m["chat_id"]]["kind"]},
                     "snippet": _snippet(m["text"], query)} for m in found]
-        return _json({"results": results})
+        return _json({"results": results, "next_before": next_before})
 
     async def h_chat_files(self, request: web.Request) -> web.Response:
         """Everything shared in a chat, both ways, newest first."""

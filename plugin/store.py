@@ -149,6 +149,8 @@ DELETIONS_KEEP_SECONDS = 90 * 86400
 INBOX_KEEP_SECONDS = 90 * 86400
 # A device's "last seen" is written at most this often (it's read to the minute).
 LAST_SEEN_EVERY_SECONDS = 60
+# Search still uses LIKE (no FTS/index), but examines at most this many rows per request.
+SEARCH_SCAN_LIMIT = 5_000
 
 
 def _hash(secret: str) -> str:
@@ -915,20 +917,51 @@ class Store:
         rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? ORDER BY rowid", (chat_id,))
         return [self._message(r) for r in rows]
 
-    def search_messages(self, query: str, chat_ids: List[str], *, limit: int = 50) -> List[Dict[str, Any]]:
+    def search_messages(self, query: str, chat_ids: List[str], *, limit: int = 50,
+                        before_position: Optional[int] = None) -> List[Dict[str, Any]]:
         """Newest messages in these chats whose text contains every word of the query, in any order and
         ignoring case (so a phrase still matches across a line break). Hidden helper messages and status
-        lines are left out."""
+        lines are left out. Kept as a list-only wrapper for existing callers; ``search_page`` adds the cursor.
+        """
+        return self.search_page(query, chat_ids, limit=limit, before_position=before_position)[0]
+
+    def search_page(self, query: str, chat_ids: List[str], *, limit: int = 50,
+                    before_position: Optional[int] = None,
+                    scan_limit: int = SEARCH_SCAN_LIMIT) -> tuple[List[Dict[str, Any]], Optional[int]]:
+        """Search one bounded rowid window and return ``(messages, next_before)``.
+
+        No index is added: the query is still a LIKE scan, but it may examine at most
+        ``scan_limit`` rows (and return at most 100), so a large history cannot monopolise a worker
+        thread. ``before_position`` is the cursor; ``next_before`` is absent when there is no older
+        batch. The caller runs this off the event loop.
+        """
         words = [w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for w in query.split()[:10]]
         if not chat_ids or not words:
-            return []
+            return [], None
+        limit = max(1, min(int(limit or 50), 100))
+        scan_limit = max(limit, min(int(scan_limit or SEARCH_SCAN_LIMIT), SEARCH_SCAN_LIMIT))
         marks = ",".join("?" * len(chat_ids))
         likes = " AND ".join(["text LIKE ? ESCAPE '\\'"] * len(words))
-        rows = self._all(f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks}) AND role != 'system' "
-                         f"AND {likes} AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
-                         "ORDER BY rowid DESC LIMIT ?",
-                         (*chat_ids, *(f"%{w}%" for w in words), max(1, min(limit, 100))))
-        return [self._message(r) for r in rows]
+        before = " AND rowid < ?" if before_position is not None else ""
+        base = (f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks})"
+                f"{before} ORDER BY rowid DESC LIMIT ?")
+        base_args: List[Any] = [*chat_ids]
+        if before_position is not None:
+            base_args.append(max(1, int(before_position)))
+        base_args.append(scan_limit)
+        rows = self._all(
+            f"SELECT * FROM ({base}) WHERE role != 'system' AND {likes} "
+            "AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
+            "ORDER BY position DESC LIMIT ?",
+            (*base_args, *(f"%{w}%" for w in words), limit))
+        found = [self._message(r) for r in rows]
+        if len(found) >= limit:
+            return found, int(found[-1]["position"])
+        # The result limit was not filled: report the oldest row examined so the caller can ask for
+        # the next older window even when this window held no matches at all.
+        oldest = self._one(f"SELECT MIN(position) AS p FROM ({base})", tuple(base_args))
+        next_before = int(oldest["p"]) - 1 if oldest and oldest["p"] is not None else None
+        return found, next_before
 
     def chat_attachments(self, chat_id: str, *, limit: int = 300) -> List[Dict[str, Any]]:
         """Every file and photo in a chat, newest first, each with the message it came in."""
