@@ -2759,7 +2759,12 @@ class Hub:
                 await self._delivery_condition.wait()
         try:
             for event, scope, prepared in items:
-                await self._broadcast(event, scope=scope, prepared_chats=prepared)
+                if prepared is None and scope is None:
+                    await self._broadcast(event)
+                elif prepared is None:
+                    await self._broadcast(event, scope=scope)
+                else:
+                    await self._broadcast(event, scope=scope, prepared_chats=prepared)
         finally:
             async with self._delivery_condition:
                 self._delivery_turn += 1
