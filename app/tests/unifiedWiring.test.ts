@@ -1,17 +1,31 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { network, server } from './helpers/serverUpdateHarness.ts';
+
 const source = (file: string) => readFileSync(new URL('../src/' + file, import.meta.url), 'utf8');
-test('there is one app update flow, no automatic server startup prompt or separate auto-update setting', () => {
-  assert.doesNotMatch(source('app/_layout.tsx'), /<ServerUpdatePrompt/);
-  assert.match(source('app/_layout.tsx'), /unifiedUpdate\.hydrate/);
-  assert.doesNotMatch(source('app/settings.tsx') + source('lib/prefs.ts'), /autoUpdateServer|Auto-update server plugin/);
-  assert.doesNotMatch(source('lib/serverUpdates.ts'), /skipUnlock/);
+
+test('the app has one plain app-update flow and no server-update orchestration', () => {
+  assert.doesNotMatch(source('app/_layout.tsx'), /UnifiedUpdateHost|UpdateJobHost|unifiedUpdate\.hydrate/);
+  assert.doesNotMatch(source('lib/unifiedUpdate.ts'), /from '\.\/api'|from '\.\/serverUpdates'|signedApi|api</);
+  assert.doesNotMatch(source('lib/serverUpdates.ts'), /signedApi|updateServerWinglet|sendConsentedWingletUpdate/);
+  assert.doesNotMatch(source('lib/serverUpdates.ts'), /\/api\/system\/update['"`]/);
+  assert.ok(!existsSync(new URL('../src/lib/updateRecovery.ts', import.meta.url)));
+  assert.ok(!existsSync(new URL('../src/lib/updateJobs.ts', import.meta.url)));
+  assert.ok(!existsSync(new URL('../src/components/UnifiedUpdateHost.tsx', import.meta.url)));
+  assert.ok(!existsSync(new URL('../src/components/UpdateJobHost.tsx', import.meta.url)));
 });
-test('the consented handoff uses the same signed durable job sender without a second unlock', async () => {
-  const h = network(); await h.core.sendConsentedWingletUpdate(server, { target: 'winglet', version: '0.10.8', idempotency_key: 'handoff' });
-  assert.equal(h.prompts.length, 0); assert.equal(h.requests.length, 1);
-  assert.equal(h.requests[0][3].version, '0.10.8'); assert.equal(h.requests[0][3].idempotency_key, 'handoff');
-  assert.equal(h.jobs.updateRecovery.snapshot(server).jobs[0].id, 'job');
+
+test('the Server screen keeps the deliberate Hermes update but has no Winglet update row', () => {
+  const server = source('app/server.tsx');
+  assert.match(server, /target: what/);
+  assert.match(server, /name="Hermes"/);
+  assert.doesNotMatch(server, /name="Winglet"/);
+  assert.doesNotMatch(server, /updateServerWinglet|updateRecovery|Server plugin update/);
+});
+
+test('About reads the server setting and writes only autoUpdate', () => {
+  const about = source('app/about.tsx');
+  assert.match(about, /api<\{ autoUpdate: boolean \}>\(server, '\/api\/settings'\)/);
+  assert.match(about, /signedApi<\{ autoUpdate: boolean \}>\(server, 'PUT', '\/api\/settings', \{ autoUpdate: on \}\)/);
+  assert.match(about, /updatedAt/);
 });

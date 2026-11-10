@@ -15,8 +15,6 @@ import { AppState, Platform, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { UpdatePrompt } from '../components/AppUpdate';
-import { UnifiedUpdateHost } from '../components/UnifiedUpdateHost';
-import { UpdateJobHost } from '../components/UpdateJobHost';
 import { AppNavigation } from '../components/AppNavigation';
 import { BatteryPrompt } from '../components/BatteryPrompt';
 import { LockScreen } from '../components/LockScreen';
@@ -27,7 +25,6 @@ import { clearUpdateDownloads } from '../lib/appInstall';
 import { lockOnStart, onAppVisibility } from '../lib/appLock';
 import { resolveMainBot } from '../lib/bots';
 import { useAppUpdate } from '../lib/appUpdateCheck';
-import { unifiedUpdate } from '../lib/unifiedUpdateFlow';
 import { watchNetwork } from '../lib/network';
 import { attachPersistence } from '../lib/persist';
 import { usePrefs } from '../lib/prefs';
@@ -77,12 +74,6 @@ export default function RootLayout() {
   useEffect(() => {
     if (updateCheck) checkForUpdate();
   }, [updateCheck, checkForUpdate]);
-
-  // Read the saved update handoff once at startup. Without this, a saved server step stays invisible
-  // until something else calls observe(), and the app offer cannot know that a handoff exists.
-  useEffect(() => {
-    unifiedUpdate.hydrate().catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     if (Platform.OS === 'web') {
@@ -135,8 +126,6 @@ function Navigator() {
       <ShareListener />
       <Toasts />
       <UpdatePrompt />
-      <UnifiedUpdateHost />
-      <UpdateJobHost />
       <BatteryPrompt />
       <VerifySheet />
       <PhoneRequestSheet />

@@ -3,7 +3,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { JobSheet } from '../components/JobSheet';
-import { updateRecovery, updateScope, useUpdateJobs } from '../lib/updateJobs';
 import {
   CalendarClock, Check, CircleAlert, CircleArrowUp, CirclePause, CircleHelp, RefreshCw, RotateCw, ScrollText, ShieldCheck,
 } from '../components/icons';
@@ -17,12 +16,13 @@ import { api, ApiError, signedApi } from '../lib/api';
 import { bytes, duration, idempotencyKey } from '../lib/control';
 import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
-import { isOwner, useApp, useServerState } from '../lib/store';
+import { useApp, useServerState } from '../lib/store';
 import { checkServerUpdates } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Job, PauseState, SystemInfo, UpdatesInfo } from '../lib/types';
 
 type Confirm = 'restart' | 'hermes';
+const serverScope = (server: { id: string; url: string; deviceId: string }) => `${server.id}:${server.url}:${server.deviceId}`;
 const JOB_LABEL: Record<Job['kind'], string> = {
   restart: 'Restart', hermes_update: 'Hermes update', winglet_update: 'Winglet update',
   skill_install: 'Skill install', skill_uninstall: 'Skill removal', mcp_install: 'MCP server install',
@@ -38,8 +38,7 @@ function ServerScreen() {
   const reduced = useReducedMotion();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const rt = useServerState(server?.id);
-  const tracking = useUpdateJobs((state) => server ? state.byScope[updateScope(server)] : undefined);
-  const scope = server ? updateScope(server) : '';
+  const scope = server ? serverScope(server) : '';
   const currentScope = useRef(scope); currentScope.current = scope;
   const [infoSnapshot, setInfo] = useState<{ scope: string; value: SystemInfo } | null>(null);
   const [updateSnapshot, setUpdates] = useState<{ scope: string; value: UpdatesInfo } | null>(null);
@@ -57,7 +56,7 @@ function ServerScreen() {
 
   const load = useCallback(() => {
     if (!server) return;
-    const requestedScope = updateScope(server);
+    const requestedScope = serverScope(server);
     api<SystemInfo>(server, '/api/system').then((d) => {
       if (active.current && currentScope.current === requestedScope) { setInfo({ scope: requestedScope, value: d }); setError(''); }
     }).catch((e) => { if (active.current && currentScope.current === requestedScope) setError((e as Error).message); });
@@ -65,7 +64,7 @@ function ServerScreen() {
   const check = useCallback((force = false) => {
     if (!server) return;
     setChecking(true);
-    const requestedScope = updateScope(server);
+    const requestedScope = serverScope(server);
     checkServerUpdates(server, force).then((value) => {
       if (active.current && currentScope.current === requestedScope) setUpdates({ scope: requestedScope, value });
     }).catch(() => undefined).finally(() => { if (active.current && currentScope.current === requestedScope) setChecking(false); });
@@ -157,14 +156,6 @@ function ServerScreen() {
           onPress={() => setConfirm('restart')} />
       </ListGroup>
 
-      {isOwner(rt) && (tracking?.jobs.length || tracking?.pending) ? <>
-        <SectionHeader title="Server plugin update" />
-        <ListGroup>
-          {tracking.jobs.map((current) => <ListRow key={current.id} title="Server plugin update" value={current.state}
-            subtitle={current.detail.message || 'Checking progress…'} onPress={() => { void updateRecovery.reopen(server, current).catch((e) => setError((e as Error).message)); }} />)}
-          {tracking.pending && !tracking.jobs.length ? <ListRow title="Server plugin update" subtitle="Result not confirmed. Checking job history." /> : null}
-        </ListGroup>
-      </> : null}
       <SectionHeader title="Updates" right={(
         <Button size="sm" variant="ghost" title={checking ? 'Checking…' : 'Check now'} disabled={checking}
           icon={<RefreshCw size={14} color={t.colors.textSecondary} />} onPress={() => check(true)} />
@@ -172,8 +163,6 @@ function ServerScreen() {
       <ListGroup>
         <UpdateRow name="Hermes" version={info?.hermes_version || updates?.hermes.current_version} {...hermesUpdate(updates)}
           onUpdate={() => setConfirm('hermes')} />
-        <UpdateRow name="Winglet" version={info?.version ?? updates?.winglet.version} {...wingletUpdate(updates)} available={isOwner(rt) && wingletUpdate(updates).available}
-          onUpdate={() => router.push('/about')} />
       </ListGroup>
 
       <SectionHeader title="Tools" />
@@ -196,14 +185,14 @@ function ServerScreen() {
                   : j.state === 'failed' ? <CircleAlert size={18} color={t.colors.danger} />
                   : j.state === 'running' ? <RotateCw size={18} color={t.colors.textSecondary} /> : <CircleHelp size={18} color={t.colors.warning} />}
                 iconColor={j.state === 'succeeded' ? t.colors.success : j.state === 'failed' ? t.colors.danger : undefined}
-                onPress={() => { if (j.kind === 'winglet_update') { if (!isOwner(rt)) return; void updateRecovery.reopen(server, j).catch((e) => setError((e as Error).message)); } else setJob(j); }} />
+                onPress={() => setJob(j)} />
             ))}
           </ListGroup>
         </>
       ) : null}
 
       <ConfirmSheet what={confirm} bot={server.bot.title} onCancel={() => setConfirm(null)} onConfirm={start} />
-      <JobSheet key={updateScope(server)} server={server} job={job?.kind !== 'winglet_update' ? job : null} onClose={() => setJob(null)} onDone={() => { load(); check(); }} />
+      <JobSheet key={serverScope(server)} server={server} job={job} onClose={() => setJob(null)} onDone={() => { load(); check(); }} />
     </Screen>
   );
 }
@@ -218,16 +207,6 @@ function hermesUpdate(u: UpdatesInfo | null): { status: string; available: boole
       : { status: `${what}. Update with \`${h.update_command || 'hermes update'}\` on the server.`, available: false };
   }
   return { status: h.message || 'Up to date', available: false };
-}
-
-function wingletUpdate(u: UpdatesInfo | null): { status: string; available: boolean } {
-  const w = u?.winglet;
-  if (!w) return { status: 'Checking…', available: false };
-  if (w.requires_hermes_ok === false) return { status: 'Hermes is too old for this release. Update Hermes first.', available: false };
-  if (w.update_available === true) return { status: 'A new version is ready', available: true };
-  if (w.update_available === false) return { status: 'Up to date', available: false };
-  if (/provenance|not installed from git/i.test(w.reason ?? '')) return { status: 'Installed from a copy, so update it on the server.', available: false };
-  return { status: w.reason || "Couldn't tell", available: false };
 }
 
 /** How the server is doing, at a glance: its state, big, then the versions and phones as small figures. */

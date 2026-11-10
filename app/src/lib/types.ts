@@ -292,6 +292,8 @@ export type SystemInfo = {
   version: string;
   hermes_version: string;
   uptime_seconds: number;
+  /** Unix seconds of the last successful plugin update, when the server reports it. */
+  updatedAt?: number | string;
   host: {
     system?: string; arch?: string; cpu_count?: number; cpu_percent?: number; uptime_seconds?: number; load_avg?: number[];
     memory?: { total: number; used: number; percent: number }; disk?: { total: number; used: number; percent: number };
