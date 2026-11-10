@@ -59,7 +59,6 @@ export default function Home() {
 function HomeFor({ server }: { server: Server }) {
   const s = useStyles();
   const t = useTheme();
-  const chatId = useApp((st) => homeChat(st.runtime[server.id]));
   const [mode, setMode] = useState<LandingMode>('bot');
   const [newChatId, setNewChatId] = useState<string>();
   const [generation, setGeneration] = useState(0);
@@ -70,17 +69,19 @@ function HomeFor({ server }: { server: Server }) {
     if (next === 'new-chat') {
       currentGeneration.current++;
       setGeneration(currentGeneration.current);
-      setNewChatId(undefined);
     }
+    // Either header button returns to the local landing; a sent chat is left behind.
+    setNewChatId(undefined);
   }, []);
   // A bot picked elsewhere (the sidebar, the header) brings the landing back to that bot.
   const previous = useRef(server.id);
-  useEffect(() => { if (previous.current !== server.id) { previous.current = server.id; setMode('bot'); } }, [server.id]);
+  useEffect(() => { if (previous.current !== server.id) { previous.current = server.id; setMode('bot'); setNewChatId(undefined); } }, [server.id]);
   const prepareChat = useMemo(() => newChatTarget(server.id, (id) => {
     if (currentGeneration.current === generation) setNewChatId(id);
   }), [server.id, generation]);
   const fresh = mode === 'new-chat';
-  const targetChat = fresh ? newChatId ?? NEW_CHAT_DRAFT : chatId;
+  // The home composer is a landing composer: it writes to a local draft, never the home chat.
+  const targetChat = newChatId ?? NEW_CHAT_DRAFT;
   const suggest = useCallback((text: string) => {
     const app = useApp.getState();
     // Anything already typed stays; the suggestion goes after it.
@@ -94,7 +95,7 @@ function HomeFor({ server }: { server: Server }) {
           ? <IconButton label="Cancel new chat" onPress={() => changeMode('bot')}><X size={22} color={t.colors.text} /></IconButton>
           : <IconButton label="New chat" onPress={() => changeMode('new-chat')}><SquarePen size={21} color={t.colors.text} /></IconButton>,
         dock: (props) => <Landing server={server} mode={mode} onSuggest={suggest} {...props} />,
-        prepareChat: fresh && !newChatId ? prepareChat : undefined }} />
+        prepareChat: !newChatId ? prepareChat : undefined }} />
     {bots.sheet}
   </View>;
 }

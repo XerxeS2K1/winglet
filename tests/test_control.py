@@ -41,8 +41,8 @@ class FakeHermes:
         self.install_result = (0, ["Installed winglet"])
         self.installed_ok = True
         self.settled = None
-        self.release = {"version": "0.11.5", "tag": "v0.11.5", "sha": "a" * 40, "notes": "What is new",
-                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.11.5", "requires_hermes": ">=0.22.7"}
+        self.release = {"version": "0.11.6", "tag": "v0.11.6", "sha": "a" * 40, "notes": "What is new",
+                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.11.6", "requires_hermes": ">=0.22.7"}
 
     def system_stats(self):
         return {"system": "Linux", "cpu_count": 4, "cpu_percent": 12.5,
@@ -403,6 +403,12 @@ async def test_routines_create_edit_pause_run_delete(client, hub):
     body = json.dumps({"schedule": "every weekday at 8am"}).encode()
     resp = await client.patch(path, data=body, headers=owner.signed("PATCH", path, body))
     assert (await resp.json())["routine"]["schedule_display"] == "every weekday at 8am"
+
+    blank = json.dumps({"name": "   "}).encode()
+    resp = await client.patch(path, data=blank, headers=owner.signed("PATCH", path, blank))
+    assert resp.status == 400
+    listed = await (await client.get("/api/schedule", headers=owner.auth)).json()
+    assert listed["routines"][0]["name"] == "Morning brief"
 
     resp = await post_signed(client, owner, f"{path}/pause", {})
     assert (await resp.json())["routine"]["state"] == "paused"
