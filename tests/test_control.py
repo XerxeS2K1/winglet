@@ -200,6 +200,10 @@ def store(tmp_path):
 def hub(store, tmp_path, monkeypatch):
     monkeypatch.setattr(hub_module, "RESTART_DELAY_SECONDS", 0)
     h = Hub(store, web_root=tmp_path / "web", bot_info=lambda: {"name": "hermes", "title": "Hermes"})
+    # Never the real ~/.hermes: a test that reached the self-update path once wrote a live marker
+    # and installed a watchdog timer against this machine.
+    h.update_home = tmp_path / "hermes-home"
+    h.update_home.mkdir(exist_ok=True)
     h.hermes = FakeHermes()
     h.hermes_version = lambda: "0.9"
     return h
