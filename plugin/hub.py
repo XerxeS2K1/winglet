@@ -3703,7 +3703,9 @@ class Hub:
             logger.debug("[winglet] could not record the failed release", exc_info=True)
 
     async def _finish_gone(self, job_id: str) -> None:
-        self._record_failed_release()
+        # The new code never ran (the files were put back before the restart), so this is a transient
+        # failure like _abandon_update, not a version that installed and failed: it may retry.
+        self._record_failed_release(kind="transient")
         try:
             await asyncio.to_thread(self_update.clear_marker, self.update_home)
         except Exception:
