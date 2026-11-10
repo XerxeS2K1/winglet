@@ -1647,7 +1647,11 @@ class Hub:
                            signed: bool = False) -> Optional[Dict[str, Any]]:
         """`signed` is for the one caller that has checked the request's signature (the signed HTTP route); every
         other way in (the socket, the watch, a branch) is refused a command that needs one."""
-        text = (text or "").strip()[:MAX_TEXT]
+        raw = (text or "").strip()
+        if len(raw) > MAX_TEXT:
+            # Never slice: a cut message is lost text the sender cannot see.
+            raise MessageRejected(f"This message is {len(raw):,} characters; messages are limited to {MAX_TEXT:,}. It was not sent.")
+        text = raw
         attachments = list(dict.fromkeys(attachments or []))
         if (not text and not attachments) or not chat_id:
             return None
