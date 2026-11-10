@@ -253,3 +253,57 @@ async def test_publish_does_not_hold_its_lock_while_a_slow_socket_is_sending(hub
     assert fast_got, "the fast socket must receive while the slow one is stuck"
     await asyncio.wait_for(task, timeout=1)
     assert slow not in hub._sockets and slow_closed
+
+
+async def test_a_handshaking_socket_queues_without_holding_up_a_ready_one(hub):
+    device, token = hub.store.add_device("Phone")
+    ready, queued = asyncio.Event(), asyncio.Event()
+    ready.set()
+    received, held = [], []
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_str(self, text):
+            self.sent.append(json.loads(text))
+
+        async def close(self, **_kwargs):
+            pass
+
+    fast, handshaking = Socket(), Socket()
+    hub._sockets[fast] = {"device": device, "bot": None, "auth_token": token,
+                          "hello_ready": ready, "send_lock": asyncio.Lock(), "hello_queue": []}
+    hub._sockets[handshaking] = {"device": device, "bot": None, "auth_token": token,
+                                 "hello_ready": queued, "send_lock": asyncio.Lock(), "hello_queue": []}
+    task = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "message": {"id": "m"}}))
+    await asyncio.wait_for(task, timeout=1)
+    assert fast.sent and not handshaking.sent
+    assert len(hub._sockets[handshaking]["hello_queue"]) == 1
+
+
+async def test_two_concurrent_publishes_keep_their_journal_order(hub):
+    device, token = hub.store.add_device("Phone")
+    first_started, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    class Socket:
+        async def send_str(self, text):
+            n = json.loads(text)["n"]
+            received.append(n)
+            if n == 1:
+                first_started.set()
+                await release.wait()
+
+        async def close(self, **_kwargs):
+            pass
+
+    hub._sockets[Socket()] = {"device": device, "bot": None, "auth_token": token}
+    first = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": 1}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": 2}))
+    await asyncio.sleep(0.05)
+    assert received == [1], "a later event overtook the earlier one"
+    release.set()
+    await asyncio.gather(first, second)
+    assert received == [1, 2]

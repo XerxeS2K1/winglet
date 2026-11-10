@@ -296,8 +296,10 @@ class Hub:
         # Serializes a resumable change and its journal row with the send of that same event, so a
         # socket sees seq order and can advance its cursor to the highest seq it applied.
         self._publish_lock = asyncio.Lock()
-        # Sends are serialised in journal order, but the global publish lock is released first.
-        self._delivery_lock = asyncio.Lock()
+        # Explicit delivery tickets keep stream order without holding a global lock across I/O.
+        self._delivery_condition = asyncio.Condition()
+        self._delivery_seq = 0
+        self._delivery_turn = 0
         self.events = EventStream(store)
         self._push_tasks: Dict[str, asyncio.Task] = {}
         self._pushed_messages: Dict[str, None] = {}
@@ -624,8 +626,10 @@ class Hub:
         self._activity_at = time.monotonic()
         if changed:
             # Transient state: reconnects take a fresh snapshot; never replay old busy states.
-            async with self._delivery_lock:
-                await self._broadcast({"type": "bot.activity", "activities": activity})
+            async with self._publish_lock:
+                ticket = self._next_delivery_ticket()
+            await self._deliver_in_order(
+                ticket, [({"type": "bot.activity", "activities": activity}, None, None)])
         return activity
 
     def _add_queue_titles(self, activity: Dict[str, Any]) -> Dict[str, Any]:
@@ -2461,8 +2465,9 @@ class Hub:
         hello: Optional[Dict[str, Any]] = None
         try:
             async with self._publish_lock:
-                self._sockets[ws] = {"device": device, "bot": bot, "auth_token": socket_token,
-                                     "hello_ready": hello_ready}
+                meta = {"device": device, "bot": bot, "auth_token": socket_token,
+                        "hello_ready": hello_ready, "send_lock": asyncio.Lock(), "hello_queue": []}
+                self._sockets[ws] = meta
                 with self._bot_context(bot):
                     # The stream head is read before the snapshot below on purpose: an event committed
                     # after this point is either after the watermark (and sent live, because the socket
@@ -2484,7 +2489,7 @@ class Hub:
                         hello["bot_activity"] = self._bot_activity
             # The hello tells the phone what the stream cursor means, so it goes first. Sending it
             # outside the publish lock keeps one slow handshake from holding up every other socket;
-            # broadcasts for this socket wait on hello_ready, preserving that order.
+            # broadcasts for this socket queue until this path flushes them.
             try:
                 await asyncio.wait_for(ws.send_json(hello), timeout=SOCKET_SEND_TIMEOUT)
             except Exception:
@@ -2493,8 +2498,21 @@ class Hub:
                 with contextlib.suppress(Exception):
                     await ws.close(code=1013, message=b"resync required")
                 return ws
-            finally:
+            send_lock = meta["send_lock"]
+            async with send_lock:
+                # Set the flag while holding the per-socket lock: a broadcast either sees false
+                # and queues, or waits here and sends after the queue has been flushed.
                 hello_ready.set()
+                queued = meta.pop("hello_queue", [])
+                for text in queued:
+                    try:
+                        await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                    except Exception:
+                        async with self._publish_lock:
+                            self._sockets.pop(ws, None)
+                        with contextlib.suppress(Exception):
+                            await ws.close(code=1013, message=b"resync required")
+                        return ws
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -2706,6 +2724,29 @@ class Hub:
         row = chats[chat_id]
         return (row.get("bot") or None) if row else _ANY_BOT
 
+    def _next_delivery_ticket(self) -> int:
+        """Reserve the next delivery turn while the caller still holds ``_publish_lock``."""
+        ticket = self._delivery_seq
+        self._delivery_seq += 1
+        return ticket
+
+    async def _deliver_in_order(self, ticket: int, items: List[tuple]) -> None:
+        """Deliver these events only after every earlier ticket has finished.
+
+        The condition makes order explicit; it does not depend on which task happens to acquire a
+        lock first. Delivery still runs outside ``_publish_lock``, so socket I/O cannot block writes.
+        """
+        async with self._delivery_condition:
+            while ticket != self._delivery_turn:
+                await self._delivery_condition.wait()
+        try:
+            for event, scope, prepared in items:
+                await self._broadcast(event, scope=scope, prepared_chats=prepared)
+        finally:
+            async with self._delivery_condition:
+                self._delivery_turn += 1
+                self._delivery_condition.notify_all()
+
     async def publish(self, write: Callable[[], Any], event_of: Callable[[Any], Any]) -> Any:
         """Commit a change, journal its event or events and send them, in that order and in stream order.
 
@@ -2715,8 +2756,8 @@ class Hub:
         of them when one change is two events (a message also updates its chat row). The store change
         and its journal rows share one transaction, so a crash cannot leave a committed change with no
         replay event. The lock only covers the commit and journal; sockets are sent to after it is
-        released, under a separate delivery lock that keeps stream order without letting a stalled
-        phone hold up unrelated writes.
+        released; explicit delivery tickets keep stream order without letting a stalled phone hold
+        up unrelated writes.
         """
         async with self._publish_lock:
             with self.events.transaction():
@@ -2730,9 +2771,8 @@ class Hub:
                         for scope in scopes:
                             seq = self.events.append(scope, payload)
                             events.append(({**payload, "event_seq": seq} if seq is not None else payload, scope))
-        async with self._delivery_lock:
-            for event, scope in events:
-                await self._broadcast(event, scope=scope)
+            ticket = self._next_delivery_ticket()
+        await self._deliver_in_order(ticket, [(event, scope, None) for event, scope in events])
         return result
 
     async def broadcast(self, event: Dict[str, Any]) -> None:
@@ -2752,9 +2792,8 @@ class Hub:
                 prepared.append((payload, scope if seq is not None else _ANY_BOT))
                 if seq is None:
                     break
-        async with self._delivery_lock:
-            for payload, scope in prepared:
-                await self._broadcast(payload, scope=scope, prepared_chats=chats)
+            ticket = self._next_delivery_ticket()
+        await self._deliver_in_order(ticket, [(payload, scope, chats) for payload, scope in prepared])
 
     async def _broadcast(self, event: Dict[str, Any], scope=_ANY_BOT,
                          prepared_chats: Optional[Dict[str, Optional[Dict[str, Any]]]] = None) -> None:
@@ -2797,19 +2836,29 @@ class Hub:
                 text = json.dumps(out)
                 if out is event:
                     encoded[id(out)] = text
-            deliveries.append((ws, text, meta.get("hello_ready")))
+            deliveries.append((ws, text, meta))
 
-        async def deliver(ws: Any, text: str, ready: Any) -> Any:
+        async def deliver(ws: Any, text: str, meta: Dict[str, Any]) -> Any:
             try:
-                if ready is not None:
-                    await asyncio.wait_for(ready.wait(), timeout=SOCKET_SEND_TIMEOUT)
-                await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                lock = meta.get("send_lock")
+                if lock is None:
+                    # A test socket or a legacy registration has no handshake state.
+                    await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                    return None
+                async with lock:
+                    ready = meta.get("hello_ready")
+                    if ready is not None and not ready.is_set():
+                        # Do not wait on a handshake here: queue under the socket's own lock and let
+                        # the hello path flush it. A handshaking phone must not delay other sockets.
+                        meta.setdefault("hello_queue", []).append(text)
+                        return None
+                    await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
                 return None
             except Exception:
                 return (ws, 1013, b"resync required")
 
         # One slow socket has its own timeout; it never sits in front of the others.
-        results = await asyncio.gather(*(deliver(ws, text, ready) for ws, text, ready in deliveries),
+        results = await asyncio.gather(*(deliver(ws, text, meta) for ws, text, meta in deliveries),
                                        return_exceptions=True)
         dead.extend(item for item in results if isinstance(item, tuple))
 
