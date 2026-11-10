@@ -17,6 +17,8 @@ from .encrypted_push import b64, unb64, _clip
 
 _ID = re.compile(r'^[a-f0-9]{32}$')
 LIFETIME = 30 * 86400
+# How long a watch's later reply waits for an earlier one still being posted before it goes ahead anyway.
+SEND_CHAIN_TIMEOUT = 15.0
 
 
 def response_aad(server, device, nonce, purpose='response'):
@@ -227,7 +229,12 @@ class WearRelay:
         # every watch wait behind one slow conversation.
         try:
             if previous is not None:
-                await previous
+                # One post that never returns must not wedge this watch's later sends forever.
+                # shield() keeps the earlier send's own future intact if we stop waiting for it.
+                try:
+                    await asyncio.wait_for(asyncio.shield(previous), timeout=SEND_CHAIN_TIMEOUT)
+                except asyncio.TimeoutError:
+                    pass
             with self.hub._bot_context(row['bot']):
                 message = await self.hub.user_message(device, chat_id, text, 'wear-'+row['id']+'-'+request_id)
                 if not message:

@@ -221,3 +221,36 @@ async def test_two_sends_for_one_watch_are_posted_in_the_order_sent(env):
     release_first.set()
     await asyncio.gather(first, second)
     assert order == ['first:start', 'first:end', 'second:start']
+
+
+async def test_a_post_that_never_returns_does_not_wedge_that_watchs_later_sends(env, monkeypatch):
+    from plugin import wear as wear_module
+    hub, _, _, phone, _, _ = env
+    monkeypatch.setattr(wear_module, 'SEND_CHAIN_TIMEOUT', 0.1, raising=False)
+    status, grant = await link(env)
+    assert status == 200
+    first_started, never = asyncio.Event(), asyncio.Event()
+    real = hub.user_message
+
+    async def stuck_then_fine(*args, **kwargs):
+        if args[2] == 'first':
+            first_started.set()
+            await never.wait()
+        return await real(*args, **kwargs)
+
+    hub.user_message = stuck_then_fine
+    first = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                              {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'first'}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = await asyncio.wait_for(
+        hub.wear.send(grant['token'], phone.id, {'chat_id': 'general', 'request_id': 'b' * 32, 'text': 'second'}),
+        timeout=2)
+    assert second['status'] == 'accepted'
+    # A third send still works: the chain was not left pointing at the stuck post.
+    third = await asyncio.wait_for(
+        hub.wear.send(grant['token'], phone.id, {'chat_id': 'general', 'request_id': 'c' * 32, 'text': 'third'}),
+        timeout=2)
+    assert third['status'] == 'accepted'
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+    assert hub.wear._watch_tails == {}
