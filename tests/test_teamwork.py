@@ -143,6 +143,12 @@ async def test_an_undeliverable_handoff_is_failed_with_a_visible_reason(team, tm
     chat = store.create_chat("Planning")
     loop = asyncio.get_running_loop()
     monkeypatch.setattr(teamwork, "_handoff_origin", lambda: (hub, chat["id"], loop))
+    published = []
+
+    async def capture(event, **_kwargs):
+        published.append(event)
+
+    monkeypatch.setattr(hub, "_broadcast", capture)
     team.result = Exception("authority is not ready")
     try:
         reply = json.loads(await asyncio.to_thread(teamwork.ask_bot, {"bot": "chef", "message": "Dinner?"}))
@@ -151,6 +157,7 @@ async def test_an_undeliverable_handoff_is_failed_with_a_visible_reason(team, tm
         assert len(rows) == 1 and rows[0]["state"] == "done"
         notes = [m for m in store.list_messages(chat["id"]) if m["role"] == "bot"]
         assert notes and "Nothing was sent" in notes[-1]["text"] and "isn't running" in notes[-1]["text"]
+        assert any(e.get("type") in ("message.new", "message.update") for e in published)
     finally:
         await hub.aclose()
         store.close()

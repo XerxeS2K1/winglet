@@ -230,8 +230,14 @@ def ask_bot(args: dict, **_: Any) -> str:
         if "authority is not ready" not in str(exc).lower() and "not ready" not in str(exc).lower():
             reason = f"Nothing was sent: couldn't reach {bot['title']} ({exc})."
         if origin:
-            with contextlib.suppress(Exception):
-                origin[0].store.finish_handoff(delivery_id, reason, True)
+            try:
+                future = asyncio.run_coroutine_threadsafe(
+                    origin[0].handoffs.finish_failed(delivery_id, reason), origin[2])
+                future.result(timeout=5)
+            except Exception:
+                logger.debug("[winglet] failed hand-off note could not be published", exc_info=True)
+                with contextlib.suppress(Exception):
+                    origin[0].store.finish_handoff(delivery_id, reason, True)
         # find_canonical_live_owner raises ValueError when the authority isn't ready;
         # await_delivery may time out (returns a pending record, not an exception).
         if "authority is not ready" in str(exc).lower() or "not ready" in str(exc).lower():

@@ -440,6 +440,53 @@ async def test_deleting_a_message_removes_its_attachment_and_url(client, hub, tm
     assert (await client.get(url)).status == 404
 
 
+async def test_uploaded_media_links_do_not_expire(client, hub, tmp_path):
+    token = await pair(client, hub)
+    hub.store.ensure_chat("general", "General")
+    upload = hub.store.add_upload("u-forever", hub.store.device_for_token(token)["id"], "general",
+                                  "photo.png", "image/png", "image", 3)
+    directory = hub.media_dir / upload["id"]
+    directory.mkdir(parents=True)
+    (directory / upload["name"]).write_bytes(b"png")
+    public = hub._upload_public(upload)
+    assert "exp=" not in public["url"]
+    old = time.time() - MEDIA_KEEP_SECONDS - 60
+    os.utime(directory / upload["name"], (old, old))
+    assert (await client.get(public["url"])).status == 200
+
+
+async def test_old_agent_media_without_expiry_is_served_only_inside_retention(client, hub, tmp_path):
+    f = tmp_path / "old-agent.png"
+    f.write_bytes(b"png")
+    attachment = hub.add_media(str(f))
+    media_id = attachment["url"].split("/")[3]
+    unsigned = attachment["url"].split("?")[0]
+    legacy = f"{unsigned}?sig={hub.media_signature(media_id)}"
+    assert (await client.get(legacy)).status == 200
+    old = time.time() - MEDIA_KEEP_SECONDS - 60
+    os.utime(hub.media_dir / media_id / "old-agent.png", (old, old))
+    assert (await client.get(legacy)).status == 401
+
+
+async def test_deleting_a_chat_removes_only_its_attachments(client, hub, tmp_path):
+    from test_trust import pair_phone
+    owner = await pair_phone(client, hub)
+    chat = hub.store.create_chat("With files")
+    other = hub.store.create_chat("Keep files")
+    for upload_id, chat_id, size in (("chat-file", chat["id"], 6), ("other-file", other["id"], 4)):
+        hub.store.add_upload(upload_id, owner.id, chat_id, upload_id + ".txt", "text/plain", "file", size)
+        directory = hub.media_dir / upload_id
+        directory.mkdir(parents=True)
+        (directory / (upload_id + ".txt")).write_text("x" * size)
+    path = f"/api/chats/{chat['id']}"
+    assert (await client.delete(path, headers=owner.signed("DELETE", path))).status == 200
+    assert hub.store.get_upload("chat-file") is None
+    assert not (hub.media_dir / "chat-file").exists()
+    assert hub.store.get_upload("other-file") is not None
+    assert (hub.media_dir / "other-file").exists()
+    assert hub.store.total_upload_bytes() == 4
+
+
 async def test_agent_media_links_expire_and_old_media_is_swept(client, hub, tmp_path):
     hub.media_dir.mkdir(parents=True, exist_ok=True)
     f = tmp_path / "agent.png"

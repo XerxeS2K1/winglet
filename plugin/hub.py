@@ -1752,7 +1752,7 @@ class Hub:
     def _upload_public(self, row: Dict[str, Any]) -> Dict[str, Any]:
         """What the app sees about an upload: never the server path."""
         return {"id": row["id"], "name": row["name"], "mime": row["mime"], "kind": row["kind"], "size": row["size"],
-                "url": self._media_url(row["id"], row["name"])}
+                "url": self._upload_url(row["id"], row["name"])}
 
     async def h_upload(self, request: web.Request) -> web.Response:
         """Receive one file for a chat. It's held for a day until a message attaches it."""
@@ -2263,11 +2263,14 @@ class Hub:
         mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
         kind = "image" if mime in INLINE_IMAGE_TYPES else mime.split("/")[0] if mime.split("/")[0] in (
             "audio", "video") else "file"
-        # The link carries a signature for this one file, never the device's bearer token.
-        return {"url": self._media_url(media_id, name), "name": name,
+        # Agent media is not attached to a message row, so its URL gets an expiry.
+        return {"url": self._agent_media_url(media_id, name), "name": name,
                 "mime": mime, "kind": kind, "size": (dest_dir / name).stat().st_size}
 
-    def _media_url(self, media_id: str, name: str) -> str:
+    def _upload_url(self, media_id: str, name: str) -> str:
+        return f"/api/media/{media_id}/{quote(name)}?sig={self.media_signature(media_id)}"
+
+    def _agent_media_url(self, media_id: str, name: str) -> str:
         expires = int(time.time()) + MEDIA_KEEP_SECONDS
         return f"/api/media/{media_id}/{quote(name)}?exp={expires}&sig={self.media_signature(media_id, expires)}"
 
@@ -2280,6 +2283,12 @@ class Hub:
         media_id, name = request.match_info["media_id"], request.match_info["name"]
         sig = request.query.get("sig", "")
         upload = self.store.get_upload(media_id)
+        path = (self.media_dir / media_id / name).resolve()
+        inside = self.media_dir.resolve() in path.parents
+        try:
+            mtime = path.stat().st_mtime if inside else None
+        except OSError:
+            mtime = None
         valid = False
         if sig:
             expires_text = request.query.get("exp", "")
@@ -2290,13 +2299,15 @@ class Hub:
                     expires = 0
                 valid = expires >= int(time.time()) and hmac.compare_digest(
                     sig, self.media_signature(media_id, expires))
-            elif upload is not None:
-                # Older links to uploaded media stay valid; agent media never had a row, so it must expire.
-                valid = hmac.compare_digest(sig, self.media_signature(media_id))
+            elif hmac.compare_digest(sig, self.media_signature(media_id)):
+                # Upload links have no expiry: their row and deletion revoke them.
+                # Agent media predating expiry links is accepted only while its file
+                # is still inside the retention window.
+                valid = upload is not None or (mtime is not None and
+                                               mtime >= time.time() - MEDIA_KEEP_SECONDS)
         if not valid:
             self._require(request)  # older links used the device token
-        path = (self.media_dir / media_id / name).resolve()
-        if self.media_dir.resolve() not in path.parents or not path.is_file():
+        if not inside or not path.is_file():
             return _error(404, "not found")
         # Uploads were sniffed on arrival; never trust a file's extension over its bytes.
         mime = upload["mime"] if upload else mimetypes.guess_type(path.name)[0] or "application/octet-stream"

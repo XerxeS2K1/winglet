@@ -531,6 +531,7 @@ class Store:
             self._exec("INSERT OR IGNORE INTO message_deletions (id, chat_id, deleted_at) "
                        "SELECT id, chat_id, ? FROM messages WHERE chat_id = ?", (now, chat_id))
             self._exec("DELETE FROM messages WHERE chat_id = ?", (chat_id,))
+            self._exec("DELETE FROM uploads WHERE chat_id = ?", (chat_id,))
             self._exec("DELETE FROM chat_branches WHERE chat_id = ?", (chat_id,))
             return self._exec("DELETE FROM chats WHERE id = ?", (chat_id,)) == 1
 
