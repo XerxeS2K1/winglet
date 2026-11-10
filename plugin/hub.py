@@ -1568,11 +1568,16 @@ class Hub:
             if _is_contention(exc):
                 return _busy(exc)
             raise
-        await self.broadcast_projects(_BOT.get())
-        if result.get('from_project_id') and result.get('from_project_bot') != _BOT.get():
-            await self.broadcast_projects(result.get('from_project_bot'))
-        self.audit('project.room.move', device, f'moved room {room_id}')
-        return _json({**result, 'projects': self.projects.snapshot(device, _BOT.get())})
+        try:
+            await self.broadcast_projects(_BOT.get())
+            if result.get('from_project_id') and result.get('from_project_bot') != _BOT.get():
+                await self.broadcast_projects(result.get('from_project_bot'))
+            self.audit('project.room.move', device, f'moved room {room_id}')
+            return _json({**result, 'projects': self.projects.snapshot(device, _BOT.get())})
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc)
+            raise
 
     async def h_project_create(self, request: web.Request) -> web.Response:
         body = await self._project_body(request)
