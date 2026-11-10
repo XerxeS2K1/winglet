@@ -7,8 +7,9 @@ import base64
 import pytest
 
 from plugin import execution, screen
-from plugin.hub import Hub
+from plugin.hub import Hub, ROUTE_POLICY
 from plugin.store import Store
+from test_trust import pair_phone, post_signed
 
 
 class FakeInvalid(RuntimeError):
@@ -128,8 +129,10 @@ def test_input_actions_emit_exact_cdp_and_scale_fractions_to_the_css_viewport():
     assert call_for(cdp, "Input.insertText")[1] == {"text": "12345678"}
 
     assert capture.dispatch_input({"action": "key", "key": "Enter"}) == (True, None)
-    assert call_for(cdp, "Input.dispatchKeyEvent", 0)[1] == {"type": "keyDown", "key": "Enter", "code": "Enter"}
-    assert call_for(cdp, "Input.dispatchKeyEvent", 1)[1] == {"type": "keyUp", "key": "Enter", "code": "Enter"}
+    assert call_for(cdp, "Input.dispatchKeyEvent", 0)[1] == {
+        "type": "keyDown", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
+    assert call_for(cdp, "Input.dispatchKeyEvent", 1)[1] == {
+        "type": "keyUp", "key": "Enter", "code": "Enter", "windowsVirtualKeyCode": 13}
 
 
 def test_bad_input_is_refused_before_any_cdp_call():
@@ -137,6 +140,13 @@ def test_bad_input_is_refused_before_any_cdp_call():
     assert capture.dispatch_input({"action": "dance"}) == (False, "unknown input action")
     assert capture.dispatch_input({"action": "type", "text": "x" * 4001})[0] is False
     assert capture.dispatch_input({"action": "key", "key": ""})[0] is False
+    assert cdp.calls == []
+
+
+def test_free_letters_are_refused_as_key_events_not_sent_as_half_right_ones():
+    capture, cdp = make_screen()
+    ok, reason = capture.dispatch_input({"action": "key", "key": "a"})
+    assert ok is False and "type" in reason
     assert cdp.calls == []
 
 
@@ -157,6 +167,8 @@ def test_the_flag_defaults_off_and_reads_each_supported_config_location():
     assert screen.screen_watch_enabled({}) is False
     assert screen.screen_watch_enabled({"screen_watch": False}) is False
     assert screen.screen_watch_enabled({"screen_watch": True}) is True
+    assert screen.screen_watch_enabled({"screen_watch": False, "browser": {"screen_watch": True}}) is False
+    assert screen.screen_watch_enabled({"screen_watch": True, "browser": {"screen_watch": False}}) is True
     assert screen.screen_watch_enabled({"browser": {"screen_watch": "on"}}) is True
     assert screen.screen_watch_enabled({"plugins": {"winglet": {"screen_watch": True}}}) is True
     assert screen.screen_watch_enabled({"platforms": {"winglet": {"extra": {"screen_watch": True}}}}) is True
@@ -205,20 +217,13 @@ def hub(tmp_path):
     store.close()
 
 
-async def pair(client, hub):
-    code = hub.store.create_pair_code()
-    response = await client.post("/api/pair", json={"code": code, "device_name": "Pixel", "platform": "android"})
-    assert response.status == 200
-    return {"Authorization": f"Bearer {(await response.json())['token']}"}
-
-
 async def test_flag_off_has_no_screen_routes(aiohttp_client, hub):
     client = await aiohttp_client(hub.build_app())
-    assert (await client.get("/screen/frame")).status == 404
-    assert (await client.post("/screen/input", json={"action": "click"})).status == 404
-    auth = await pair(client, hub)
-    assert (await client.get("/screen/frame", headers=auth)).status == 404
-    assert (await client.post("/screen/input", json={"action": "click"}, headers=auth)).status == 404
+    assert (await client.get("/api/screen/frame")).status == 404
+    assert (await client.post("/api/screen/input", json={"action": "click"})).status == 404
+    owner = await pair_phone(client, hub)
+    assert (await client.get("/api/screen/frame", headers=owner.auth)).status == 404
+    assert (await client.post("/api/screen/input", json={"action": "click"}, headers=owner.auth)).status == 404
     assert hub.features()["screen_watch"] is False
 
 
@@ -227,13 +232,31 @@ async def test_flag_on_serves_a_jpeg_and_applies_an_input(aiohttp_client, hub):
     hub.screen = screen.ScreenCapture("browser-task", dialog_policy="auto_accept",
                                       registry=FakeRegistry(cdp))
     client = await aiohttp_client(hub.build_app())
-    auth = await pair(client, hub)
+    owner = await pair_phone(client, hub)
 
-    response = await client.get("/screen/frame", headers=auth)
+    response = await client.get("/api/screen/frame", headers=owner.auth)
     assert response.status == 200 and response.content_type == "image/jpeg"
     assert await response.read() == b"\xff\xd8\xffjpeg"
 
-    response = await client.post("/screen/input", json={"action": "type", "text": "hello"}, headers=auth)
+    response = await post_signed(client, owner, "/api/screen/input", {"action": "type", "text": "hello"})
     assert response.status == 200 and await response.json() == {"ok": True}
     assert call_for(cdp, "Input.insertText")[1] == {"text": "hello"}
     assert hub.features()["screen_watch"] is True
+
+
+async def test_screen_input_needs_an_owner_signature(aiohttp_client, hub):
+    cdp = FakeCDP()
+    hub.screen = screen.ScreenCapture("browser-task", dialog_policy="auto_accept",
+                                      registry=FakeRegistry(cdp))
+    client = await aiohttp_client(hub.build_app())
+    owner = await pair_phone(client, hub)
+    assert ROUTE_POLICY["h_screen_input"] == "owner_signed"
+
+    unsigned = await client.post("/api/screen/input", json={"action": "type", "text": "no"},
+                                 headers=owner.auth)
+    assert unsigned.status == 403
+    assert not [call for call in cdp.calls if call[0] == "Input.insertText"]
+
+    signed = await post_signed(client, owner, "/api/screen/input", {"action": "type", "text": "yes"})
+    assert signed.status == 200 and await signed.json() == {"ok": True}
+    assert call_for(cdp, "Input.insertText")[1] == {"text": "yes"}

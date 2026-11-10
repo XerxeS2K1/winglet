@@ -9,6 +9,11 @@ The screen is captured through Hermes's supported in-process CDP seam:
 starts, reconnects or focuses a supervisor; the agent's own browser tool does
 that.  Every public method turns a failure into ``None`` (or ``False``) and a
 short reason, so a dead browser cannot raise into the adapter or a hub route.
+
+Known limitation: the target picker takes the newest real page.  That means an
+OAuth popup becomes the page being driven.  This is deliberate for now because
+a popup is often exactly what the owner wants to take over; switching back to
+the original tab needs a target chooser, which this spike does not have.
 """
 
 from __future__ import annotations
@@ -25,6 +30,20 @@ _SCREENSHOT_TIMEOUT = 8.0
 _MAX_TEXT = 4000
 _MAX_SCROLL = 10_000.0
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
+_MISSING = object()
+# Only named navigation/editing keys. Ordinary characters belong in Input.insertText.
+_KEY_CODES = {
+    "enter": ("Enter", "Enter", 13),
+    "tab": ("Tab", "Tab", 9),
+    "escape": ("Escape", "Escape", 27),
+    "backspace": ("Backspace", "Backspace", 8),
+    "arrowup": ("ArrowUp", "ArrowUp", 38),
+    "arrowdown": ("ArrowDown", "ArrowDown", 40),
+    "arrowleft": ("ArrowLeft", "ArrowLeft", 37),
+    "arrowright": ("ArrowRight", "ArrowRight", 39),
+    "home": ("Home", "Home", 36),
+    "end": ("End", "End", 35),
+}
 
 
 def _truthy(value: Any) -> bool:
@@ -59,9 +78,11 @@ def screen_watch_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
         return False
     for path in ("screen_watch", "browser.screen_watch", "plugins.winglet.screen_watch",
                  "platforms.winglet.extra.screen_watch"):
-        value = _config_get(config, path)
-        if value is not None and _truthy(value):
-            return True
+        value = _config_get(config, path, _MISSING)
+        if value is not _MISSING:
+            # The first place that names the switch decides: an explicit top-level false
+            # must not be overridden by a stale true in a deeper block.
+            return _truthy(value)
     return False
 
 
@@ -180,10 +201,17 @@ class ScreenCapture:
             return False, "unknown input action"
         text = str(action.get("text") or "")
         key = str(action.get("key") or "").strip()
+        key_event = None
         if kind == "type" and len(text) > _MAX_TEXT:
             return False, "text is too long"
-        if kind == "key" and (not key or len(key) > 40):
-            return False, "a key is required"
+        if kind == "key":
+            if not key or len(key) > 40:
+                return False, "a key is required"
+            key_event = _KEY_CODES.get(key.casefold())
+            if key_event is None:
+                return False, "That key isn't supported; use type for ordinary text."
+        if kind == "key" and key_event is None:
+            return False, "That key isn't supported; use type for ordinary text."
         cdp, error = self._capture_handle()
         if cdp is None:
             return False, error
@@ -204,9 +232,11 @@ class ScreenCapture:
             elif kind == "type":
                 cdp.call("Input.insertText", {"text": text}, session_id=session, timeout=_TARGET_TIMEOUT)
             else:
+                canonical, code, virtual_key = key_event
                 for event in ("keyDown", "keyUp"):
                     cdp.call("Input.dispatchKeyEvent", {
-                        "type": event, "key": key, "code": key,
+                        "type": event, "key": canonical, "code": code,
+                        "windowsVirtualKeyCode": virtual_key,
                     }, session_id=session, timeout=_TARGET_TIMEOUT)
             return True, None
         except Exception as exc:  # noqa: BLE001

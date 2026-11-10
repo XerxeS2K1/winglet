@@ -298,8 +298,7 @@ class WingletAdapter(BasePlatformAdapter):
             # Likewise a reply that was mid-stream when the server went down will never be finished.
             store.settle_interrupted_streams()
             hub = Hub(store, web_root=Path(__file__).parent / "web", bot_info=profile_info,
-                      ntfy_server=self._ntfy_server)
-            hub.screen = _SCREEN
+                      ntfy_server=self._ntfy_server, screen=_SCREEN)
             hub.update_home = hermes_api._home()
             hub.connection = {"mode": self._connection, "url": None}
             hub.public_url = self._public_url or None

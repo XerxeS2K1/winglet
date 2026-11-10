@@ -201,7 +201,7 @@ ROUTE_POLICY = {
     "h_voice_stop": "device", "h_voice_end": "device", "h_voice_audio": "public",
     # Branching: paired devices, scoped to a chat they can see (same rule as sending a message).
     "h_config_catalog": "owner", "h_config_preview": "owner_signed", "h_config_apply": "owner_signed",
-    "h_screen_frame": "owner", "h_screen_input": "owner",
+    "h_screen_frame": "owner", "h_screen_input": "owner_signed",
     "h_branch_state": "device", "h_branch_create": "device", "h_branch_regenerate": "device",
 }
 
@@ -425,8 +425,8 @@ class Hub:
         r.add_post("/api/checkpoints/{hash}/restore", self.h_checkpoint_restore)
         # Registered always so a flag-off route is a real 404 rather than the web app's index fallback.
         # Both handlers refuse with 404 while screen_watch is off.
-        r.add_get("/screen/frame", self.h_screen_frame)
-        r.add_post("/screen/input", self.h_screen_input)
+        r.add_get("/api/screen/frame", self.h_screen_frame)
+        r.add_post("/api/screen/input", self.h_screen_input)
         r.add_get("/api/goals", self.h_goals)
         r.add_get("/api/search", self.h_search)
         r.add_get("/api/projects", self.h_projects)
@@ -934,7 +934,7 @@ class Hub:
     async def _policy(self, request: web.Request, handler):
         if request.match_info.http_exception is not None:
             return await handler(request)  # 404/405: nothing to protect
-        if self.screen is None and request.path in ("/screen/frame", "/screen/input"):
+        if self.screen is None and request.path in ("/api/screen/frame", "/api/screen/input"):
             # The switch being off is indistinguishable from the feature not existing.
             return _error(404, "Live screen is off.")
         name = getattr(request.match_info.route.handler, "__name__", "")
