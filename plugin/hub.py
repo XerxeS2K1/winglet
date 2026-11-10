@@ -30,6 +30,7 @@ import re
 import os
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -230,6 +231,18 @@ def _json(data: Any, status: int = 200) -> web.Response:
 
 def _error(status: int, message: str) -> web.Response:
     return _json({"error": message}, status=status)
+
+
+def _busy(exc: sqlite3.OperationalError) -> web.Response:
+    """A locked SQLite database is transient: ask the app to retry, never answer a bare 500."""
+    response = _json({"error": "The server is busy saving that change. Try again in a moment."}, status=503)
+    response.headers["Retry-After"] = "1"
+    return response
+
+
+def _is_contention(exc: sqlite3.OperationalError) -> bool:
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
 
 
 def _iso_ts(value: Any) -> float:
@@ -1488,15 +1501,19 @@ class Hub:
         device = self._require(request)
         try:
             result = call()
+            await self.broadcast_projects(_BOT.get())
+            self.audit(action, device, summary)
+            return _json({**result, "projects": self.projects.snapshot(device, _BOT.get())})
         except ProjectConflict as exc:
             # A stale revision: hand back the current snapshot so the phone can roll back and redraw.
             return _json({"error": str(exc),
                           "projects": self.projects.snapshot(device, _BOT.get())}, status=exc.status)
         except ProjectError as exc:
             return _error(exc.status, str(exc))
-        await self.broadcast_projects(_BOT.get())
-        self.audit(action, device, summary)
-        return _json({**result, "projects": self.projects.snapshot(device, _BOT.get())})
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc)
+            raise
 
     async def h_projects(self, request: web.Request) -> web.Response:
         device = self._require(request)
@@ -1547,6 +1564,10 @@ class Hub:
             return _json({'error': str(exc), 'projects': self.projects.snapshot(device, _BOT.get())}, status=exc.status)
         except ProjectError as exc:
             return _error(exc.status, str(exc))
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc)
+            raise
         await self.broadcast_projects(_BOT.get())
         if result.get('from_project_id') and result.get('from_project_bot') != _BOT.get():
             await self.broadcast_projects(result.get('from_project_bot'))

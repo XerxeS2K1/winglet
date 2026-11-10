@@ -347,3 +347,20 @@ async def test_stale_removal_returns_conflict_snapshot(room_http):
                             {'from_project_id': project['id'], 'from_revision': 2, 'client_id': 'remove-good-http'})
     assert response.status == 200
     assert (await (await client.get('/api/project-rooms', headers=owner.auth)).json())['rooms'] == []
+
+
+async def test_a_locked_room_move_is_a_retryable_503(room_http, monkeypatch):
+    import sqlite3
+    client, hub, _rooms = room_http
+    owner = await pair_phone(client, hub)
+    device = hub.store.get_device(owner.id)
+    project = hub.projects.create(device, None, {"name": "Work", "client_id": "locked-room-project"})["project"]
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(hub.projects, "move_room", locked)
+    response = await signed(client, owner, "POST", "/api/project-rooms/room-one", {"project_id": project["id"]})
+    assert response.status == 503
+    assert response.headers["Retry-After"] == "1"
+    assert "busy" in (await response.json())["error"].lower()
