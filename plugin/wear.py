@@ -17,6 +17,8 @@ from .encrypted_push import b64, unb64, _clip
 
 _ID = re.compile(r'^[a-f0-9]{32}$')
 LIFETIME = 30 * 86400
+# How long a watch's later reply waits for an earlier one still being posted before it goes ahead anyway.
+SEND_CHAIN_TIMEOUT = 15.0
 
 
 def response_aad(server, device, nonce, purpose='response'):
@@ -32,6 +34,8 @@ class WearRelay:
     def __init__(self, hub):
         self.hub, self.store = hub, hub.store
         self.send_lock = asyncio.Lock()
+        # One ordered chain per watch: posts to different watches never wait on each other.
+        self._watch_tails: Dict[str, asyncio.Future] = {}
         self.store._exec('''CREATE TABLE IF NOT EXISTS winglet_wear_links (
             id TEXT PRIMARY KEY, device_id TEXT NOT NULL, association TEXT NOT NULL,
             token_hash TEXT NOT NULL UNIQUE, name TEXT NOT NULL, bot TEXT,
@@ -215,11 +219,32 @@ class WearRelay:
                 if recent >= 10:
                     raise ValueError('rate_limited')
                 self.store._exec('INSERT INTO winglet_wear_deliveries VALUES (?,?,?,?,?)', (row['id'], request_id, chat_id, digest, int(time.time())))
+            # Reserve this watch's place while the global lock is still held, so two sends cannot
+            # overtake each other after the lock is released.
+            previous = self._watch_tails.get(row['id'])
+            done = asyncio.get_running_loop().create_future()
+            self._watch_tails[row['id']] = done
+        # The global lock guards authority/rate/dedupe. The reply post can be slow, so it runs
+        # outside it; the per-watch chain keeps this watch's posts in send order without making
+        # every watch wait behind one slow conversation.
+        try:
+            if previous is not None:
+                # One post that never returns must not wedge this watch's later sends forever.
+                # shield() keeps the earlier send's own future intact if we stop waiting for it.
+                try:
+                    await asyncio.wait_for(asyncio.shield(previous), timeout=SEND_CHAIN_TIMEOUT)
+                except asyncio.TimeoutError:
+                    pass
             with self.hub._bot_context(row['bot']):
                 message = await self.hub.user_message(device, chat_id, text, 'wear-'+row['id']+'-'+request_id)
-            if not message:
-                raise PermissionError('conversation_unavailable')
-            return {'v': 1, 'status': 'accepted', 'request_id': request_id, 'chat_id': chat_id, 'message_id': message['id']}
+                if not message:
+                    raise PermissionError('conversation_unavailable')
+                return {'v': 1, 'status': 'accepted', 'request_id': request_id, 'chat_id': chat_id, 'message_id': message['id']}
+        finally:
+            if not done.done():
+                done.set_result(None)
+            if self._watch_tails.get(row['id']) is done:
+                self._watch_tails.pop(row['id'], None)
 
     async def relay(self, request):
         # Public route, independently authenticated by a narrow grant INSIDE the sealed request.

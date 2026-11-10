@@ -488,3 +488,38 @@ def test_hermes_wont_install_over_a_pet_that_has_the_same_name(hermes_home, net,
 def test_an_unreachable_codex_gallery_is_a_plain_refusal(hermes_home, net):
     with pytest.raises(hermes_home.HermesRefused, match="codex-pets.net"):
         hermes_home.pet_catalog_from("codex", "", 0)
+
+
+def test_a_slow_trickle_hits_the_total_deadline():
+    import time
+
+    class Trickle:
+        def read(self, _n):
+            return b"x"
+
+    with pytest.raises(petsource.PetSourceError, match="took too long"):
+        petsource._read_capped(Trickle(), 1000, deadline=time.monotonic() - 1)
+
+
+def test_the_fetch_deadline_is_absolute_across_redirect_hops(monkeypatch):
+    clock = [0.0]
+    calls = []
+
+    class SlowBody:
+        def read(self, _n):
+            clock[0] += 1.2
+            return b"x"
+
+    def fake_hop(url, timeout, limit):
+        calls.append((url, petsource._HOP_DEADLINE.get()))
+        if len(calls) == 1:
+            clock[0] += 1.2
+            return 302, {"location": "/next"}, b""
+        return 200, {}, petsource._read_capped(SlowBody(), limit, petsource._HOP_DEADLINE.get())
+
+    monkeypatch.setattr(petsource.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(petsource, "_hop", fake_hop)
+    with pytest.raises(petsource.PetSourceError, match="took too long"):
+        petsource.fetch("https://codex-pets.net/start", limit=100, timeout=1.0)
+    assert len(calls) == 2
+    assert calls[0][1] == calls[1][1] == 2.0

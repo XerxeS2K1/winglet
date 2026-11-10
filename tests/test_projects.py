@@ -333,3 +333,34 @@ async def test_project_sync_is_tailored_per_device(client, hub):
     assert owner_event["projects"]["projects"] == []
     await owner_ws.close()
     await member_ws.close()
+
+
+async def test_a_locked_project_write_is_a_retryable_503(client, hub, monkeypatch):
+    import sqlite3
+    owner = await pair_phone(client, hub)
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(hub.projects, "create", locked)
+    response = await send(client, owner, "POST", "/api/projects", {"name": "Work", "client_id": "locked-create"})
+    assert response.status == 503
+    assert response.headers["Retry-After"] == "1"
+    assert "busy" in (await response.json())["error"].lower()
+
+
+async def test_a_locked_message_send_is_a_retryable_503_with_the_projects_snapshot(client, hub, monkeypatch):
+    import sqlite3
+    owner = await pair_phone(client, hub)
+
+    def locked(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(hub.store, "add_message", locked)
+    response = await client.post("/api/chats/general/messages", json={"text": "hello"},
+                                 headers=owner.auth)
+    assert response.status == 503
+    assert response.headers["Retry-After"] == "1"
+    body = await response.json()
+    assert "busy" in body["error"].lower()
+    assert body["projects"] == {"projects": [], "threads": [], "layout_revision": 1}

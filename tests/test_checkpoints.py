@@ -8,7 +8,7 @@ import json
 
 import pytest
 
-from plugin.checkpoints import CheckpointService, parse_diff, revision_for, unquote_path
+from plugin.checkpoints import CheckpointRefused, CheckpointService, parse_diff, revision_for, unquote_path
 from plugin.hub import Hub
 from plugin.store import Store
 from test_trust import pair_phone, post_signed
@@ -492,3 +492,28 @@ def test_the_revision_changes_with_any_input_that_matters():
                    ("~/acme", "aaaa", "aaaa", "other", "diff"),
                    ("~/acme", "aaaa", "aaaa", "stat", "other")):
         assert revision_for(*change) != base
+
+
+async def test_checkpoint_parse_runs_off_loop_and_refuses_an_oversize_diff(client, hub, monkeypatch):
+    import threading
+    from plugin import checkpoints as checkpoint_module
+
+    owner = await pair_phone(client, hub)
+    seen = []
+    real = checkpoint_module.parse_diff
+
+    def tracked(text):
+        seen.append(threading.get_ident())
+        return real(text)
+
+    monkeypatch.setattr(checkpoint_module, "parse_diff", tracked)
+    page = await preview(client, owner)
+    assert page["error"] is None and page["files"]
+    assert seen and seen[0] != threading.get_ident()
+
+    hub.hermes.diff_text = "x" * (checkpoint_module.MAX_DIFF_PARSE_CHARS + 1)
+    monkeypatch.setattr(checkpoint_module, "parse_diff", lambda _text: (_ for _ in ()).throw(AssertionError("parsed")))
+    too_big = await (await client.get("/api/checkpoints/aaaa1111", headers=owner.auth)).json()
+    assert "too large" in too_big["error"]
+    with pytest.raises(CheckpointRefused, match="too large"):
+        await hub.checkpoints.restore("aaaa1111", revision="revision", operation_id="restore-too-big-1")

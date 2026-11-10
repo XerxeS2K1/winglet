@@ -1,6 +1,7 @@
 """Goals, message search and the files in a chat."""
 
 import sys
+import time
 from types import ModuleType
 
 import pytest
@@ -129,3 +130,88 @@ async def test_files_lists_everything_shared_newest_first(client, hub):
     assert files[0]["message_id"]
     member = await pair_phone(client, hub, "Alex", role="member")
     assert (await client.get("/api/chats/trip/files", headers=member.auth)).status == 404
+
+
+async def test_search_is_capped_paged_and_runs_off_the_event_loop(client, hub, monkeypatch):
+    import threading
+    owner = await pair_phone(client, hub)
+    for i in range(8):
+        hub.store.add_message("general", "user", f"needle {i}")
+    found, next_before = hub.store.search_page("needle", ["general"], limit=2, scan_limit=3)
+    assert len(found) == 2 and next_before is not None
+    older, _ = hub.store.search_page("needle", ["general"], limit=2, before_position=next_before, scan_limit=3)
+    assert {m["id"] for m in older}.isdisjoint({m["id"] for m in found})
+
+    calls = []
+    real = hub.store.search_page
+
+    def tracked(*args, **kwargs):
+        calls.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(hub.store, "search_page", tracked)
+    data = await (await client.get("/api/search?q=needle", headers=owner.auth)).json()
+    assert len(data["results"]) <= 60
+    assert "next_before" in data
+    assert calls and calls[0] != threading.get_ident()
+
+
+def test_search_finds_a_match_older_than_the_old_row_window(store):
+    store.ensure_chat("general", "General")
+    now = time.time()
+    with store._db:
+        store._db.executemany(
+            "INSERT INTO messages (id, chat_id, role, text, status, meta, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [("old-needle", "general", "user", "the needle is old", "final", "{}", now, now)]
+            + [(f"noise-{i}", "general", "user", f"noise {i}", "final", "{}", now, now)
+               for i in range(5001)])
+    found, next_before = store.search_page("needle", ["general"], limit=60, scan_limit=50)
+    assert [m["id"] for m in found] == ["old-needle"]
+    assert next_before is None
+
+
+def test_a_slow_search_does_not_hold_the_stores_lock_against_a_write(store, monkeypatch):
+    import sqlite3
+    import threading
+
+    store.ensure_chat("general", "General")
+    now = time.time()
+    with store._db:
+        store._db.executemany(
+            "INSERT INTO messages (id, chat_id, role, text, status, meta, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [(f"noise-{i}", "general", "user", f"noise {i}", "final", "{}", now, now) for i in range(2000)])
+
+    scanning = threading.Event()
+
+    def slow_in_search_thread():
+        if threading.current_thread().name == "slow-search":
+            scanning.set()
+            time.sleep(0.01)
+        return 0
+
+    # Slow every connection the scan could use (the shared one included) only while it runs on the
+    # search thread, so a write from this thread is never slowed by the hook itself.
+    store._db.set_progress_handler(slow_in_search_thread, 200)
+    real_connect = sqlite3.connect
+
+    def slow_connect(*args, **kwargs):
+        conn = real_connect(*args, **kwargs)
+        conn.set_progress_handler(slow_in_search_thread, 200)
+        return conn
+
+    monkeypatch.setattr(sqlite3, "connect", slow_connect)
+    result = {}
+    searcher = threading.Thread(
+        name="slow-search", target=lambda: result.setdefault("r", store.search_page("absent-term", ["general"])))
+    searcher.start()
+    assert scanning.wait(timeout=5)
+    started = time.monotonic()
+    store.add_message("general", "user", "written during the scan")
+    waited = time.monotonic() - started
+    still_scanning = searcher.is_alive()
+    searcher.join(timeout=30)
+    assert waited < 0.5, f"a write waited {waited:.2f}s behind the search"
+    assert still_scanning, "the scan finished before the write, so this proved nothing"
+    assert result["r"] == ([], None)

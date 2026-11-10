@@ -172,3 +172,85 @@ async def test_concurrent_retries_deliver_one_message_and_response_context_is_au
     envelope=await(await client.post('/api/wear/relay',json=wire)).json()
     for context in [aad(hub,'different-device',nonce,'response'),aad(hub,phone.id,'0'*32,'response'),aad(hub,phone.id,nonce,'link')]:
         with pytest.raises(Exception):AESGCM(key).decrypt(unb64(envelope['nonce']),unb64(envelope['ct']),context)
+
+
+async def test_the_wear_send_lock_is_released_before_the_reply_post(env):
+    hub, _, _, phone, _, _ = env
+    status, grant = await link(env)
+    assert status == 200
+    seen = []
+    real = hub.user_message
+
+    async def slow_post(*args, **kwargs):
+        seen.append(hub.wear.send_lock.locked())
+        await asyncio.sleep(0.05)
+        return await real(*args, **kwargs)
+
+    hub.user_message = slow_post
+    result = await hub.wear.send(grant['token'], phone.id,
+                                 {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'Hello from my watch'})
+    assert result['status'] == 'accepted'
+    assert seen == [False], 'the server-wide wear lock was held across the reply post'
+
+
+async def test_two_sends_for_one_watch_are_posted_in_the_order_sent(env):
+    hub, _, _, phone, _, _ = env
+    status, grant = await link(env)
+    assert status == 200
+    first_started, release_first = asyncio.Event(), asyncio.Event()
+    order = []
+    real = hub.user_message
+
+    async def ordered_post(*args, **kwargs):
+        text = args[2]
+        order.append(text + ':start')
+        if text == 'first':
+            first_started.set()
+            await release_first.wait()
+            order.append(text + ':end')
+        return await real(*args, **kwargs)
+
+    hub.user_message = ordered_post
+    first = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                              {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'first'}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                               {'chat_id': 'general', 'request_id': 'b' * 32, 'text': 'second'}))
+    await asyncio.sleep(0.05)
+    assert order == ['first:start'], 'a later watch send overtook the one already posting'
+    release_first.set()
+    await asyncio.gather(first, second)
+    assert order == ['first:start', 'first:end', 'second:start']
+
+
+async def test_a_post_that_never_returns_does_not_wedge_that_watchs_later_sends(env, monkeypatch):
+    from plugin import wear as wear_module
+    hub, _, _, phone, _, _ = env
+    monkeypatch.setattr(wear_module, 'SEND_CHAIN_TIMEOUT', 0.1, raising=False)
+    status, grant = await link(env)
+    assert status == 200
+    first_started, never = asyncio.Event(), asyncio.Event()
+    real = hub.user_message
+
+    async def stuck_then_fine(*args, **kwargs):
+        if args[2] == 'first':
+            first_started.set()
+            await never.wait()
+        return await real(*args, **kwargs)
+
+    hub.user_message = stuck_then_fine
+    first = asyncio.create_task(hub.wear.send(grant['token'], phone.id,
+                                              {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'first'}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = await asyncio.wait_for(
+        hub.wear.send(grant['token'], phone.id, {'chat_id': 'general', 'request_id': 'b' * 32, 'text': 'second'}),
+        timeout=2)
+    assert second['status'] == 'accepted'
+    # A third send still works: the chain was not left pointing at the stuck post.
+    third = await asyncio.wait_for(
+        hub.wear.send(grant['token'], phone.id, {'chat_id': 'general', 'request_id': 'c' * 32, 'text': 'third'}),
+        timeout=2)
+    assert third['status'] == 'accepted'
+    first.cancel()
+    await asyncio.gather(first, return_exceptions=True)
+    assert hub.wear._watch_tails == {}

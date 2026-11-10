@@ -30,6 +30,7 @@ import re
 import os
 import secrets
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
@@ -89,6 +90,7 @@ PUSH_SUBJECT = "https://github.com/XerxeS2K1/winglet"
 PAIR_FAILURES_PER_MINUTE = 10
 ALIVE_CACHE_SECONDS = 2.0
 MAX_ATTACHMENTS = 10
+SOCKET_SEND_TIMEOUT = 2.0
 UNSENT_UPLOAD_SECONDS = 24 * 3600
 # A revoked file keeps this marker until the janitor removes it, so a failed delete cannot leave a link live.
 REVOKED_MARKER = ".revoked"
@@ -100,6 +102,8 @@ REPLY_EXCERPT = 280
 # after five minutes; the card says so when it's too late).
 PICKER_SECONDS = 10 * 60
 MAX_PERSONA = 20_000
+EXPORT_MAX_BYTES = 20 * 1024 * 1024
+EXPORT_PAGE_SIZE = 200
 _KEY_ENV = re.compile(r"^[A-Z][A-Z0-9_]{1,62}(_API_KEY|_KEY|_TOKEN)$")
 VERIFY_FIRST = "Verify this device first: scan a new pairing code from your server or another owner's phone."
 BAD_SIGNATURE = "The request's signature doesn't match this device."
@@ -229,6 +233,21 @@ def _error(status: int, message: str) -> web.Response:
     return _json({"error": message}, status=status)
 
 
+def _busy(exc: sqlite3.OperationalError, projects: Optional[Dict[str, Any]] = None) -> web.Response:
+    """A locked SQLite database is transient: ask the app to retry, never answer a bare 500."""
+    body: Dict[str, Any] = {"error": "The server is busy saving that change. Try again in a moment."}
+    if projects is not None:
+        body["projects"] = projects
+    response = _json(body, status=503)
+    response.headers["Retry-After"] = "1"
+    return response
+
+
+def _is_contention(exc: sqlite3.OperationalError) -> bool:
+    text = str(exc).lower()
+    return "locked" in text or "busy" in text
+
+
 def _iso_ts(value: Any) -> float:
     """Seconds since the epoch for an ISO timestamp, or 0 when there isn't a readable one."""
     from datetime import datetime
@@ -280,6 +299,14 @@ class Hub:
         # Serializes a resumable change and its journal row with the send of that same event, so a
         # socket sees seq order and can advance its cursor to the highest seq it applied.
         self._publish_lock = asyncio.Lock()
+        # Explicit delivery tickets keep stream order without holding a global lock across I/O.
+        self._delivery_seq = 0
+        self._delivery_turn = 0
+        # Tickets that finished (or were cancelled) before their turn came, and the waiter for each
+        # ticket still queued. All bookkeeping is synchronous, so a cancelled task cannot be
+        # interrupted half way through handing its turn on.
+        self._delivery_done: set = set()
+        self._delivery_waiters: Dict[int, "asyncio.Future[None]"] = {}
         self.events = EventStream(store)
         self._push_tasks: Dict[str, asyncio.Task] = {}
         self._pushed_messages: Dict[str, None] = {}
@@ -607,7 +634,9 @@ class Hub:
         if changed:
             # Transient state: reconnects take a fresh snapshot; never replay old busy states.
             async with self._publish_lock:
-                await self._broadcast({"type": "bot.activity", "activities": activity})
+                ticket = self._next_delivery_ticket()
+            await self._deliver_in_order(
+                ticket, [({"type": "bot.activity", "activities": activity}, None, None)])
         return activity
 
     def _add_queue_titles(self, activity: Dict[str, Any]) -> Dict[str, Any]:
@@ -1479,19 +1508,29 @@ class Hub:
                 body[key] = request.query[key]
         return body
 
+    def _projects_snapshot(self, device: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        try:
+            return self.projects.snapshot(device, _BOT.get())
+        except Exception:
+            return None
+
     async def _project_change(self, request: web.Request, action: str, summary: str, call) -> web.Response:
         device = self._require(request)
         try:
             result = call()
+            await self.broadcast_projects(_BOT.get())
+            self.audit(action, device, summary)
+            return _json({**result, "projects": self.projects.snapshot(device, _BOT.get())})
         except ProjectConflict as exc:
             # A stale revision: hand back the current snapshot so the phone can roll back and redraw.
             return _json({"error": str(exc),
                           "projects": self.projects.snapshot(device, _BOT.get())}, status=exc.status)
         except ProjectError as exc:
             return _error(exc.status, str(exc))
-        await self.broadcast_projects(_BOT.get())
-        self.audit(action, device, summary)
-        return _json({**result, "projects": self.projects.snapshot(device, _BOT.get())})
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
 
     async def h_projects(self, request: web.Request) -> web.Response:
         device = self._require(request)
@@ -1542,11 +1581,20 @@ class Hub:
             return _json({'error': str(exc), 'projects': self.projects.snapshot(device, _BOT.get())}, status=exc.status)
         except ProjectError as exc:
             return _error(exc.status, str(exc))
-        await self.broadcast_projects(_BOT.get())
-        if result.get('from_project_id') and result.get('from_project_bot') != _BOT.get():
-            await self.broadcast_projects(result.get('from_project_bot'))
-        self.audit('project.room.move', device, f'moved room {room_id}')
-        return _json({**result, 'projects': self.projects.snapshot(device, _BOT.get())})
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
+        try:
+            await self.broadcast_projects(_BOT.get())
+            if result.get('from_project_id') and result.get('from_project_bot') != _BOT.get():
+                await self.broadcast_projects(result.get('from_project_bot'))
+            self.audit('project.room.move', device, f'moved room {room_id}')
+            return _json({**result, 'projects': self.projects.snapshot(device, _BOT.get())})
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
 
     async def h_project_create(self, request: web.Request) -> web.Response:
         body = await self._project_body(request)
@@ -1619,7 +1667,12 @@ class Hub:
         device = self._device(request)
         if device is None:
             return _error(401, "This pairing was revoked. Reconnect before sending.")
-        self._visible_chat(device, request.match_info["chat_id"])
+        try:
+            self._visible_chat(device, request.match_info["chat_id"])
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
         signed = False
         if device["role"] == "owner" and self._signed_only_command(str(body.get("text") or "")):
             problem = await self._signature_problem(request, device)
@@ -1637,6 +1690,10 @@ class Hub:
                                               hidden=body.get("hidden") is True, quote=body.get("quote"), signed=signed)
         except MessageRejected as exc:
             return _error(400, str(exc))
+        except sqlite3.OperationalError as exc:
+            if _is_contention(exc):
+                return _busy(exc, self._projects_snapshot(device))
+            raise
         if message is None:
             return _error(400, "empty message")
         return _json({"message": message})
@@ -1836,27 +1893,66 @@ class Hub:
         return _error(400, "no file in the upload")
 
     async def h_export(self, request: web.Request) -> web.Response:
-        """The whole chat as Markdown, to save or share."""
+        """The whole chat as Markdown, streamed page by page with a documented byte cap.
+
+        A long chat is no longer materialised as one string: each page is read in a worker thread
+        and written to the response. Past ``EXPORT_MAX_BYTES`` the download stops with a visible
+        marker instead of exhausting the server's memory.
+        """
         device = self._require(request)
         chat = self._visible_chat(device, request.match_info["chat_id"])
         bot = self.bot()["title"]
         title = "Updates" if chat["kind"] == "home" else chat["title"]
-        lines = [f"# {title}", "", f"_Exported from Winglet · {bot}_", ""]
-        for m in self.store.all_messages(chat["id"]):
-            if (m.get("meta") or {}).get("hidden"):
-                continue
-            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["created_at"]))
-            if m["role"] == "system":
-                lines += [f"> {m['text']}", ""]
-                continue
-            who = bot if m["role"] == "bot" else "You"
-            lines += [f"**{who}** · {when}", "", m["text"] or ""]
-            for a in (m.get("meta") or {}).get("attachments") or []:
-                lines.append(f"- 📎 {a.get('name', 'attachment')}")
-            lines.append("")
         safe = uploads.safe_name(f"{title}.md", "chat.md")
-        return web.Response(text="\n".join(lines), content_type="text/markdown", charset="utf-8",
-                            headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe)}"})
+        response = web.StreamResponse(headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe)}"})
+        response.content_type = "text/markdown"
+        response.charset = "utf-8"
+        await response.prepare(request)
+        written = 0
+        truncated = False
+
+        async def emit(text: str) -> bool:
+            nonlocal written
+            data = text.encode("utf-8")
+            if written + len(data) > EXPORT_MAX_BYTES:
+                return False
+            await response.write(data)
+            written += len(data)
+            return True
+
+        for line in (f"# {title}", "", f"_Exported from Winglet · {bot}_", ""):
+            if not await emit(line + "\n"):
+                truncated = True
+                break
+        cursor: Optional[int] = None
+        while not truncated:
+            # Forward from the oldest row: a backward cursor emitted the newest page first, so the
+            # file was newest-block-first even though each page was ascending.
+            page = await asyncio.to_thread(self.store.list_messages_after, chat["id"],
+                                           after_position=cursor, limit=EXPORT_PAGE_SIZE)
+            if not page:
+                break
+            for m in page:
+                if (m.get("meta") or {}).get("hidden"):
+                    continue
+                when = time.strftime("%Y-%m-%d %H:%M", time.localtime(m["created_at"]))
+                if m["role"] == "system":
+                    block = [f"> {m['text']}", ""]
+                else:
+                    who = bot if m["role"] == "bot" else "You"
+                    block = [f"**{who}** · {when}", "", m["text"] or ""]
+                    for a in (m.get("meta") or {}).get("attachments") or []:
+                        block.append(f"- 📎 {a.get('name', 'attachment')}")
+                    block.append("")
+                if not await emit("\n".join(block) + "\n"):
+                    truncated = True
+                    break
+            cursor = page[-1]["position"]
+        if truncated:
+            await response.write(f"\n_Export truncated at the {EXPORT_MAX_BYTES // (1024 * 1024)} MB limit._\n".encode())
+        await response.write_eof()
+        return response
 
     # -- goals, search and files ----------------------------------------------------------------
 
@@ -1917,7 +2013,7 @@ class Hub:
         device = self._require(request)
         query = " ".join((request.query.get("q") or "").split())[:200]
         if len(query) < 2:
-            return _json({"results": []})
+            return _json({"results": [], "next_before": None})
         project_id = (request.query.get("project_id") or "").strip()
         if project_id:
             try:
@@ -1927,11 +2023,21 @@ class Hub:
             chats = {c["id"]: c for c in self.visible_chats(device) if c["id"] in allowed}
         else:
             chats = {c["id"]: c for c in self.visible_chats(device)}
-        found = self.store.search_messages(query, list(chats), limit=60)
+        before: Optional[int] = None
+        raw_before = (request.query.get("before_position") or "").strip()
+        if raw_before:
+            try:
+                before = max(1, int(raw_before))
+            except ValueError:
+                return _error(400, "before_position must be a whole number.")
+        # The LIKE scan is bounded and runs off the event loop; the response gains an additive
+        # next_before cursor while keeping the results array the app already parses.
+        found, next_before = await asyncio.to_thread(
+            self.store.search_page, query, list(chats), limit=60, before_position=before)
         results = [{"message": {k: m[k] for k in ("id", "chat_id", "role", "created_at", "position")},
                     "chat": {"id": m["chat_id"], "title": chats[m["chat_id"]]["title"], "kind": chats[m["chat_id"]]["kind"]},
                     "snippet": _snippet(m["text"], query)} for m in found]
-        return _json({"results": results})
+        return _json({"results": results, "next_before": next_before})
 
     async def h_chat_files(self, request: web.Request) -> web.Response:
         """Everything shared in a chat, both ways, newest first."""
@@ -2377,9 +2483,13 @@ class Hub:
         if device.get("role") == "owner":
             await asyncio.to_thread(self.bots_state)
             await self.refresh_bot_activity()
+        hello_ready = asyncio.Event()
+        hello: Optional[Dict[str, Any]] = None
         try:
             async with self._publish_lock:
-                self._sockets[ws] = {"device": device, "bot": bot, "auth_token": socket_token}
+                meta = {"device": device, "bot": bot, "auth_token": socket_token,
+                        "hello_ready": hello_ready, "send_lock": asyncio.Lock(), "hello_queue": []}
+                self._sockets[ws] = meta
                 with self._bot_context(bot):
                     # The stream head is read before the snapshot below on purpose: an event committed
                     # after this point is either after the watermark (and sent live, because the socket
@@ -2399,7 +2509,32 @@ class Hub:
                             hello["bots"] = listing["bots"]
                     if device.get("role") == "owner" and self.activity_provider is not None:
                         hello["bot_activity"] = self._bot_activity
-                    await asyncio.wait_for(ws.send_json(hello), timeout=2.0)
+            # The hello tells the phone what the stream cursor means, so it goes first. Sending it
+            # outside the publish lock keeps one slow handshake from holding up every other socket;
+            # broadcasts for this socket queue until this path flushes them.
+            try:
+                await asyncio.wait_for(ws.send_json(hello), timeout=SOCKET_SEND_TIMEOUT)
+            except Exception:
+                async with self._publish_lock:
+                    self._sockets.pop(ws, None)
+                with contextlib.suppress(Exception):
+                    await ws.close(code=1013, message=b"resync required")
+                return ws
+            send_lock = meta["send_lock"]
+            async with send_lock:
+                # Set the flag while holding the per-socket lock: a broadcast either sees false
+                # and queues, or waits here and sends after the queue has been flushed.
+                hello_ready.set()
+                queued = meta.pop("hello_queue", [])
+                for text in queued:
+                    try:
+                        await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                    except Exception:
+                        async with self._publish_lock:
+                            self._sockets.pop(ws, None)
+                        with contextlib.suppress(Exception):
+                            await ws.close(code=1013, message=b"resync required")
+                        return ws
             async for msg in ws:
                 if msg.type != WSMsgType.TEXT:
                     continue
@@ -2611,6 +2746,53 @@ class Hub:
         row = chats[chat_id]
         return (row.get("bot") or None) if row else _ANY_BOT
 
+    def _next_delivery_ticket(self) -> int:
+        """Reserve the next delivery turn while the caller still holds ``_publish_lock``."""
+        ticket = self._delivery_seq
+        self._delivery_seq += 1
+        return ticket
+
+    def _finish_delivery(self, ticket: int) -> None:
+        """Retire a ticket and wake the next live one. Never awaits, so cancellation cannot skip it.
+
+        A ticket that is cancelled while still queued is only marked done; when the turn reaches it,
+        it is stepped over. Earlier tickets are never overtaken.
+        """
+        self._delivery_done.add(ticket)
+        while self._delivery_turn in self._delivery_done:
+            self._delivery_done.discard(self._delivery_turn)
+            self._delivery_turn += 1
+        waiter = self._delivery_waiters.get(self._delivery_turn)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
+
+    async def _deliver_in_order(self, ticket: int, items: List[tuple]) -> None:
+        """Deliver these events only after every earlier ticket has finished.
+
+        Order is explicit, not a side effect of lock acquisition. Waiting for the turn is inside the
+        same ``try`` that retires the ticket: a handler cancelled while queued (aiohttp cancels it when
+        its client disconnects) or one whose broadcast fails still hands its turn on, so it cannot
+        wedge the stream. Delivery runs outside ``_publish_lock``, so socket I/O cannot block writes.
+        """
+        try:
+            if ticket != self._delivery_turn:
+                waiter = asyncio.get_running_loop().create_future()
+                self._delivery_waiters[ticket] = waiter
+                try:
+                    await waiter
+                finally:
+                    if self._delivery_waiters.get(ticket) is waiter:
+                        del self._delivery_waiters[ticket]
+            for event, scope, prepared in items:
+                if prepared is None and scope is None:
+                    await self._broadcast(event)
+                elif prepared is None:
+                    await self._broadcast(event, scope=scope)
+                else:
+                    await self._broadcast(event, scope=scope, prepared_chats=prepared)
+        finally:
+            self._finish_delivery(ticket)
+
     async def publish(self, write: Callable[[], Any], event_of: Callable[[Any], Any]) -> Any:
         """Commit a change, journal its event or events and send them, in that order and in stream order.
 
@@ -2619,8 +2801,9 @@ class Hub:
         nothing is journaled or sent. ``event_of`` builds the wire event from that result, or a list
         of them when one change is two events (a message also updates its chat row). The store change
         and its journal rows share one transaction, so a crash cannot leave a committed change with no
-        replay event. Holding the lock across the sends is what lets a phone trust "every seq below
-        this one that I may see has reached me", which is the whole basis for advancing a cursor.
+        replay event. The lock only covers the commit and journal; sockets are sent to after it is
+        released; explicit delivery tickets keep stream order without letting a stalled phone hold
+        up unrelated writes.
         """
         async with self._publish_lock:
             with self.events.transaction():
@@ -2634,8 +2817,8 @@ class Hub:
                         for scope in scopes:
                             seq = self.events.append(scope, payload)
                             events.append(({**payload, "event_seq": seq} if seq is not None else payload, scope))
-            for event, scope in events:
-                await self._broadcast(event, scope=scope)
+            ticket = self._next_delivery_ticket()
+        await self._deliver_in_order(ticket, [(event, scope, None) for event, scope in events])
         return result
 
     async def broadcast(self, event: Dict[str, Any]) -> None:
@@ -2648,12 +2831,15 @@ class Hub:
             chats: Dict[str, Optional[Dict[str, Any]]] = {}
             bot = self._event_bot(event, chats)
             scopes = [bot] if bot is not _ANY_BOT else list({None, *[b["name"] for b in self.bots()]})
+            prepared = []
             for scope in scopes:
                 seq = self.events.append(scope, event)
                 payload = {**event, "event_seq": seq} if seq is not None else event
-                await self._broadcast(payload, scope=scope if seq is not None else _ANY_BOT, prepared_chats=chats)
+                prepared.append((payload, scope if seq is not None else _ANY_BOT))
                 if seq is None:
                     break
+            ticket = self._next_delivery_ticket()
+        await self._deliver_in_order(ticket, [(payload, scope, chats) for payload, scope in prepared])
 
     async def _broadcast(self, event: Dict[str, Any], scope=_ANY_BOT,
                          prepared_chats: Optional[Dict[str, Optional[Dict[str, Any]]]] = None) -> None:
@@ -2662,17 +2848,19 @@ class Hub:
         # Private phone RPCs are sent only by PhoneTools to the selected authenticated socket.
         if str(event.get("type") or "").startswith(("phone_tool.", "phone_tools.")):
             return
-        dead = []
+        dead: List[Any] = []
         chats = prepared_chats if prepared_chats is not None else {}
-        event_bot = self._event_bot(event, chats) if self._sockets else _ANY_BOT
+        # Snapshot under the lock that registration uses, then let go before any socket I/O.
+        async with self._publish_lock:
+            sockets = list(self._sockets.items())
+        event_bot = self._event_bot(event, chats) if sockets else _ANY_BOT
         pending: Dict[tuple, int] = {}
         encoded: Dict[int, str] = {}
-        for ws, meta in list(self._sockets.items()):
+        deliveries: List[Any] = []
+        for ws, meta in sockets:
             device = self.store.device_for_token(meta["auth_token"]) if meta.get("auth_token") else self.store.get_device(meta["device"]["id"])
             if device is None:
-                dead.append(ws)
-                with contextlib.suppress(Exception):
-                    await ws.close(code=4401, message=b"unpaired")
+                dead.append((ws, 4401, b"unpaired"))
                 continue
             if scope is not _ANY_BOT and scope != meta.get("bot"):
                 continue
@@ -2694,14 +2882,43 @@ class Hub:
                 text = json.dumps(out)
                 if out is event:
                     encoded[id(out)] = text
+            deliveries.append((ws, text, meta))
+
+        async def deliver(ws: Any, text: str, meta: Dict[str, Any]) -> Any:
             try:
-                await asyncio.wait_for(ws.send_str(text), timeout=2.0)
+                lock = meta.get("send_lock")
+                if lock is None:
+                    # A test socket or a legacy registration has no handshake state.
+                    await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                    return None
+                async with lock:
+                    ready = meta.get("hello_ready")
+                    if ready is not None and not ready.is_set():
+                        # Do not wait on a handshake here: queue under the socket's own lock and let
+                        # the hello path flush it. A handshaking phone must not delay other sockets.
+                        meta.setdefault("hello_queue", []).append(text)
+                        return None
+                    await asyncio.wait_for(ws.send_str(text), timeout=SOCKET_SEND_TIMEOUT)
+                return None
             except Exception:
-                dead.append(ws)
-                with contextlib.suppress(Exception):
-                    await asyncio.wait_for(ws.close(code=1013, message=b"resync required"), timeout=0.2)
-        for ws in dead:
-            self._sockets.pop(ws, None)
+                return (ws, 1013, b"resync required")
+
+        # One slow socket has its own timeout; it never sits in front of the others.
+        results = await asyncio.gather(*(deliver(ws, text, meta) for ws, text, meta in deliveries),
+                                       return_exceptions=True)
+        dead.extend(item for item in results if isinstance(item, tuple))
+
+        async def close(item: Any) -> None:
+            ws, code, message = item
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(ws.close(code=code, message=message), timeout=0.2)
+
+        # Closing a broken socket is cleanup, not delivery: do every close at once and drop the
+        # socket from the registry before waiting on the transport.
+        async with self._publish_lock:
+            for ws, _code, _message in dead:
+                self._sockets.pop(ws, None)
+        await asyncio.gather(*(close(item) for item in dead), return_exceptions=True)
 
     async def broadcast_projects(self, bot: Optional[str]) -> None:
         """Send this bot's project snapshot to each socket, tailored to what that device may see.

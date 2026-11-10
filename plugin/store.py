@@ -149,6 +149,8 @@ DELETIONS_KEEP_SECONDS = 90 * 86400
 INBOX_KEEP_SECONDS = 90 * 86400
 # A device's "last seen" is written at most this often (it's read to the minute).
 LAST_SEEN_EVERY_SECONDS = 60
+# Search still uses LIKE (no FTS/index), but examines at most this many rows per request.
+SEARCH_SCAN_LIMIT = 5_000
 
 
 def _hash(secret: str) -> str:
@@ -242,6 +244,27 @@ class Store:
     def _exec(self, sql: str, args: tuple = ()) -> int:
         with self._lock:
             return self._db.execute(sql, args).rowcount
+
+    @contextlib.contextmanager
+    def _reader(self):
+        """A short-lived read-only connection of its own, for scans that must not hold ``_lock``.
+
+        Everything else shares one connection under one lock, so a long scan on it stalls every
+        send, publish and push. In WAL mode a separate reader sees a committed snapshot and neither
+        blocks nor is blocked by the writer. In-memory databases cannot be opened a second time,
+        so they fall back to the shared connection.
+        """
+        if self.path in ("", ":memory:") or self.path.startswith("file::memory:"):
+            with self._lock:
+                yield self._db
+            return
+        reader = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False, isolation_level=None)
+        try:
+            reader.row_factory = sqlite3.Row
+            reader.execute("PRAGMA query_only=ON")
+            yield reader
+        finally:
+            reader.close()
 
     @contextlib.contextmanager
     def transaction(self):
@@ -741,6 +764,18 @@ class Store:
                              (chat_id, limit))
         return [self._message(r) for r in reversed(rows)]
 
+    def list_messages_after(self, chat_id: str, *, after_position: Optional[int] = None,
+                            limit: int = 50) -> List[Dict[str, Any]]:
+        """``limit`` oldest messages after a rowid, oldest first, for a forward export cursor."""
+        limit = max(1, min(int(limit or 50), 200))
+        if after_position is not None:
+            rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? AND rowid > ? "
+                             "ORDER BY rowid ASC LIMIT ?", (chat_id, max(0, int(after_position)), limit))
+        else:
+            rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? "
+                             "ORDER BY rowid ASC LIMIT ?", (chat_id, limit))
+        return [self._message(r) for r in rows]
+
     @staticmethod
     def _message(row: sqlite3.Row) -> Dict[str, Any]:
         out = dict(row)
@@ -915,20 +950,46 @@ class Store:
         rows = self._all("SELECT rowid AS position, * FROM messages WHERE chat_id = ? ORDER BY rowid", (chat_id,))
         return [self._message(r) for r in rows]
 
-    def search_messages(self, query: str, chat_ids: List[str], *, limit: int = 50) -> List[Dict[str, Any]]:
+    def search_messages(self, query: str, chat_ids: List[str], *, limit: int = 50,
+                        before_position: Optional[int] = None) -> List[Dict[str, Any]]:
         """Newest messages in these chats whose text contains every word of the query, in any order and
         ignoring case (so a phrase still matches across a line break). Hidden helper messages and status
-        lines are left out."""
+        lines are left out. Kept as a list-only wrapper for existing callers; ``search_page`` adds the cursor.
+        """
+        return self.search_page(query, chat_ids, limit=limit, before_position=before_position)[0]
+
+    def search_page(self, query: str, chat_ids: List[str], *, limit: int = 50,
+                    before_position: Optional[int] = None,
+                    scan_limit: Optional[int] = None) -> tuple[List[Dict[str, Any]], Optional[int]]:
+        """Search all matching history and return ``(messages, next_before)``.
+
+        No index is added: this is a LIKE scan over the chat's whole history, run by the caller in a
+        worker thread. It returns at most 100 newest matches. ``before_position`` is the cursor and
+        ``next_before`` is set when another older batch can follow, so a paging client can reach the
+        oldest match. ``scan_limit`` is accepted for older callers but no longer cuts the scan short:
+        the shipped app sends only ``q``, and a row window silently lost old matches.
+        """
         words = [w.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") for w in query.split()[:10]]
         if not chat_ids or not words:
-            return []
+            return [], None
+        limit = max(1, min(int(limit or 50), 100))
         marks = ",".join("?" * len(chat_ids))
         likes = " AND ".join(["text LIKE ? ESCAPE '\\'"] * len(words))
-        rows = self._all(f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks}) AND role != 'system' "
-                         f"AND {likes} AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
-                         "ORDER BY rowid DESC LIMIT ?",
-                         (*chat_ids, *(f"%{w}%" for w in words), max(1, min(limit, 100))))
-        return [self._message(r) for r in rows]
+        before = "rowid < ? AND " if before_position is not None else ""
+        args: List[Any] = [*chat_ids]
+        if before_position is not None:
+            args.append(max(1, int(before_position)))
+        args.extend(f"%{w}%" for w in words)
+        args.append(limit)
+        # The scan reads on its own connection, so it never holds the store's global lock.
+        with self._reader() as reader:
+            rows = reader.execute(
+                f"SELECT rowid AS position, * FROM messages WHERE chat_id IN ({marks}) AND {before}"
+                f"role != 'system' AND {likes} AND COALESCE(json_extract(meta, '$.hidden'), 0) = 0 "
+                "ORDER BY rowid DESC LIMIT ?",
+                tuple(args)).fetchall()
+        found = [self._message(r) for r in rows]
+        return found, (int(found[-1]["position"]) if len(found) >= limit else None)
 
     def chat_attachments(self, chat_id: str, *, limit: int = 300) -> List[Dict[str, Any]]:
         """Every file and photo in a chat, newest first, each with the message it came in."""

@@ -233,3 +233,32 @@ async def test_muted_devices_get_no_reply_pushes(client, hub):
     assert HTTP.posts == []
     await hub.push_now({"title": "t", "body": "b", "kind": "approval", "chat_id": "general"}, tag="y")
     assert len(HTTP.posts) == 1
+
+
+async def test_export_streams_pages_and_stops_at_the_documented_cap(client, hub, monkeypatch):
+    from plugin import hub as hub_module
+    auth = await pair(client, hub)
+    for i in range(20):
+        await hub.post_message("general", f"line {i} " + "x" * 80, push=False)
+
+    def no_full_history(_chat_id):
+        raise AssertionError("export must not materialise all_messages")
+
+    monkeypatch.setattr(hub.store, "all_messages", no_full_history)
+    monkeypatch.setattr(hub_module, "EXPORT_MAX_BYTES", 300)
+    resp = await client.get("/api/chats/general/export", headers=auth)
+    body = await resp.text()
+    assert resp.status == 200 and body.startswith("# General")
+    assert "Export truncated at the" in body
+    assert len(body.encode()) < 500
+
+
+async def test_export_is_strictly_oldest_first_across_page_boundaries(client, hub, monkeypatch):
+    import re
+    from plugin import hub as hub_module
+    auth = await pair(client, hub)
+    for i in range(5):
+        hub.store.add_message("general", "user", f"m{i}")
+    monkeypatch.setattr(hub_module, "EXPORT_PAGE_SIZE", 2)
+    body = await (await client.get("/api/chats/general/export", headers=auth)).text()
+    assert re.findall(r"^m[0-9]+$", body, re.M) == ["m0", "m1", "m2", "m3", "m4"]

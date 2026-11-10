@@ -1,6 +1,7 @@
 """The hub stays quick as chats grow: indexed paging, fewer writes, work shared across sockets, bounded memory."""
 
 import asyncio
+import contextlib
 import json
 import time
 
@@ -216,3 +217,134 @@ async def test_shutdown_clears_the_janitor_without_a_bot_watcher(hub):
     assert hub._bots_watch is None
     await hub._close_sockets(None)
     assert hub._janitor is None
+
+
+async def test_publish_does_not_hold_its_lock_while_a_slow_socket_is_sending(hub, monkeypatch):
+    import asyncio
+    from plugin import hub as hub_module
+
+    device, token = hub.store.add_device("Phone")
+    started = asyncio.Event()
+    fast_got = []
+    slow_closed = []
+
+    class Fast:
+        async def send_str(self, text):
+            assert not hub._publish_lock.locked(), "publish lock held during socket I/O"
+            fast_got.append(text)
+
+        async def close(self, **_kwargs):
+            pass
+
+    class Slow:
+        async def send_str(self, text):
+            started.set()
+            await asyncio.sleep(5)
+
+        async def close(self, **_kwargs):
+            slow_closed.append(True)
+
+    fast, slow = Fast(), Slow()
+    hub._sockets[fast] = {"device": device, "bot": None, "auth_token": token}
+    hub._sockets[slow] = {"device": device, "bot": None, "auth_token": token}
+    monkeypatch.setattr(hub_module, "SOCKET_SEND_TIMEOUT", 0.05)
+
+    task = asyncio.create_task(hub.publish(lambda: True, lambda _result: {"type": "bot.activity", "activities": {}}))
+    await asyncio.wait_for(started.wait(), timeout=1)
+    assert fast_got, "the fast socket must receive while the slow one is stuck"
+    await asyncio.wait_for(task, timeout=1)
+    assert slow not in hub._sockets and slow_closed
+
+
+async def test_a_handshaking_socket_queues_without_holding_up_a_ready_one(hub):
+    device, token = hub.store.add_device("Phone")
+    ready, queued = asyncio.Event(), asyncio.Event()
+    ready.set()
+    received, held = [], []
+
+    class Socket:
+        def __init__(self):
+            self.sent = []
+
+        async def send_str(self, text):
+            self.sent.append(json.loads(text))
+
+        async def close(self, **_kwargs):
+            pass
+
+    fast, handshaking = Socket(), Socket()
+    hub._sockets[fast] = {"device": device, "bot": None, "auth_token": token,
+                          "hello_ready": ready, "send_lock": asyncio.Lock(), "hello_queue": []}
+    hub._sockets[handshaking] = {"device": device, "bot": None, "auth_token": token,
+                                 "hello_ready": queued, "send_lock": asyncio.Lock(), "hello_queue": []}
+    task = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "message": {"id": "m"}}))
+    await asyncio.wait_for(task, timeout=1)
+    assert fast.sent and not handshaking.sent
+    assert len(hub._sockets[handshaking]["hello_queue"]) == 1
+
+
+async def test_two_concurrent_publishes_keep_their_journal_order(hub):
+    device, token = hub.store.add_device("Phone")
+    first_started, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    class Socket:
+        async def send_str(self, text):
+            n = json.loads(text)["n"]
+            received.append(n)
+            if n == 1:
+                first_started.set()
+                await release.wait()
+
+        async def close(self, **_kwargs):
+            pass
+
+    hub._sockets[Socket()] = {"device": device, "bot": None, "auth_token": token}
+    first = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": 1}))
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": 2}))
+    await asyncio.sleep(0.05)
+    assert received == [1], "a later event overtook the earlier one"
+    release.set()
+    await asyncio.gather(first, second)
+    assert received == [1, 2]
+
+
+async def test_a_cancelled_publish_does_not_wedge_later_events(hub):
+    device, token = hub.store.add_device("Phone")
+    first_started, release = asyncio.Event(), asyncio.Event()
+    received = []
+
+    class Socket:
+        async def send_str(self, text):
+            n = json.loads(text)["n"]
+            received.append(n)
+            if n == 0:
+                first_started.set()
+                await release.wait()
+
+        async def close(self, **_kwargs):
+            pass
+
+    hub._sockets[Socket()] = {"device": device, "bot": None, "auth_token": token}
+
+    def publish(n):
+        return asyncio.create_task(hub.publish(lambda: True, lambda _r: {"type": "message.new", "n": n}))
+
+    first = publish(0)
+    await asyncio.wait_for(first_started.wait(), timeout=1)
+    second = publish(1)
+    await asyncio.sleep(0.05)
+    third = publish(2)
+    await asyncio.sleep(0.05)
+    second.cancel()  # the client that made this request went away while it queued
+    await asyncio.sleep(0.05)
+    assert received == [0], "the cancelled ticket must not let a later one overtake the first"
+    release.set()
+    await asyncio.wait_for(asyncio.gather(first, third), timeout=1)
+    assert received == [0, 2]
+    with contextlib.suppress(asyncio.CancelledError):
+        await second
+    # The stream is still usable afterwards.
+    await asyncio.wait_for(publish(3), timeout=1)
+    assert received == [0, 2, 3]

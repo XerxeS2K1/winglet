@@ -26,6 +26,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 # thing; the TUI shows 4000 characters. A phone can read more than that, but not without a
 # bound: the rest is still listed with its change counts.
 MAX_DIFF_CHARS = 40_000
+# The largest diff text sent to the parser. Hermes returns the whole checkpoint; parsing a giant
+# one on the event loop would freeze chat, so an oversize checkpoint refuses cleanly instead.
+MAX_DIFF_PARSE_CHARS = 2_000_000
 # Files named in one preview. Beyond this the preview only reports the counts.
 MAX_FILES = 400
 # How long a restore operation id is remembered, so a retried request cannot restore twice.
@@ -441,9 +444,18 @@ class CheckpointService:
                     "error": str(result.get("error") or "Hermes couldn't read the changes.")}
         stat = str(result.get("stat") or "")
         text = str(result.get("diff") or "")
-        parsed = parse_diff(text)
+        if len(text) > MAX_DIFF_PARSE_CHARS:
+            return {**base, "files": [], "diff": {"lines": [], "truncated": False, "bytes": 0},
+                    "unchanged": False, "effects": {}, "revision": "",
+                    "error": "This checkpoint is too large to preview safely."}
         tip = rows[0]["hash"] if rows else ""
-        revision = revision_for(str((state.get("workspace") or {}).get("path") or ""), target["hash"], tip, stat, text)
+
+        def summarize():
+            parsed = parse_diff(text)
+            return parsed, revision_for(str((state.get("workspace") or {}).get("path") or ""),
+                                        target["hash"], tip, stat, text)
+
+        parsed, revision = await asyncio.to_thread(summarize)
         return {
             **base,
             "workspace": state["workspace"],
@@ -492,9 +504,12 @@ class CheckpointService:
             result = fresh if isinstance(fresh, dict) else {}
             if result.get("success") is False or result.get("error"):
                 raise CheckpointRefused(str(result.get("error") or "Hermes couldn't read the changes."))
+            diff_text = str(result.get("diff") or "")
+            if len(diff_text) > MAX_DIFF_PARSE_CHARS:
+                raise CheckpointRefused("This checkpoint is too large to restore safely.")
             tip = rows[0]["hash"] if rows else ""
             current = revision_for(str((state.get("workspace") or {}).get("path") or ""), target["hash"], tip,
-                                   str(result.get("stat") or ""), str(result.get("diff") or ""))
+                                   str(result.get("stat") or ""), diff_text)
             if current != expected:
                 raise CheckpointStale("The folder changed since you looked. Check what will be restored, then try again.")
             # Re-check inside the lock: a reply may have started while the preview was confirmed.
