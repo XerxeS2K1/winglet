@@ -17,6 +17,7 @@ import logging
 import math
 import re
 import shutil
+import sqlite3
 import time
 import unicodedata
 import urllib.error
@@ -588,6 +589,72 @@ def usage(days: int = 30) -> dict:
     data = _get_usage_analytics(max(1, min(int(days), 365)))
     keep = ("daily", "by_model", "totals", "period_days")
     return {k: data.get(k) for k in keep if k in data} if isinstance(data, dict) else {}
+
+
+USAGE_HOURS_DEFAULT_DAYS = 7
+USAGE_HOURS_MAX_DAYS = 40
+
+
+def usage_hour_rows(grouped) -> List[List[int]]:
+    """Shape rows already grouped by hour into ``[hour, input, output, cache_read, cache_write, calls,
+    cost_cents]``. Pure: ints only, a missing value becomes 0, hours with no tokens and no calls are
+    left out, and the result is oldest first. Cost is in hundredths of the currency Hermes recorded
+    (USD), rounded once per hour so many tiny calls do not each round to nothing."""
+    out: List[List[int]] = []
+    for row in grouped:
+        hour, *numbers = row
+        if hour is None:
+            continue
+        numbers = list(numbers) + [0] * (6 - len(numbers))
+        tokens_in, tokens_out, cache_read, cache_write, calls = (int(n or 0) for n in numbers[:5])
+        cost = float(numbers[5] or 0)
+        if not (tokens_in or tokens_out or cache_read or cache_write or calls):
+            continue
+        out.append([int(hour), tokens_in, tokens_out, cache_read, cache_write, calls, int(round(cost * 100))])
+    out.sort(key=lambda r: r[0])
+    return out
+
+
+@_scoped
+def usage_hours(days: int = USAGE_HOURS_DEFAULT_DAYS, *, now: Optional[float] = None,
+                db_path: Optional[Path] = None) -> dict:
+    """Tokens, calls and cost per UTC hour from Hermes's ``session_model_usage`` table.
+
+    ``{from, to, hours: [[hour_start, input, output, cache_read, cache_write, calls, cost_cents]]}``,
+    a sparse list, integers only. ``days`` is clamped to 1..40 and the window starts on an hour
+    boundary so no hour is partial at the old end.
+
+    Each row records a session's running total for one model, with the time it was last written. A
+    row's tokens therefore land in the hour of ``last_seen``: a long session is attributed to when it
+    last wrote, not spread over the hours it ran. That is an approximation, the honest one the table
+    allows. Cost is ``actual_cost_usd`` when it is above zero (Hermes stores 0, not NULL, when no bill
+    was measured), otherwise ``estimated_cost_usd``.
+
+    The database is opened read-only for this one query and closed straight after, so nothing holds a
+    connection or a lock on Hermes's file. If it is missing, locked or mid-migration, the answer is an
+    empty series and a logged warning rather than an error.
+    """
+    days = max(1, min(int(days), USAGE_HOURS_MAX_DAYS))
+    to = int(time.time() if now is None else now)
+    start = (to // 3600) * 3600 - days * 86400
+    result = {"from": start, "to": to, "hours": []}
+    try:
+        path = Path(db_path) if db_path is not None else _home() / "state.db"
+        # SQLite does the bucketing: one summed row per hour comes back, never a row per call.
+        with contextlib.closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=1.0)) as db:
+            grouped = db.execute(
+                "SELECT CAST(last_seen / 3600 AS INTEGER) * 3600 AS hour, "
+                "SUM(COALESCE(input_tokens, 0)), SUM(COALESCE(output_tokens, 0)), "
+                "SUM(COALESCE(cache_read_tokens, 0)), SUM(COALESCE(cache_write_tokens, 0)), "
+                "SUM(COALESCE(api_call_count, 0)), "
+                "SUM(COALESCE(NULLIF(actual_cost_usd, 0), estimated_cost_usd, 0)) "
+                "FROM session_model_usage WHERE last_seen >= ? AND last_seen < ? "
+                "GROUP BY hour ORDER BY hour", (start, to + 3600)).fetchall()
+    except (sqlite3.Error, OSError, ImportError, ValueError) as exc:
+        logger.warning("usage by hour unavailable: %s", exc)
+        return result
+    result["hours"] = usage_hour_rows(grouped)
+    return result
 
 
 async def resolve_slash_confirm(session_key: str, confirm_id: str, choice: str) -> str:
