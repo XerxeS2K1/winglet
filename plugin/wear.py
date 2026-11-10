@@ -215,8 +215,10 @@ class WearRelay:
                 if recent >= 10:
                     raise ValueError('rate_limited')
                 self.store._exec('INSERT INTO winglet_wear_deliveries VALUES (?,?,?,?,?)', (row['id'], request_id, chat_id, digest, int(time.time())))
-            with self.hub._bot_context(row['bot']):
-                message = await self.hub.user_message(device, chat_id, text, 'wear-'+row['id']+'-'+request_id)
+        # The lock guards the authority/rate/dedupe check above. The reply post can be slow and is
+        # idempotent by its client id, so it must not make every watch wait behind it.
+        with self.hub._bot_context(row['bot']):
+            message = await self.hub.user_message(device, chat_id, text, 'wear-'+row['id']+'-'+request_id)
             if not message:
                 raise PermissionError('conversation_unavailable')
             return {'v': 1, 'status': 'accepted', 'request_id': request_id, 'chat_id': chat_id, 'message_id': message['id']}

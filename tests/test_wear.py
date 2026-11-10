@@ -172,3 +172,22 @@ async def test_concurrent_retries_deliver_one_message_and_response_context_is_au
     envelope=await(await client.post('/api/wear/relay',json=wire)).json()
     for context in [aad(hub,'different-device',nonce,'response'),aad(hub,phone.id,'0'*32,'response'),aad(hub,phone.id,nonce,'link')]:
         with pytest.raises(Exception):AESGCM(key).decrypt(unb64(envelope['nonce']),unb64(envelope['ct']),context)
+
+
+async def test_the_wear_send_lock_is_released_before_the_reply_post(env):
+    hub, _, _, phone, _, _ = env
+    status, grant = await link(env)
+    assert status == 200
+    seen = []
+    real = hub.user_message
+
+    async def slow_post(*args, **kwargs):
+        seen.append(hub.wear.send_lock.locked())
+        await asyncio.sleep(0.05)
+        return await real(*args, **kwargs)
+
+    hub.user_message = slow_post
+    result = await hub.wear.send(grant['token'], phone.id,
+                                 {'chat_id': 'general', 'request_id': 'a' * 32, 'text': 'Hello from my watch'})
+    assert result['status'] == 'accepted'
+    assert seen == [False], 'the server-wide wear lock was held across the reply post'
