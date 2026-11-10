@@ -28,7 +28,7 @@ from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_e
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from . import bridge, checkpoints, cli, execution, fallback, hermes_api, teamwork
+from . import bridge, checkpoints, cli, execution, fallback, hermes_api, screen, teamwork
 from .dependencies import missing_dependencies
 from .store import Store
 
@@ -55,6 +55,8 @@ _TRUTHY = ("1", "true", "yes", "on")
 
 _TRACKER: Optional[execution.Tracker] = None
 _TRACKER_HOOKS: Dict[str, bool] = {}
+# Built only when the screen_watch switch is on; None means no observer and no screen routes.
+_SCREEN: Optional[screen.ScreenCapture] = None
 _ACTIVE: Optional["WingletAdapter"] = None
 
 
@@ -296,7 +298,7 @@ class WingletAdapter(BasePlatformAdapter):
             # Likewise a reply that was mid-stream when the server went down will never be finished.
             store.settle_interrupted_streams()
             hub = Hub(store, web_root=Path(__file__).parent / "web", bot_info=profile_info,
-                      ntfy_server=self._ntfy_server)
+                      ntfy_server=self._ntfy_server, screen=_SCREEN)
             hub.update_home = hermes_api._home()
             hub.connection = {"mode": self._connection, "url": None}
             hub.public_url = self._public_url or None
@@ -1066,11 +1068,13 @@ def _message_type(text: str, kinds: list):
 
 
 def register(ctx) -> None:
-    global _TRACKER, _TRACKER_HOOKS
+    global _TRACKER, _TRACKER_HOOKS, _SCREEN
     if _TRACKER is None:
         _TRACKER = execution.Tracker(_resolve_session_chat, publish=_publish_task_event,
                                      resolve_key=_resolve_session_key_chat)
-        _TRACKER_HOOKS = execution.register_hooks(ctx, _TRACKER)
+        if _SCREEN is None and screen.screen_watch_enabled():
+            _SCREEN = screen.ScreenCapture()
+        _TRACKER_HOOKS = execution.register_hooks(ctx, _TRACKER, screen=_SCREEN)
     platform = dict(
         name=PLATFORM, label="Winglet", adapter_factory=lambda cfg: WingletAdapter(cfg),
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,

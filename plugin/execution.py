@@ -772,10 +772,12 @@ def plan_tool_name(name: Any) -> bool:
 
 # -- plugin hook registration ---------------------------------------------------------------
 
-def register_hooks(ctx: Any, tracker: Tracker) -> Dict[str, bool]:
+def register_hooks(ctx: Any, tracker: Tracker, screen: Any = None) -> Dict[str, bool]:
     """Register the observer hooks this feature needs. Missing hooks never break the platform.
 
     Returns which hooks were accepted, so the adapter can decide whether the feature is usable.
+    ``screen`` is a :class:`plugin.screen.ScreenCapture` only when the ``screen_watch`` switch is
+    on; when it is None this function registers no screen observer at all.
     """
     def on_turn_start(**kw: Any) -> None:
         tracker.turn_started(kw.get("session_id"), kw.get("turn_id"))
@@ -831,4 +833,15 @@ def register_hooks(ctx: Any, tracker: Tracker) -> Dict[str, bool]:
         except Exception:
             logger.debug("[winglet] this Hermes refused the %s hook", name, exc_info=True)
             accepted[name] = False
+    if screen is not None:
+        def on_browser_tool(**kw: Any) -> None:
+            if str(kw.get("tool_name") or "").startswith("browser_"):
+                task_id = kw.get("task_id")
+                if task_id:
+                    screen.note_browser_task(task_id)
+
+        try:
+            register("pre_tool_call", on_browser_tool)
+        except Exception:
+            logger.debug("[winglet] this Hermes refused the screen pre_tool_call hook", exc_info=True)
     return accepted
