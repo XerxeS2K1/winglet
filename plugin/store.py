@@ -447,10 +447,17 @@ class Store:
 
     def issue_shade_token(self, device_id: str, item_id: str, choice: str, signature: str,
                           expires_at: float) -> None:
-        """Record a single-use shade token. The signature is the bearer secret, so store only its hash."""
+        """Record a single-use shade token, keeping the first expiry on a retried push.
+
+        The signature is deterministic for an item/choice/epoch, so a push retry finds the same
+        row. Never replace it: that would slide a token's 15-minute life forward every retry.
+        """
         token_hash = hashlib.sha256(signature.encode()).hexdigest()
         with self._lock:
-            self._exec("INSERT OR REPLACE INTO shade_tokens "
+            existing = self._one("SELECT 1 FROM shade_tokens WHERE token_hash = ?", (token_hash,))
+            if existing is not None:
+                return
+            self._exec("INSERT INTO shade_tokens "
                        "(token_hash, item_id, choice, device_id, epoch, expires_at) VALUES (?, ?, ?, ?, ?, ?)",
                        (token_hash, item_id, choice, device_id,
                         int((self.get_device(device_id) or {}).get("shade_epoch") or 0), expires_at))

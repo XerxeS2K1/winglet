@@ -18,7 +18,7 @@ def _path(item):
 
 async def _set_toggle(client, phone, enabled):
     path = "/api/push/shade"
-    body = json.dumps({"enabled": enabled}).encode()
+    body = json.dumps({"shade_approvals": enabled}).encode()
     return await client.put(path, data=body, headers=phone.signed("PUT", path, body))
 
 
@@ -50,6 +50,9 @@ async def test_shade_signature_is_accepted_once_then_replay_is_refused(client, h
     answered = (await first.json())["item"]
     assert answered["resolution"] == "once"
     assert answered["channel"] == "shade"
+    audit = next(entry for entry in hub.store.list_audit() if entry["action"] == "approval")
+    assert audit["device_id"] == owner.id
+    assert audit["device_name"] == owner.name
 
     replay = await client.post(_path(item), json={"choice": "once", "sig": sig})
     assert replay.status == 401
@@ -124,7 +127,7 @@ async def test_a_member_cannot_enable_shade_approvals(client, hub):
 async def test_an_unverified_owner_is_asked_to_verify_first(client, hub):
     legacy = await pair_phone(client, hub, "Unverified", sealed=False)
     path = "/api/push/shade"
-    response = await client.put(path, json={"enabled": True}, headers=legacy.auth)
+    response = await client.put(path, json={"shade_approvals": True}, headers=legacy.auth)
     assert response.status == 403
     assert (await response.json())["needs"] == "verify"
     assert hub.store.get_device(legacy.id)["shade_approvals"] is False
@@ -200,13 +203,67 @@ def test_an_encrypted_approval_push_keeps_the_whole_body_and_signatures():
     assert note["sig"]["once"] == "a" * 32
 
 
+async def test_a_shade_answer_cannot_set_a_bypass(client, hub):
+    async def allow(item, choice):
+        return True
+
+    class Bypass:
+        def __init__(self):
+            self.enabled = []
+
+        def is_enabled(self, key):
+            return False
+
+        def enable(self, key):
+            self.enabled.append(key)
+
+    hub.on_approval = allow
+    bypass = Bypass()
+    hub.chat_approval_bypass = bypass
+    owner = await pair_phone(client, hub)
+    assert (await _set_toggle(client, owner, True)).status == 200
+    item = await _approval(hub)
+    device = hub.store.get_device(owner.id)
+    sig = _mint(hub, device, item)
+
+    response = await client.post(_path(item), json={"choice": "once", "sig": sig,
+                                                    "allow_all": True, "chat_id": "general"})
+    assert response.status == 403
+    assert bypass.enabled == []
+    assert hub.store.get_inbox(item["id"])["status"] == "pending"
+
+
+async def test_a_retried_push_does_not_slide_the_token_expiry(client, hub, monkeypatch):
+    clock = [1000.0]
+    monkeypatch.setattr("plugin.store.time.time", lambda: clock[0])
+    owner = await pair_phone(client, hub)
+    assert (await _set_toggle(client, owner, True)).status == 200
+    item = await _approval(hub)
+    device = hub.store.get_device(owner.id)
+    note = {"kind": "approval", "title": "Run?", "body": "ls"}
+
+    first = hub._shade_notification(note, item, device)
+    sig = first["sig"]["once"]
+    row = hub.store._one("SELECT expires_at FROM shade_tokens WHERE item_id = ?", (item["id"],))
+    first_expiry = row["expires_at"]
+
+    clock[0] += SHADE_TOKEN_TTL + 1
+    retry = hub._shade_notification(note, item, device)
+    assert retry["sig"]["once"] == sig
+    row = hub.store._one("SELECT expires_at FROM shade_tokens WHERE item_id = ?", (item["id"],))
+    assert row["expires_at"] == first_expiry
+
+    response = await client.post(_path(item), json={"choice": "once", "sig": sig})
+    assert response.status == 401
+
+
 async def test_the_toggle_is_off_by_default_and_decline_still_reaches_the_push(client, hub):
     async def allow(item, choice):
         return True
 
     hub.on_approval = allow
     owner = await pair_phone(client, hub)
-    assert hub.push_options(hub.store.get_device(owner.id)) == {"shade_actions": False}
+    assert hub.push_options(hub.store.get_device(owner.id)) == {"shade_approvals": False}
     assert "shade.approvals" not in [e["action"] for e in hub.store.list_audit()]
 
     ua_key = ec.generate_private_key(ec.SECP256R1())
@@ -233,3 +290,18 @@ async def test_changing_the_toggle_is_audited(client, hub):
     assert (await _set_toggle(client, owner, False)).status == 200
     actions = [entry["action"] for entry in hub.store.list_audit()]
     assert actions.count("shade.approvals") == 2
+
+
+async def test_the_shade_setting_uses_the_single_name_shade_approvals(client, hub):
+    owner = await pair_phone(client, hub)
+    response = await client.get("/api/push/shade", headers=owner.auth)
+    data = await response.json()
+    assert data["shade_approvals"] is False
+    assert "enabled" not in data and "shade_actions" not in data
+
+    changed = await _set_toggle(client, owner, True)
+    data = await changed.json()
+    assert data["shade_approvals"] is True
+    assert "enabled" not in data and "shade_actions" not in data
+    prefs = await (await client.get("/api/push/prefs", headers=owner.auth)).json()
+    assert prefs["options"] == {"shade_approvals": True}

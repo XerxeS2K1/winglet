@@ -1089,7 +1089,7 @@ class Hub:
         return hmac.new(key, material.encode(), hashlib.sha256).hexdigest()[:32]
 
     def push_options(self, device: Optional[Dict[str, Any]]) -> Dict[str, bool]:
-        return {"shade_actions": bool(device and device.get("shade_approvals"))}
+        return {"shade_approvals": bool(device and device.get("shade_approvals"))}
 
     # -- info & pairing ------------------------------------------------------------------
 
@@ -2198,9 +2198,7 @@ class Hub:
 
     async def h_shade_approvals(self, request: web.Request) -> web.Response:
         device = self._require(request)
-        return _json({"enabled": bool(device.get("shade_approvals")),
-                      "shade_approvals": bool(device.get("shade_approvals")),
-                      "shade_actions": bool(device.get("shade_approvals")),
+        return _json({"shade_approvals": bool(device.get("shade_approvals")),
                       "epoch": int(device.get("shade_epoch") or 0),
                       "can_enable": device["role"] == "owner" and bool(device.get("verified"))})
 
@@ -2212,16 +2210,14 @@ class Hub:
         if not device.get("verified"):
             return _json({"error": VERIFY_FIRST, "needs": "verify"}, status=403)
         body = await self._body(request)
-        enabled = body.get("enabled", body.get("shade_approvals"))
+        enabled = body.get("shade_approvals")
         if type(enabled) is not bool:
-            return _error(400, "enabled must be a boolean")
+            return _error(400, "shade_approvals must be a boolean")
         updated = self.store.set_shade_approvals(device["id"], enabled)
         if updated is None:
             return _error(404, "no such device")
         self.audit("shade.approvals", device, "on" if enabled else "off")
-        return _json({"enabled": bool(updated["shade_approvals"]),
-                      "shade_approvals": bool(updated["shade_approvals"]),
-                      "shade_actions": bool(updated["shade_approvals"]),
+        return _json({"shade_approvals": bool(updated["shade_approvals"]),
                       "epoch": int(updated["shade_epoch"]),
                       "can_enable": updated["role"] == "owner" and bool(updated["verified"])})
 
@@ -2282,6 +2278,7 @@ class Hub:
         if allow_all and (device is None or device["role"] != "owner"):
             return _error(403, "Only an owner can disable approvals.")
         item = self.store.get_inbox(item_id)
+        shade_device = None
         if device is None:
             # No bearer token: this is a notification action. Decline links predate shade approvals
             # and stay valid. Approve needs a live, single-use shade token tied to this device.
@@ -2294,7 +2291,8 @@ class Hub:
                 token = self.store.take_shade_token(item_id, choice, sig)
                 if token is None or item is None or item["kind"] != "approval":
                     return _error(401, "That notification action has expired or was already used.")
-                token_device = self.store.get_device(token["device_id"])
+                shade_device = self.store.get_device(token["device_id"])
+                token_device = shade_device
                 if token_device is None or token_device["role"] != "owner":
                     return _error(403, "Only an owner can approve or deny commands.")
                 if choice == "once" and not token_device["shade_approvals"]:
@@ -2311,7 +2309,8 @@ class Hub:
         try:
             ok, item = await self.respond(item_id, choice=choice, answer=answer, device=device,
                                           allow_all=allow_all, chat_id=body.get("chat_id"),
-                                          channel="card" if device is not None else "shade")
+                                          channel="card" if device is not None else "shade",
+                                          audit_device=shade_device)
         except Forbidden as exc:
             return _error(403, str(exc))
         if item is None:
@@ -2320,15 +2319,18 @@ class Hub:
 
     async def respond(self, item_id: str, *, choice: str = "", answer: Any = None,
                       device: Optional[Dict[str, Any]] = None, allow_all: bool = False,
-                      chat_id: Optional[str] = None, channel: str = "") -> tuple[bool, Optional[Dict]]:
+                      chat_id: Optional[str] = None, channel: str = "",
+                      audit_device: Optional[Dict[str, Any]] = None) -> tuple[bool, Optional[Dict]]:
         """Serialize card answers so only the winner may change bypass state."""
         async with self._inbox_response_lock:
             return await self._respond_locked(item_id, choice=choice, answer=answer, device=device,
-                                              allow_all=allow_all, chat_id=chat_id, channel=channel)
+                                              allow_all=allow_all, chat_id=chat_id, channel=channel,
+                                              audit_device=audit_device)
 
     async def _respond_locked(self, item_id: str, *, choice: str, answer: Any,
                               device: Optional[Dict[str, Any]], allow_all: bool,
-                              chat_id: Optional[str], channel: str = "") -> tuple[bool, Optional[Dict]]:
+                              chat_id: Optional[str], channel: str = "",
+                              audit_device: Optional[Dict[str, Any]] = None) -> tuple[bool, Optional[Dict]]:
         item = self.store.get_inbox(item_id)
         if item is None or (device is not None and not self.can_see(device, self.store.get_chat(item["chat_id"]))):
             return False, None
@@ -2348,6 +2350,9 @@ class Hub:
             bypass_key = self._chat_bypass_key(item["chat_id"])
             if not bypass_key or item["payload"].get("session_key") != bypass_key:
                 return False, item
+        # Permission checks above use device (None for shade), but the trail must name the phone
+        # whose token was actually used.
+        actor = audit_device or device
         ok = False
         if item["kind"] == "approval":
             if choice not in (item["payload"].get("choices") or []):
@@ -2360,8 +2365,8 @@ class Hub:
                 # arrives before this line still gets an ordinary card (fails closed; see APPROVALS.md).
                 if bypass_key and not self.chat_approval_bypass.is_enabled(bypass_key):
                     self.chat_approval_bypass.enable(bypass_key)
-                    self.audit("approval_bypass.on", device, f"chat {item['chat_id']}")
-                self.audit("approval", device, f"{choice}: {_clip(item['payload'].get('command') or item['title'], 120)}")
+                    self.audit("approval_bypass.on", actor, f"chat {item['chat_id']}")
+                self.audit("approval", actor, f"{choice}: {_clip(item['payload'].get('command') or item['title'], 120)}")
         elif item["kind"] == "question":
             if isinstance(answer, list):  # multi-select: the labels the user ticked
                 picked = [str(a).strip() for a in answer if str(a).strip()]
