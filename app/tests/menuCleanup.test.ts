@@ -24,7 +24,7 @@ test('the Server screen no longer lists Schedule but keeps Logs and Activity', (
 test('"Open the app on" moved from the Agent hub to the App group in Settings, with the same behaviour', () => {
   const hub = source('app/(tabs)/agent.tsx');
   assert.doesNotMatch(hub, /Open the app on|setMainBot|useMainBot/);
-  assert.match(hub, /title="Devices"/); // the Access group keeps Devices
+  assert.match(hub, /title="Server"[\s\S]{0,120}router\.push\('\/server'\)/); // Devices now sits on the Server screen
   const settings = source('app/settings.tsx');
   const from = settings.indexOf('<SectionHeader title="App" />');
   const to = settings.indexOf('title="On this phone"');
@@ -46,7 +46,7 @@ test('Settings has no Bots section, and the bot switcher still reaches Add a bot
 });
 
 test('the Connection screen offers one way into Notifications at a time and keeps Test and the channel line', () => {
-  const screen = source('app/connection/[serverId].tsx');
+  const screen = source('components/ReachingIt.tsx');
   // Not set up: the "Set up" button is the way in. Set up: the Quiet hours row is. Never both.
   assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Notification settings"[^\n]*\/notifications[^\n]*: null\}/);
   assert.equal((screen.match(/title="Set up"/g) ?? []).length, 1);
@@ -85,7 +85,7 @@ test('the feed (kind home) is called Reports wherever the app names it; Updates 
   // Software updates keep their name.
   assert.match(source('app/server.tsx'), /<SectionHeader title="Updates"/);
   assert.match(source('app/about.tsx'), /title="App updates"/);
-  assert.match(source('app/about.tsx'), /title="Server updates"/);
+  assert.match(source('app/server.tsx'), /<ServerAutoUpdateCard \/>/);
   // The route and chat kind are identifiers, not words the user sees.
   assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/);
 });

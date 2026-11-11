@@ -52,17 +52,38 @@ test('About says Check now when no app update is published', async () => {
   assert.ok(nodes(tree).some((n) => n.props?.title === 'Check now'));
 });
 
+function autoUpdateHarness(opts: { role?: string; settings?: any } = {}) {
+  const host = hooks();
+  const state: any = { servers: [server], selection: { serverId: 's' }, runtime: { s: { status: 'online', me: { role: opts.role ?? 'owner' } } } };
+  const useApp: any = (select: any) => select(state); useApp.getState = () => state; useApp.subscribe = () => () => {};
+  const gets: string[] = [], puts: any[] = [];
+  const modules: any = {
+    react: host.react, 'react/jsx-runtime': { jsx, jsxs: jsx },
+    'react-native': { Text: 'Text' },
+    './icons': anything,
+    './ui': { Footnote: () => null, ListGroup: 'ListGroup', ListRow: 'ListRow', Toggle: 'Toggle' },
+    '../lib/api': {
+      api: async (_s: any, path: string) => { gets.push(path); return opts.settings ?? { autoUpdate: true }; },
+      signedApi: async (...args: any[]) => { puts.push(args); return { autoUpdate: args[3].autoUpdate }; },
+    },
+    '../lib/store': { useApp },
+    '../lib/themeContext': { makeStyles: () => () => anything, useTheme: () => anything },
+  };
+  const card = load('components/ServerAutoUpdate.tsx', modules);
+  return { host, card, gets, puts };
+}
+
 test('a member never sees the server auto-update toggle', () => {
-  const h = aboutHarness({ role: 'member' });
-  assert.equal(h.host.render(() => h.about.ServerAutoUpdateCard()), null);
+  const h = autoUpdateHarness({ role: 'member' });
+  assert.equal(h.host.render(() => h.card.ServerAutoUpdateCard()), null);
   assert.equal(h.gets.length, 0);
 });
 
 test('an owner sees autoUpdate and writes only autoUpdate through the signed settings endpoint', async () => {
-  const h = aboutHarness({ role: 'owner' });
-  h.host.render(() => h.about.ServerAutoUpdateCard());
+  const h = autoUpdateHarness({ role: 'owner' });
+  h.host.render(() => h.card.ServerAutoUpdateCard());
   await tick();
-  const tree = h.host.render(() => h.about.ServerAutoUpdateCard());
+  const tree = h.host.render(() => h.card.ServerAutoUpdateCard());
   assert.ok(nodes(tree).some((n) => n.props?.title === 'Update automatically'));
   assert.ok(nodes(tree).some((n) => n.props?.value === 'On'));
   const toggle = nodes(tree).find((n) => n.type === 'Toggle');
@@ -73,25 +94,6 @@ test('an owner sees autoUpdate and writes only autoUpdate through the signed set
   assert.equal(h.puts[0][1], 'PUT');
   assert.equal(h.puts[0][2], '/api/settings');
   assert.equal(h.puts[0][3].autoUpdate, false);
-});
-
-test('ServerVersion shows the plugin version and last update time read-only', async () => {
-  const h = aboutHarness({ system: { version: '0.11.0', updatedAt: 1710000000, hermes_version: '0.23.0' } });
-  h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
-  await tick();
-  const tree = h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
-  assert.match(text(tree), /Plugin 0\.11\.0/);
-  assert.match(text(tree), /updated/);
-  assert.match(text(tree), /Hermes 0\.23\.0/);
-  assert.equal(h.gets[0], '/api/system');
-});
-
-test('ServerVersion says the time is unavailable when the server does not report it', async () => {
-  const h = aboutHarness({ system: { version: '0.11.0', hermes_version: '0.23.0' } });
-  h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
-  await tick();
-  const tree = h.host.render(() => h.about.ServerVersion({ server, info: { version: '0.10.11', hermes_version: '0.23.0' } }));
-  assert.match(text(tree), /update time unavailable/);
 });
 
 function installHarness(opts: { update?: any; error?: string; outcome?: string } = {}) {

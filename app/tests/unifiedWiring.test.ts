@@ -23,9 +23,8 @@ test('the Server screen keeps the deliberate Hermes update but has no Winglet up
   assert.doesNotMatch(server, /updateServerWinglet|updateRecovery|Server plugin update/);
 });
 
-test('About reads the server setting and writes only autoUpdate', () => {
-  const about = source('app/about.tsx');
+test('the Server screen reads the server setting and writes only autoUpdate', () => {
+  const about = source('components/ServerAutoUpdate.tsx');
   assert.match(about, /api<\{ autoUpdate: boolean \}>\(server, '\/api\/settings'\)/);
   assert.match(about, /signedApi<\{ autoUpdate: boolean \}>\(server, 'PUT', '\/api\/settings', \{ autoUpdate: on \}\)/);
-  assert.match(about, /updatedAt/);
 });

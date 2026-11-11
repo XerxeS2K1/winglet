@@ -3,6 +3,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { JobSheet } from '../components/JobSheet';
+import { ReachingIt } from '../components/ReachingIt';
+import { ServerAutoUpdateCard } from '../components/ServerAutoUpdate';
 import {
   Check, CircleAlert, CircleArrowUp, CirclePause, CircleHelp, RefreshCw, RotateCw, ScrollText, ShieldCheck,
 } from '../components/icons';
@@ -16,7 +18,7 @@ import { api, ApiError, signedApi } from '../lib/api';
 import { bytes, duration, idempotencyKey } from '../lib/control';
 import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
-import { useApp, useServerState } from '../lib/store';
+import { isOwner, useApp, useServerState } from '../lib/store';
 import { checkServerUpdates } from '../lib/serverUpdates';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Job, PauseState, SystemInfo, UpdatesInfo } from '../lib/types';
@@ -29,7 +31,11 @@ const JOB_LABEL: Record<Job['kind'], string> = {
   pet_install: 'Pet install',
 };
 
-/** The machine your agent runs on: how it's doing, and the few controls that keep it running. */
+/**
+ * The machine your agent runs on, all in one place: how it's doing, the controls that keep it running, how phones reach
+ * it, and the people who can. Every phone can open it; the owner-only parts (health, controls, Hermes updates, logs) show
+ * only to an owner of the main bot, as the separate screens they came from did.
+ */
 export default withSelectedServer(ServerScreen);
 
 function ServerScreen() {
@@ -38,6 +44,11 @@ function ServerScreen() {
   const reduced = useReducedMotion();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const rt = useServerState(server?.id);
+  const servers = useApp((st) => st.servers);
+  // A child bot shares its parent's machine: the address and tunnel are the parent's, and it never had the owner controls.
+  const child = !!server?.parent;
+  const reach = (child ? servers.find((x) => x.id === server?.parent) : undefined) ?? server;
+  const canControl = !!rt?.info?.features?.control && isOwner(rt) && !child;
   const scope = server ? serverScope(server) : '';
   const currentScope = useRef(scope); currentScope.current = scope;
   const [infoSnapshot, setInfo] = useState<{ scope: string; value: SystemInfo } | null>(null);
@@ -77,7 +88,7 @@ function ServerScreen() {
     const id = setInterval(load, 15000);
     return () => { focused.current = false; focusGeneration.current++; clearInterval(id); };
   }, [load]));
-  useEffect(() => { check(); }, [check]);
+  useEffect(() => { if (canControl) check(); }, [check, canControl]);
   const online = rt?.status === 'online';
   const wasOnline = useRef(online);
   useEffect(() => { if (online && !wasOnline.current) load(); wasOnline.current = online; }, [online, load]);
@@ -118,12 +129,12 @@ function ServerScreen() {
   const host = info?.host;
   return (
     <Screen title="Server">
-      {error && !info ? <Text style={s.error}>{error}</Text> : null}
+      {canControl && error && !info ? <Text style={s.error}>{error}</Text> : null}
       <VerifyNotice server={server} />
-      <StatusCard info={info} paused={paused} online={online} />
+      {canControl ? <StatusCard info={info} paused={paused} online={online} /> : null}
 
-      <SectionHeader title="Health" />
-      {!host ? <Skeleton height={150} radius={t.radius.lg} /> : (
+      {canControl ? <SectionHeader title="Health" /> : null}
+      {!canControl ? null : !host ? <Skeleton height={150} radius={t.radius.lg} /> : (
         <Animated.View entering={reduced ? undefined : FadeIn.duration(180)} style={{ gap: t.space.md }}>
           {host.cpu_percent !== undefined || host.memory || host.disk ? (
             <View style={s.meters}>
@@ -144,8 +155,8 @@ function ServerScreen() {
         </Animated.View>
       )}
 
-      <SectionHeader title="Controls" />
-      <ListGroup>
+      {canControl ? <SectionHeader title="Controls" /> : null}
+      {canControl ? <ListGroup>
         {info?.can_pause !== false ? (
           <ListRow icon={<CirclePause size={18} color={paused ? t.colors.warning : t.colors.textSecondary} />}
             iconColor={paused ? t.colors.warning : undefined} title="Pause new work"
@@ -154,26 +165,41 @@ function ServerScreen() {
         ) : null}
         <ListRow icon={<RotateCw size={18} color={t.colors.textSecondary} />} title="Restart"
           onPress={() => setConfirm('restart')} />
-      </ListGroup>
+      </ListGroup> : null}
 
-      <SectionHeader title="Updates" right={(
+      {reach ? <ReachingIt server={reach} showVersions={!canControl} /> : null}
+
+      <SectionHeader title="Updates" right={canControl ? (
         <Button size="sm" variant="ghost" title={checking ? 'Checking…' : 'Check now'} disabled={checking}
           icon={<RefreshCw size={14} color={t.colors.textSecondary} />} onPress={() => check(true)} />
-      )} />
+      ) : undefined} />
       <ListGroup>
-        <UpdateRow name="Hermes" version={info?.hermes_version || updates?.hermes.current_version} {...hermesUpdate(updates)}
-          onUpdate={() => setConfirm('hermes')} />
+        {canControl ? <UpdateRow name="Hermes" version={info?.hermes_version || updates?.hermes.current_version} {...hermesUpdate(updates)}
+          onUpdate={() => setConfirm('hermes')} /> : null}
+        <ListRow icon={<CircleArrowUp size={18} color={t.colors.textSecondary} />} title="Winglet plugin"
+          value={info?.updatedAt ? `Updated ${whenText(info.updatedAt)}` : info ? 'Update time unavailable' : undefined} />
       </ListGroup>
+      {isOwner(rt) ? <ServerAutoUpdateCard /> : null}
 
-      <SectionHeader title="Tools" />
+      {!child && rt?.info?.features?.roles ? (
+        <>
+          <SectionHeader title="Devices" />
+          <ListGroup>
+            <ListRow icon={<ShieldCheck size={18} color={t.colors.textSecondary} />} title="Devices"
+              value={rt.me ? rt.me.role === 'owner' ? 'Owner' : 'Member' : undefined} onPress={() => router.push('/devices')} />
+          </ListGroup>
+        </>
+      ) : null}
+
+      {canControl ? <><SectionHeader title="Tools" />
       <ListGroup>
         <ListRow icon={<ScrollText size={18} color={t.colors.textSecondary} />} title="Logs"
           onPress={() => router.push('/logs')} />
         <ListRow icon={<ShieldCheck size={18} color={t.colors.textSecondary} />} title="Activity"
           onPress={() => router.push('/activity')} />
-      </ListGroup>
+      </ListGroup></> : null}
 
-      {info?.jobs.length ? (
+      {canControl && info?.jobs.length ? (
         <>
           <SectionHeader title="Recent" />
           <ListGroup>
@@ -193,6 +219,15 @@ function ServerScreen() {
       <JobSheet key={serverScope(server)} server={server} job={job} onClose={() => setJob(null)} onDone={() => { load(); check(); }} />
     </Screen>
   );
+}
+
+/** "09:41" for today, or a short date for an older update. */
+function whenText(value: number | string): string {
+  const date = typeof value === 'number' ? new Date(value > 1e12 ? value : value * 1000) : new Date(value);
+  if (Number.isNaN(date.getTime())) return 'unknown';
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return sameDay ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+    : date.toLocaleDateString([], { day: 'numeric', month: 'short' });
 }
 
 function hermesUpdate(u: UpdatesInfo | null): { status: string; available: boolean } {
