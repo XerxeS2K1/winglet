@@ -26,6 +26,7 @@ import { chatMessages, groupActivity, isActivity, type Entry } from '../lib/mess
 import { useModelSheet } from '../lib/modelSheet';
 import { easeOut, spring, useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
+import { perfFirstContent } from '../lib/perf';
 import { homeChat, isOwner, isTyping, useApp, useServerState } from '../lib/store';
 import { plainText } from '../lib/text';
 import { statusNoticeText } from '../lib/statusNotice';
@@ -387,6 +388,8 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
   const seen = useRef<Set<string> | null>(null);
   if (seen.current === null && loaded) seen.current = new Set(messages.map((m) => m.id));
   const today = dayKey(Date.now() / 1000);
+
+  useEffect(() => { if (loaded && messages.length) perfFirstContent('message list'); }, [loaded, messages.length]);
 
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = [];
