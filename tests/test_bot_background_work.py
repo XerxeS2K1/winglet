@@ -108,7 +108,17 @@ def test_a_recycled_process_number_does_not_count(activity, child):
     assert hermes_api.bot_activity(home, "chef") == {"state": "idle", "queued": 0}
 
 
-def test_an_entry_without_a_start_time_is_trusted_while_its_process_is_alive(activity, child):
+def test_an_entry_without_a_start_time_does_not_count_a_process_that_began_after_it_was_recorded(activity, child):
+    """A reused pid: the number is alive, but the process behind it is newer than the entry that names it."""
+    home, _, _ = activity
+    for recorded in (time.time() - 3600, None, "yesterday", 0):
+        item = entry(child.pid, started_at=recorded)
+        del item["host_start_time"]
+        write(home, [item])
+        assert hermes_api.bot_activity(home, "chef") == {"state": "idle", "queued": 0}, recorded
+
+
+def test_an_entry_without_a_start_time_is_trusted_while_its_process_started_before_the_entry(activity, child):
     home, _, _ = activity
     item = entry(child.pid)
     del item["host_start_time"]
