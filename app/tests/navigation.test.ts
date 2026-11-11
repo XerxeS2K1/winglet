@@ -29,10 +29,10 @@ test('sidebar modes preserve usable conversation width on phones and wide screen
 
 const servers: any[] = [{ id: 'a', bot: { title: 'Atlas' } }, { id: 'b', bot: { title: 'Nova' } }];
 const chat = (id: string, title: string, updated_at: number, kind = 'chat'): any => ({ id, title, updated_at, kind });
-const chats = { a: { main: chat('main', 'Main', 20), same: chat('same', 'Trip', 30), updates: chat('updates', 'Updates', 90, 'home') },
+const chats = { a: { main: chat('main', 'Main', 20), same: chat('same', 'Trip', 30), updates: chat('updates', 'Reports', 90, 'home') },
   b: { same: chat('same', 'Work', 40), old: chat('old', 'Notes', 1) } };
 
-test('history pins first, excludes archives/updates and keeps identical chat IDs isolated by bot', () => {
+test('history pins first, excludes archives/reports and keeps identical chat IDs isolated by bot', () => {
   const rows = sidebarChats(servers, chats, [chatKey('b', 'old')], [chatKey('a', 'same')]);
   assert.deepEqual(rows.map((x) => [x.server.id, x.chat.id]), [['b', 'old'], ['b', 'same'], ['a', 'main']]);
   assert.equal(rows[0].pinned, true);

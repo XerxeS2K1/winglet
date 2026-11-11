@@ -82,7 +82,7 @@ export function TaskProgress({ server, chatId, busy }: { server: Server; chatId:
       ?? (state === 'completed' ? 'This task finished.'
         : state === 'cancelled' ? 'This task was stopped.'
           : state === 'failed' ? 'This task ended with an error.'
-            : busy ? 'Updates will appear here as your bot works.' : 'This turn has not reported how it ended.');
+            : busy ? 'Reports will appear here as your bot works.' : 'This turn has not reported how it ended.');
   const terminalIcon = !online || pending ? null : busy ? null
     : state === 'completed' ? <CheckCircle2 size={19} color={t.colors.success} />
       : state === 'failed' ? <XCircle size={19} color={t.colors.danger} />
