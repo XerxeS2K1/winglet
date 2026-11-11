@@ -194,8 +194,9 @@ class RoutineHistory:
                     # A stale observation cannot roll back a terminal mirror row.
                     body = old
                 encoded = json.dumps(body, sort_keys=True)
-                self.db.execute('INSERT INTO routine_history_runs VALUES(?,?,?,?,?,?) ON CONFLICT(bot,id) DO UPDATE SET body=excluded.body,terminal=excluded.terminal',
-                                (scope, job_id, run_id, body.get('claimed_at') or 0, encoded, int(body['status'] in TERMINAL)))
+                if previous is None or previous['body'] != encoded:  # an unchanged run is not rewritten
+                    self.db.execute('INSERT INTO routine_history_runs VALUES(?,?,?,?,?,?) ON CONFLICT(bot,id) DO UPDATE SET body=excluded.body,terminal=excluded.terminal',
+                                    (scope, job_id, run_id, body.get('claimed_at') or 0, encoded, int(body['status'] in TERMINAL)))
                 if body.get('output_id'):
                     self.db.execute('DELETE FROM routine_history_outputs WHERE bot=? AND run_id=? AND output_id<>?', (scope,run_id,body['output_id']))
                     self.db.execute('INSERT OR REPLACE INTO routine_history_outputs VALUES(?,?,?)', (scope, body['output_id'], run_id))
