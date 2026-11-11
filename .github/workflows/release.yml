@@ -2,12 +2,23 @@ name: Release
 
 # Push a tag like v0.1.0 to build the Android APK and the plugin bundle and attach them to a
 # GitHub Release. PRs to main and manual runs build validation artifacts without publishing.
+# A manual run can also build a test APK with the developer timing and/or R8 (see docs/RELEASING.md); a tag push or a
+# pull request never can.
 on:
   push:
     tags: ["v*"]
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      timing:
+        description: "Test build with the developer timing switched on (EXPO_PUBLIC_WINGLET_PERF=1). Not for release."
+        type: boolean
+        default: false
+      r8:
+        description: "Test build with R8 code shrinking switched on (WINGLET_MINIFY=1). Not for release."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -76,6 +87,17 @@ jobs:
       IS_INTERNAL_PR: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
     steps:
       - uses: actions/checkout@v4
+      - name: No timing or R8 outside a manual test run
+        # A release, a tag, and a pull request must never carry the test switches. Ask for them on a tag (a manual run
+        # started from a tag counts) or have them already in the environment, and the run stops here.
+        if: github.event_name != 'workflow_dispatch' || github.ref_type == 'tag'
+        env:
+          ASKED_TIMING: ${{ inputs.timing }}
+          ASKED_R8: ${{ inputs.r8 }}
+        run: |
+          if [ "$ASKED_TIMING" = "true" ] || [ "$ASKED_R8" = "true" ] || [ -n "${EXPO_PUBLIC_WINGLET_PERF:-}" ] || [ -n "${WINGLET_MINIFY:-}" ]; then
+            echo "::error::Timing and R8 are only for manual test builds, never for a tag, a release or a pull request"; exit 1
+          fi
       - name: Work out the version
         run: |
           if [ "$GITHUB_REF_TYPE" = "tag" ]; then
@@ -95,6 +117,16 @@ jobs:
           fi
           echo "WINGLET_VERSION=$VERSION" >> "$GITHUB_ENV"
           echo "APK_LABEL=$LABEL" >> "$GITHUB_ENV"
+      - name: Name a manual test build after its switches
+        if: github.event_name == 'workflow_dispatch' && github.ref_type != 'tag'
+        env:
+          ASKED_TIMING: ${{ inputs.timing }}
+          ASKED_R8: ${{ inputs.r8 }}
+        run: |
+          SUFFIX=""
+          [ "$ASKED_TIMING" = "true" ] && SUFFIX="${SUFFIX}-timing"
+          [ "$ASKED_R8" = "true" ] && SUFFIX="${SUFFIX}-r8"
+          echo "APK_LABEL=${APK_LABEL}${SUFFIX}" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -132,6 +164,11 @@ jobs:
           WINGLET_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           # One APK per CPU instead of a universal one (app/plugins/withApkSplits.js).
           WINGLET_SPLIT_APKS: "1"
+          # Test switches: on only for a manual run (not from a tag) that asked for them; empty otherwise, and empty is
+          # off for both (app/src/lib/perf.ts and app/plugins/withMinify.js). Metro reads the first while Gradle bundles
+          # the JavaScript, so this step is the right place for it.
+          EXPO_PUBLIC_WINGLET_PERF: ${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' && inputs.timing && '1' || '' }}
+          WINGLET_MINIFY: ${{ github.event_name == 'workflow_dispatch' && github.ref_type != 'tag' && inputs.r8 && '1' || '' }}
         run: ./gradlew assembleRelease --no-daemon -PreactNativeArchitectures=arm64-v8a,armeabi-v7a
       - name: Check the signatures
         run: |

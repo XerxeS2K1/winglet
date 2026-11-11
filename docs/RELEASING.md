@@ -129,3 +129,17 @@ for the release variant, using the keep rules in `app/plugins/withMinify.js`. Wi
 It is a test, not a release setting: it has not yet been measured or run on a phone, and a wrong keep rule shows up as
 a crash at run time, not as a build error. Build it next to a normal one, compare the APK sizes and the R8 warnings, and
 open the app on a phone (chat, push, voice, share) before trusting it. Release publishing does not set it.
+
+### Building a test APK from the Actions tab
+
+A manual run of the Release workflow (Actions, Release, Run workflow) has two checkboxes, both off by default:
+
+- **timing** builds with `EXPO_PUBLIC_WINGLET_PERF=1`: the developer timing in `app/src/lib/perf.ts` (start-up, reply
+  times, dropped frames, written to the console and read with `adb logcat -s ReactNativeJS`). It is read when Gradle
+  bundles the JavaScript, so the same step carries it.
+- **r8** builds with `WINGLET_MINIFY=1`, the R8 test described above.
+
+The APK files carry the choice in their names: `…-timing`, `…-r8` or `…-timing-r8` after the usual `dev-<commit>` label.
+A manual run publishes nothing; only a pushed tag does. The two settings are passed to the build only for a manual run, so
+a tag push or a pull request cannot turn them on, and a step stops the run if a tag, a pull request, or a manual run
+started from a tag asks for either. A release never contains timing or R8 from this path.

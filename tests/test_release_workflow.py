@@ -6,6 +6,7 @@ and publishes nothing, so it does not need them.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -244,3 +245,154 @@ def test_failed_fetch_refuses_even_a_tag_on_stale_cached_main(workflow, reposito
     result = check_ancestry(workflow, runner, main)
     assert result.returncode != 0
     assert "fatal:" in result.stderr
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Manual test builds: `timing` and `r8` can be asked for on a manual run, and only there.
+# ---------------------------------------------------------------------------------------------------------------------
+
+
+
+# The three kinds of run that matter, plus a manual run started from a tag (GitHub allows choosing a tag as the ref).
+RUNS = {
+    "tag push": ("push", "tag", {}),
+    "pull request": ("pull_request", "branch", {}),
+    "manual": ("workflow_dispatch", "branch", {}),
+    "manual from a tag": ("workflow_dispatch", "tag", {}),
+}
+ASKED = [(False, False), (True, False), (False, True), (True, True)]
+SWITCHES = ("EXPO_PUBLIC_WINGLET_PERF", "WINGLET_MINIFY")
+
+
+def expression(text):
+    """Evaluate the small part of GitHub's expression language the workflow uses (contexts, == != && || and 'strings'),
+    with the same truthiness: an empty string, false and null are false. Anything it does not understand raises."""
+    text = str(text).strip()
+    inner = re.fullmatch(r"\$\{\{(.*)\}\}", text, re.S)
+    return (inner.group(1) if inner else text).strip()
+
+
+def evaluate(text, event, ref_type, timing=None, r8=None):
+    source = expression(text)
+    names = {"github.event_name": event, "github.ref_type": ref_type, "inputs.timing": timing, "inputs.r8": r8}
+    literals = []
+    source = re.sub(r"'([^']*)'", lambda m: literals.append(m.group(1)) or f"@{len(literals) - 1}@", source)
+    for name in sorted(names, key=len, reverse=True):
+        source = source.replace(name, f"names[{name!r}]")
+    source = source.replace("&&", " and ").replace("||", " or ")
+    source = re.sub(r"@(\d+)@", lambda m: repr(literals[int(m.group(1))]), source)
+    rest = re.sub(r"names\['[^']*'\]", "", source)
+    assert "github." not in rest and "inputs." not in rest, source                                       # an unknown context
+    return eval(source, {"__builtins__": {}}, {"names": names, "True": True, "False": False, "None": None})  # noqa: S307
+
+
+def android(workflow):
+    return workflow["jobs"]["android"]
+
+
+def step_named(workflow, start):
+    found = [s for s in android(workflow)["steps"] if str(s.get("name", "")).startswith(start)]
+    assert len(found) == 1, (start, len(found))
+    return found[0]
+
+
+def position(workflow, step):
+    return android(workflow)["steps"].index(step)
+
+
+def test_a_manual_run_offers_timing_and_r8_as_checkboxes_that_start_off(workflow):
+    inputs = workflow[True]["workflow_dispatch"]["inputs"]
+    assert set(inputs) == {"timing", "r8"}
+    for name in ("timing", "r8"):
+        assert inputs[name]["type"] == "boolean" and inputs[name]["default"] is False, name
+        assert inputs[name]["description"]
+    # nothing else can carry them: a tag push and a pull request have no inputs to fill in
+    assert "inputs" not in workflow[True]["push"] and "inputs" not in workflow[True]["pull_request"]
+
+
+def test_the_switches_reach_the_build_only_for_a_manual_run_that_asked_and_not_from_a_tag(workflow):
+    env = step_named(workflow, "Build release APKs")["env"]
+    for (label, (event, ref_type, _)), (timing, r8) in ((r, a) for r in RUNS.items() for a in ASKED):
+        got = {k: evaluate(env[k], event, ref_type, timing, r8) for k in SWITCHES}
+        manual_test = event == "workflow_dispatch" and ref_type == "branch"
+        want = {"EXPO_PUBLIC_WINGLET_PERF": "1" if manual_test and timing else "", "WINGLET_MINIFY": "1" if manual_test and r8 else ""}
+        assert got == want, (label, timing, r8, got)
+
+
+def test_the_switches_are_set_nowhere_else_in_the_workflow(workflow):
+    """One step sets them (the build step); the guard only reads them. A second place could switch them on for a release."""
+    setters = [(job, step.get("name", step.get("uses"))) for job, body in workflow["jobs"].items() for step in body["steps"]
+               if any(name in step.get("env", {}) for name in SWITCHES)]
+    assert setters == [("android", "Build release APKs")], setters
+    for job, body in workflow["jobs"].items():
+        assert not any(name in body.get("env", {}) for name in SWITCHES), job                 # not at job level
+        assert not any(name in str(step.get("with", "")) for step in body["steps"] for name in SWITCHES), job
+    assert "env" not in workflow or not any(name in workflow["env"] for name in SWITCHES)      # nor for the whole workflow
+    for body in workflow["jobs"].values():                                                     # nor written into GITHUB_ENV
+        for step in body["steps"]:
+            for line in str(step.get("run", "")).splitlines():
+                assert not ("GITHUB_ENV" in line and any(name in line for name in SWITCHES)), line
+    for job in ("checks", "plugin", "release"):
+        assert not any(n in str(workflow["jobs"][job]) for n in SWITCHES + ("inputs.",)), job
+
+
+def guard_step(workflow):
+    return step_named(workflow, "No timing or R8 outside a manual test run")
+
+
+def test_a_guard_stops_a_run_that_is_not_a_manual_test_build_but_has_either_switch(workflow):
+    guard = guard_step(workflow)
+    build = step_named(workflow, "Build release APKs")
+    assert position(workflow, guard) < position(workflow, build)
+    assert "continue-on-error" not in guard
+    for label, (event, ref_type, _) in RUNS.items():
+        runs = bool(evaluate(guard["if"], event, ref_type))
+        assert runs == (label != "manual"), label            # every run except a plain manual one is guarded
+
+
+def run_guard(workflow, tmp_path, **env):
+    step = {"run": guard_step(workflow)["run"]}
+    base = {k: v for k, v in os.environ.items() if k not in SWITCHES}
+    return run_step(step, tmp_path, {**base, **env})
+
+
+def test_the_guard_really_fails_when_asked_for_either_switch_and_passes_when_clean(workflow, tmp_path):
+    assert run_guard(workflow, tmp_path).returncode == 0
+    assert run_guard(workflow, tmp_path, ASKED_TIMING="false", ASKED_R8="false").returncode == 0
+    for extra in ({"ASKED_TIMING": "true"}, {"ASKED_R8": "true"}, {"EXPO_PUBLIC_WINGLET_PERF": "1"}, {"WINGLET_MINIFY": "1"}):
+        result = run_guard(workflow, tmp_path, **extra)
+        assert result.returncode != 0 and "::error::" in result.stdout and "never for a tag" in result.stdout, extra
+    # the guard's own inputs are the same two inputs the build uses
+    assert set(guard_step(workflow)["env"].values()) == {"${{ inputs.timing }}", "${{ inputs.r8 }}"}
+
+
+def label_step(workflow):
+    return step_named(workflow, "Name a manual test build after its switches")
+
+
+def test_a_manual_test_build_names_its_files_after_the_switches_and_nothing_else_does(workflow, tmp_path):
+    step = label_step(workflow)
+    assert position(workflow, step_named(workflow, "Work out the version")) < position(workflow, step) < position(workflow, step_named(workflow, "Rename APKs"))
+    for label, (event, ref_type, _) in RUNS.items():
+        assert bool(evaluate(step["if"], event, ref_type)) == (label == "manual"), label
+    for timing, r8, suffix in ((False, False, ""), (True, False, "-timing"), (False, True, "-r8"), (True, True, "-timing-r8")):
+        github_env = tmp_path / f"env-{timing}-{r8}"
+        github_env.write_text("")
+        env = {**os.environ, "APK_LABEL": "dev-abc1234", "GITHUB_ENV": str(github_env),
+               "ASKED_TIMING": str(timing).lower(), "ASKED_R8": str(r8).lower()}
+        assert run_step(step, tmp_path, env).returncode == 0
+        assert github_env.read_text().strip() == f"APK_LABEL=dev-abc1234{suffix}", (timing, r8)
+    # A tag release keeps the bare version as its label, and the files are renamed from that label.
+    version = step_named(workflow, "Work out the version")["run"]
+    assert 'LABEL="$VERSION"' in version.split("else")[0] and "timing" not in version and "r8" not in version
+    assert 'winglet-${APK_LABEL}-${ABI}.apk' in step_named(workflow, "Rename APKs")["run"]
+
+
+def test_a_manual_run_still_publishes_nothing_and_the_publish_job_ignores_the_switches(workflow):
+    release = workflow["jobs"]["release"]
+    assert release["if"] == "github.ref_type == 'tag'"
+    assert set(release["needs"]) >= {"checks", "android", "plugin"}
+    for label, (event, ref_type, _) in RUNS.items():
+        assert bool(evaluate(release["if"], event, ref_type)) == (ref_type == "tag"), label
+    assert not any(word in str(release) for word in ("timing", "r8", "inputs.", "WINGLET_MINIFY", "PERF"))
+    assert "workflow_dispatch" not in str(release)
