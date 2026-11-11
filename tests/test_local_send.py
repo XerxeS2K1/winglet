@@ -79,10 +79,23 @@ async def test_traffic_that_came_through_a_tunnel_is_refused_even_with_the_token
     assert r.status == 403 and texts(env) == []
 
 
+async def test_a_request_with_the_quick_tunnel_host_header_is_refused_even_with_the_token(env, monkeypatch):
+    monkeypatch.setattr(env.hub, "connection", {"mode": "quick"})
+    monkeypatch.setattr(env.hub, "tunnel_host", "tunnel-123.example.invalid")
+    r = await send(env, {"chat_id": "general", "text": "x"}, headers={"Host": env.hub.tunnel_host})
+    assert r.status == 403 and texts(env) == []
+
+
 def test_only_loopback_addresses_pass():
     ok = lambda remote: local_send.request_problem(remote, {}, TOKEN, TOKEN)
     assert ok("127.0.0.1") is None and ok("::1") is None
     assert ok("192.168.1.5") == "not local" and ok("8.8.8.8") == "not local" and ok(None) == "not local"
+
+
+def test_ipv6_mapped_loopback_is_local():
+    ok = lambda remote: local_send.request_problem(remote, {}, TOKEN, TOKEN)
+    assert ok("::ffff:127.0.0.1") is None
+    assert ok("::1") is None
 
 
 async def test_a_chat_that_does_not_exist_is_not_created(env):
@@ -133,20 +146,42 @@ async def test_the_token_never_reaches_the_log(env, caplog):
 # -- the token file ------------------------------------------------------------------------------------------------
 
 def test_publish_writes_a_private_file_and_withdraw_removes_it(tmp_path):
-    token = local_send.publish(tmp_path, 8787)
+    token = local_send.publish(tmp_path, "127.0.0.1", 8787)
     path = tmp_path / local_send.FILE_NAME
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert json.loads(path.read_text()) == {"url": "http://127.0.0.1:8787", "token": token}
-    assert local_send.publish(tmp_path, 8787) != token   # a new token every start
+    assert local_send.publish(tmp_path, "127.0.0.1", 8787) != token   # a new token every start
     local_send.withdraw(tmp_path)
     assert not path.exists()
     local_send.withdraw(tmp_path)                        # already gone: fine
 
 
-@pytest.mark.parametrize("extra,secret,want", [({}, "", False), ({}, "true", True), ({}, "0", False),
-                                               ({"local_send": True}, "", True), ({"local_send": False}, "true", False)])
-def test_it_is_off_unless_asked_for(extra, secret, want):
-    assert local_send.enabled(extra, secret) is want
+def test_publish_uses_an_ipv6_url_when_the_hub_listens_on_loopback_ipv6(tmp_path):
+    token = local_send.publish(tmp_path, "::1", 8788)
+    assert json.loads((tmp_path / local_send.FILE_NAME).read_text())["url"] == "http://[::1]:8788"
+
+
+def test_publish_falls_back_to_ipv4_loopback_when_the_hub_listens_on_all_addresses(tmp_path):
+    for host in ("0.0.0.0", "::"):
+        local_send.publish(tmp_path, host, 8789)
+        assert json.loads((tmp_path / local_send.FILE_NAME).read_text())["url"] == "http://127.0.0.1:8789"
+
+
+@pytest.mark.parametrize("extra,want", [
+    ({}, False),
+    ({"local_send": True}, True),
+    ({"local_send": False}, False),
+])
+def test_it_is_off_unless_asked_for(extra, want, monkeypatch):
+    monkeypatch.setenv("WINGLET_LOCAL_SEND", "")
+    assert local_send.enabled(extra) is want
+
+
+def test_the_env_beats_the_yaml_extra_for_local_send(monkeypatch):
+    monkeypatch.setenv("WINGLET_LOCAL_SEND", "false")
+    assert local_send.enabled({"local_send": True}) is False
+    monkeypatch.setenv("WINGLET_LOCAL_SEND", "true")
+    assert local_send.enabled({"local_send": False}) is True
 
 
 # -- the sender Hermes calls for `hermes send --to winglet:<chat>` -------------------------------------------------
@@ -161,13 +196,13 @@ def sender(tmp_path, monkeypatch):
 
 
 def test_sender_posts_with_the_token_from_the_file(sender):
-    token = local_send.publish(sender.dir, 9001)
+    token = local_send.publish(sender.dir, "127.0.0.1", 9001)
     assert sender.run("general", "hello\x00 there") == {"success": True, "message_id": "m1"}
     assert sender.calls == [("http://127.0.0.1:9001", token, {"chat_id": "general", "text": "hello there", "notify": True})]
 
 
 def test_sender_notify_can_be_switched_off(sender, monkeypatch):
-    local_send.publish(sender.dir, 9001)
+    local_send.publish(sender.dir, "127.0.0.1", 9001)
     monkeypatch.setenv(local_send.NOTIFY_ENV, "false")
     sender.run("general", "hello")
     assert sender.calls[0][2]["notify"] is False
@@ -176,7 +211,7 @@ def test_sender_notify_can_be_switched_off(sender, monkeypatch):
 def test_sender_can_be_pointed_at_the_token_file_of_another_profile(sender, tmp_path, monkeypatch):
     other = tmp_path / "other"
     other.mkdir()
-    token = local_send.publish(other, 9002)
+    token = local_send.publish(other, "127.0.0.1", 9002)
     monkeypatch.setenv(local_send.FILE_ENV, str(other / local_send.FILE_NAME))
     assert sender.run("general", "hi")["success"]
     assert sender.calls[0][:2] == ("http://127.0.0.1:9002", token)
@@ -190,12 +225,12 @@ def test_sender_says_so_when_local_send_is_off(sender):
 @pytest.mark.parametrize("chat,text,kw", [("general", "", {}), ("", "hi", {}), ("general", "a" * 16_001, {}),
                                           ("general", "hi", {"media_files": ["/etc/passwd"]})])
 def test_sender_refuses_before_touching_the_network(sender, chat, text, kw):
-    local_send.publish(sender.dir, 9001)
+    local_send.publish(sender.dir, "127.0.0.1", 9001)
     assert "error" in sender.run(chat, text, **kw) and sender.calls == []
 
 
 def test_sender_reports_an_unreachable_gateway_without_the_token(tmp_path, monkeypatch):
-    token = local_send.publish(tmp_path, 1)          # port 1: nothing listens
+    token = local_send.publish(tmp_path, "127.0.0.1", 1)          # port 1: nothing listens
     monkeypatch.setattr(local_send, "_data_dir", lambda cfg: tmp_path)
     answer = asyncio.run(local_send.standalone_sender(None, "general", "hi"))
     assert "isn't reachable" in answer["error"] and token not in answer["error"]
@@ -203,7 +238,7 @@ def test_sender_reports_an_unreachable_gateway_without_the_token(tmp_path, monke
 
 async def test_sender_end_to_end_against_a_running_hub(env, tmp_path, monkeypatch):
     """The real urllib sender, talking to the real route on a real loopback socket."""
-    local_send.publish(tmp_path, env.client.port)
+    local_send.publish(tmp_path, "127.0.0.1", env.client.port)
     env.hub.local_send_token = json.loads((tmp_path / local_send.FILE_NAME).read_text())["token"]
     monkeypatch.setattr(local_send, "_data_dir", lambda cfg: tmp_path)
     ok = await local_send.standalone_sender(None, "general", "coder settled: x")
@@ -267,3 +302,12 @@ def test_a_host_the_loopback_cannot_reach_keeps_it_off(wired):
     wired.adapter._local_send, wired.adapter._host = True, "192.168.1.5"
     wired.adapter._publish_local_send(wired.hub)
     assert wired.hub.local_send_token is None and not (wired.dir / local_send.FILE_NAME).exists()
+
+
+async def test_a_per_process_rate_limit_blocks_excess_posts(env, monkeypatch):
+    monkeypatch.setattr(local_send, "_rate_times", local_send.collections.deque())
+    for i in range(30):
+        r = await send(env, {"chat_id": "general", "text": f"x{i}"})
+        assert r.status == 200, i
+    r = await send(env, {"chat_id": "general", "text": "one too many"})
+    assert r.status == 429 and texts(env) == [f"x{i}" for i in range(30)]

@@ -250,7 +250,7 @@ class WingletAdapter(BasePlatformAdapter):
             self._port = int(extra_or_secret(extra, "port", "WINGLET_PORT", DEFAULT_PORT) or DEFAULT_PORT)
         except (TypeError, ValueError):
             self._port = DEFAULT_PORT
-        self._local_send = local_send.enabled(extra, get_scoped_secret("WINGLET_LOCAL_SEND", ""))
+        self._local_send = local_send.enabled(extra)
         self._ntfy_server = str(extra_or_secret(extra, "ntfy_server", "WINGLET_NTFY_SERVER", "https://ntfy.sh"))
         self._public_url = str(extra_or_secret(extra, "public_url", "WINGLET_PUBLIC_URL", "") or "").rstrip("/")
         self._hub: Optional[Hub] = None
@@ -414,7 +414,7 @@ class WingletAdapter(BasePlatformAdapter):
             logger.warning("[%s] local send needs Winglet to listen on loopback or all addresses; it stays off", self.name)
             return
         try:
-            hub.local_send_token = local_send.publish(directory, self._port)
+            hub.local_send_token = local_send.publish(directory, self._host, self._port)
             logger.info("[%s] local send is on (loopback only)", self.name)
         except OSError:
             logger.warning("[%s] couldn't write the local-send token file; it stays off", self.name)

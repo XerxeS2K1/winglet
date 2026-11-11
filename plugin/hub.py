@@ -2295,14 +2295,18 @@ class Hub:
         only a reader of the 0600 token file has. Off (404) unless the gateway turned it on at start.
         """
         auth = request.headers.get("Authorization", "")
+        tunnel_host = self.tunnel_host if self.connection.get("mode") == "quick" else None
         problem = local_send.request_problem(request.remote, request.headers,
                                              auth[7:].strip() if auth.lower().startswith("bearer ") else "",
-                                             self.local_send_token)
+                                             self.local_send_token,
+                                             tunnel_host=tunnel_host)
         if problem == "off":
             return _error(404, "Not found.")
         if problem:
             logger.warning("[winglet] refused a local send: %s", problem)
             return _error(403, "Not allowed.")
+        if not local_send.rate_ok():
+            return _error(429, "Too many local-send posts. Wait a minute.")
         body = await self._body(request)
         notify = body.get("notify", True)
         chat_id = body.get("chat_id")
@@ -2311,7 +2315,7 @@ class Hub:
         try:
             text = local_send.clean_text(body.get("text"))
         except local_send.Refused as exc:
-            return _error(413 if "limit" in str(exc) else 400, str(exc))
+            return _error(exc.status, str(exc))
         message = await self.post_message(chat_id.strip(), text, push=notify, existing_only=True,
                                           meta={"origin": "local-send"})
         if message is None:
