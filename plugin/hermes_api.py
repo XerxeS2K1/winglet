@@ -2435,8 +2435,30 @@ def sessions_available() -> bool:
         r = _router("sessions")
     except HermesUnavailable:
         return False
-    return all(hasattr(r, name) for name in ("get_sessions", "search_sessions", "get_session_detail",
-                                             "get_session_messages"))
+    # Every keyword the calls below pass. A Hermes that renamed one would otherwise 500 the Sessions screen on every
+    # open; reporting it unavailable turns the screen off instead.
+    needed = {
+        "get_sessions": ("limit", "offset", "min_messages", "archived", "order", "source", "sources", "exclude_sources",
+                         "cwd_prefix", "full", "profile"),
+        "search_sessions": ("q", "limit", "profile", "source", "sources", "exclude_sources"),
+        "get_session_detail": ("profile",),          # the session id goes in by position
+        "get_session_messages": ("profile", "limit", "offset", "order", "include_compacted",
+                                 "inline_images"),
+    }
+    return all(callable(getattr(r, name, None)) and _accepts(getattr(r, name), keywords)
+               for name, keywords in needed.items())
+
+
+def _accepts(fn, keywords) -> bool:
+    """True when ``fn`` can be called with all of these keyword arguments (or cannot be inspected: then assume yes)."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return all(name in params and params[name].kind is not inspect.Parameter.POSITIONAL_ONLY for name in keywords)
 
 
 def _session_row(row: dict) -> dict:

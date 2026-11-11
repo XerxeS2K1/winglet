@@ -44,3 +44,46 @@ def test_pausing_still_works_when_hermes_has_the_switch(monkeypatch):
     assert hermes_api.set_paused(True) == {"reason": "r"}
     assert hermes_api.set_paused(False) == {"reason": "r"}
     assert calls == [("on", "why"), ("on", "paused from Winglet"), ("off",)]
+
+
+# -- #17 ---------------------------------------------------------------------------------------------------------------
+
+def sessions_router(monkeypatch, **overrides):
+    """A fake Hermes sessions router whose functions take what this Hermes's real ones take."""
+    def get_sessions(limit=20, offset=0, min_messages=0, archived="exclude", order="created", source=None, sources=None,
+                     exclude_sources=None, cwd_prefix=None, full=False, profile=None): ...
+
+    async def search_sessions(q="", limit=20, profile=None, source=None, sources=None, exclude_sources=None): ...
+
+    async def get_session_detail(session_id, profile=None): ...
+
+    async def get_session_messages(session_id, profile=None, limit=None, offset=0, order=None, include_compacted=False,
+                                   inline_images=True): ...
+
+    router = types.SimpleNamespace(get_sessions=get_sessions, search_sessions=search_sessions,
+                                   get_session_detail=get_session_detail, get_session_messages=get_session_messages)
+    for name, fn in overrides.items():
+        setattr(router, name, fn)
+    monkeypatch.setattr(hermes_api, "_router", lambda name: router)
+
+
+def test_sessions_are_available_when_hermes_takes_every_keyword_we_pass(monkeypatch):
+    sessions_router(monkeypatch)
+    assert hermes_api.sessions_available() is True
+
+
+@pytest.mark.parametrize("name,fn", [
+    ("get_sessions", lambda limit=20, offset=0, min_messages=0, archived="exclude", order="created", source=None,
+     sources=None, exclude_sources=None, cwd_prefix=None, full=False, profile_name=None: None),   # `profile` renamed
+    ("search_sessions", lambda query="", limit=20, profile=None, source=None, sources=None, exclude_sources=None: None),
+    ("get_session_messages", lambda session_id, profile=None, limit=None, offset=0, order=None: None),  # kwargs dropped
+    ("get_session_detail", "not callable"),
+])
+def test_sessions_turn_themselves_off_when_a_keyword_was_renamed(monkeypatch, name, fn):
+    sessions_router(monkeypatch, **{name: fn})
+    assert hermes_api.sessions_available() is False
+
+
+def test_a_router_that_takes_any_keyword_is_trusted(monkeypatch):
+    sessions_router(monkeypatch, get_sessions=lambda **kw: None)
+    assert hermes_api.sessions_available() is True
