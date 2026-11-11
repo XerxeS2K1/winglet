@@ -8,7 +8,7 @@ import pytest
 
 from plugin import hermes_api as api
 from plugin import hub as hub_module
-from plugin.hub import Hub
+from plugin.hub import Hub, VERSION
 from plugin.store import Store
 from test_trust import pair_phone, post_signed
 
@@ -19,6 +19,21 @@ class Refused(ValueError):
 
 class Unavailable(RuntimeError):
     pass
+
+
+def next_release(version=VERSION):
+    """A release the hub counts as newer than itself, whatever VERSION is now.
+
+    A hard-coded "next version" stops being newer the moment the release bumps VERSION, and then the
+    version gate answers before the behaviour a test is aiming at is ever reached.
+    """
+    major, minor, patch = (int(part) for part in version.split("-")[0].split(".")[:3])
+    newer = f"{major}.{minor}.{patch + 1}"
+    return {"version": newer, "tag": f"v{newer}", "sha": "a" * 40, "notes": "What is new",
+            "url": f"https://github.com/XerxeS2K1/winglet/releases/tag/v{newer}", "requires_hermes": ">=0.22.7"}
+
+
+RELEASE = next_release()
 
 
 class FakeHermes:
@@ -41,8 +56,7 @@ class FakeHermes:
         self.install_result = (0, ["Installed winglet"])
         self.installed_ok = True
         self.settled = None
-        self.release = {"version": "0.11.6", "tag": "v0.11.6", "sha": "a" * 40, "notes": "What is new",
-                        "url": "https://github.com/XerxeS2K1/winglet/releases/tag/v0.11.6", "requires_hermes": ">=0.22.7"}
+        self.release = dict(RELEASE)
 
     def system_stats(self):
         return {"system": "Linux", "cpu_count": 4, "cpu_percent": 12.5,
