@@ -13,3 +13,10 @@ test('the Agent hub no longer lists Schedule or Logs, and its history group is c
   assert.match(hub, /key="checkpoints"/);
   assert.match(hub, /key="sessions"/);
 });
+
+test('the Server screen no longer lists Schedule but keeps Logs and Activity', () => {
+  const server = source('app/server.tsx');
+  assert.doesNotMatch(server, /title="Schedule"|'\/schedule'/);
+  assert.match(server, /title="Logs"/);
+  assert.match(server, /title="Activity"/);
+});
