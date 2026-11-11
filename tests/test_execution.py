@@ -456,3 +456,34 @@ def test_same_subagent_id_in_two_chats_routes_to_its_own_parent():
     tracker.tool_started("c2", "read_file", "call", {"path": "/tmp/second"}, turn_id="t2")
     assert tracker.snapshot("general")["subagents"][0]["activity"] == []
     assert tracker.snapshot("side")["subagents"][0]["activity"][0]["detail"] == "/tmp/second"
+
+
+def test_overlapping_child_calls_of_one_tool_each_settle_their_own_row():
+    tracker, _, _ = make_tracker()
+    tracker.turn_started("s1", "t1")
+    tracker.subagent_started("s1", "c1", "sa1", goal="Read two files", parent_turn_id="t1")
+    tracker.tool_started("c1", "read_file", "a", {"path": "/tmp/same"}, turn_id="t1")
+    tracker.tool_started("c1", "read_file", "b", {"path": "/tmp/same"}, turn_id="t1")
+    tracker.tool_finished("c1", "read_file", "a", turn_id="t1", status="ok")
+    rows = tracker.snapshot("general")["subagents"][0]["activity"]
+    assert [r["status"] for r in rows] == ["completed", "running"]  # the first call's row, not the last
+    tracker.tool_finished("c1", "read_file", "b", turn_id="t1", status="error")
+    rows = tracker.snapshot("general")["subagents"][0]["activity"]
+    assert [r["status"] for r in rows] == ["completed", "failed"]  # no third, detail-less row
+    assert all(set(r) <= {"name", "detail", "status"} for r in rows)  # the row shape the app reads is unchanged
+
+
+def test_a_finished_subagent_or_turn_leaves_no_tool_running():
+    tracker, _, _ = make_tracker()
+    tracker.turn_started("s1", "t1")
+    tracker.subagent_started("s1", "c1", "sa1", goal="One", parent_turn_id="t1")
+    tracker.tool_started("c1", "web_search", "x", {"query": "q"}, turn_id="t1")
+    tracker.subagent_finished("s1", child_session_id="c1", status="completed")  # Hermes sent no tool_call_history
+    sub = tracker.snapshot("general")["subagents"][0]
+    assert [r["status"] for r in sub["activity"]] == ["unknown"]
+    tracker.subagent_started("s1", "c2", "sa2", goal="Two", parent_turn_id="t1")
+    tracker.tool_started("c2", "web_search", "y", {"query": "q2"}, turn_id="t1")
+    tracker.turn_finished("s1", "t1", completed=True)
+    by_id = {s["id"]: s for s in tracker.snapshot("general")["subagents"]}
+    assert by_id["sa2"]["status"] == "unknown"
+    assert [r["status"] for r in by_id["sa2"]["activity"]] == ["unknown"]
