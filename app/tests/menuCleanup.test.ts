@@ -20,3 +20,15 @@ test('the Server screen no longer lists Schedule but keeps Logs and Activity', (
   assert.match(server, /title="Logs"/);
   assert.match(server, /title="Activity"/);
 });
+
+test('"Open the app on" moved from the Agent hub to the App group in Settings, with the same behaviour', () => {
+  const hub = source('app/(tabs)/agent.tsx');
+  assert.doesNotMatch(hub, /Open the app on|setMainBot|useMainBot/);
+  assert.match(hub, /title="Devices"/); // the Access group keeps Devices
+  const settings = source('app/settings.tsx');
+  const app = settings.slice(settings.indexOf('<SectionHeader title="App" />'), settings.indexOf('title="On this phone"'));
+  assert.match(app, /title="Open the app on"/);
+  assert.match(app, /value=\{server\.bot\.title\}/);
+  assert.match(app, /mainBot\?\.id === server\.id \? undefined : \(\) => setMainBot\(server\.id\)/);
+  assert.match(settings, /import \{ setMainBot, useMainBot \} from '\.\.\/lib\/mainBot'/);
+});

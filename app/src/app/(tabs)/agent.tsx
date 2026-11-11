@@ -9,8 +9,8 @@ import { BotSwitcher } from '../../components/BotSwitcher';
 import { HUB_BAR, HubBar } from '../../components/InboxView';
 import { LivePet } from '../../components/LivePet';
 import {
-  Activity, BarChart, Brain, Check, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
-  ShieldCheck, Sparkles, SquareTerminal, Star, UserRoundPen,
+  Activity, BarChart, Brain, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
+  ShieldCheck, Sparkles, SquareTerminal, UserRoundPen,
 } from '../../components/icons';
 import { moodOf } from '../../lib/agent';
 import { activeModel, modelName } from '../../lib/modelOptions';
@@ -18,7 +18,6 @@ import { api } from '../../lib/api';
 import { useTabBarSpace } from '../../components/TabBar';
 import { Button, Footnote, ListGroup, ListRow, SectionHeader } from '../../components/ui';
 import { connectionView } from '../../lib/connection';
-import { setMainBot, useMainBot } from '../../lib/mainBot';
 import { homeChat, isOwner, useApp, useServerState } from '../../lib/store';
 import type { AgentInfo, Server } from '../../lib/types';
 import { WIDE_BREAKPOINT } from '../../lib/theme';
@@ -43,7 +42,6 @@ function AgentHub({ server }: { server: Server }) {
   const rt = useServerState(server.id);
   const network = useApp((st) => st.network);
   const mood = useApp((st) => moodOf(st.runtime[server.id]));
-  const mainBot = useMainBot();
   const y = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => { y.value = e.contentOffset.y; });
   const child = !!server.parent;
@@ -118,9 +116,6 @@ function AgentHub({ server }: { server: Server }) {
         <ListGroup>
           {!child && rt?.info?.features?.roles ? <ListRow icon={<ShieldCheck />} title="Devices"
             value={rt.me ? rt.me.role === 'owner' ? 'Owner' : 'Member' : undefined} onPress={() => router.push('/devices')} /> : null}
-          <ListRow icon={<Star />} title="Open the app on this bot" value={mainBot?.id === server.id ? 'Main' : undefined}
-            right={mainBot?.id === server.id ? <Check size={20} color={t.colors.accent} /> : undefined} chevron={false}
-            onPress={mainBot?.id === server.id ? undefined : () => setMainBot(server.id)} />
         </ListGroup>
         {child && parent && owner ? <ManageBot server={server} parent={parent} /> : null}
 
