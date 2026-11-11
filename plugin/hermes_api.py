@@ -1447,7 +1447,7 @@ def parse_schedule(text: str) -> dict:
     return {"display": schedule.get("display") or text, "kind": schedule.get("kind"), "next_run_at": nxt}
 
 
-# Routine results arrive in the Winglet Updates chat.
+# Routine results arrive in the Winglet Reports chat.
 ROUTINE_DELIVERY = "winglet:home"
 
 

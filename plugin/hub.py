@@ -55,6 +55,7 @@ VERSION = "0.11.5"
 PROTOCOL = 2
 MIN_APP_PROTOCOL = 1
 HOME_CHAT_ID = "home"
+HOME_TITLE = "Reports"  # what the routine-results feed is called; a chat stored as "Updates" is shown by its kind
 def _key_in_use() -> web.Response:
     """A retry key finds only a job of the same kind; one that belongs to something else is refused, not answered with."""
     return _error(409, "That request key was already used for something else. Try again.")
@@ -282,6 +283,11 @@ def _snippet(text: str, query: str, before: int = 50, after: int = 110) -> str:
 SHADE_TOKEN_TTL = 15 * 60
 
 
+def _shown_title(chat: Dict[str, Any]) -> str:
+    """The name to show for a chat. The Reports feed may be stored under its old name, so it is named by kind."""
+    return HOME_TITLE if chat.get("kind") == "home" else (chat.get("title") or "")
+
+
 def _clip(text: str, n: int) -> str:
     text = " ".join((text or "").split())
     return text if len(text) <= n else text[: n - 1] + "…"
@@ -422,7 +428,7 @@ class Hub:
         self.screen: Optional[screen_api.ScreenCapture] = screen
         # Server-persisted projects (folders). Additive tables, created in place.
         self.projects = Projects(store)
-        self.store.ensure_chat(HOME_CHAT_ID, "Updates", kind="home")
+        self.store.ensure_chat(HOME_CHAT_ID, HOME_TITLE, kind="home")
 
     # -- lifecycle -------------------------------------------------------------------
 
@@ -1514,7 +1520,7 @@ class Hub:
         device = self._require(request)
         chat_id = request.match_info["chat_id"]
         if chat_id == HOME_CHAT_ID:
-            return _error(400, "the Updates chat can't be deleted")
+            return _error(400, "the Reports chat can't be deleted")
         chat = self._visible_chat(device, chat_id)
         if device["role"] != "owner" and chat_id == self.home_chat(device):
             return _error(400, "This is your main chat; it can't be deleted.")
@@ -1937,7 +1943,7 @@ class Hub:
         device = self._require(request)
         chat = self._visible_chat(device, request.match_info["chat_id"])
         bot = self.bot()["title"]
-        title = "Updates" if chat["kind"] == "home" else chat["title"]
+        title = _shown_title(chat)
         safe = uploads.safe_name(f"{title}.md", "chat.md")
         response = web.StreamResponse(headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quote(safe)}"})
@@ -2036,7 +2042,7 @@ class Hub:
             for chat in chats:
                 goal = self._goal_for(chat["id"])
                 if goal is not None:
-                    out.append({"chat_id": chat["id"], "title": chat["title"], "goal": goal})
+                    out.append({"chat_id": chat["id"], "title": _shown_title(chat), "goal": goal})
             return out
         goals = await asyncio.to_thread(collect)
         order = {"active": 0, "paused": 1, "done": 2}
@@ -2070,7 +2076,7 @@ class Hub:
         found, next_before = await asyncio.to_thread(
             self.store.search_page, query, list(chats), limit=60, before_position=before)
         results = [{"message": {k: m[k] for k in ("id", "chat_id", "role", "created_at", "position")},
-                    "chat": {"id": m["chat_id"], "title": chats[m["chat_id"]]["title"], "kind": chats[m["chat_id"]]["kind"]},
+                    "chat": {"id": m["chat_id"], "title": _shown_title(chats[m["chat_id"]]), "kind": chats[m["chat_id"]]["kind"]},
                     "snippet": _snippet(m["text"], query)} for m in found]
         return _json({"results": results, "next_before": next_before})
 
@@ -2247,7 +2253,7 @@ class Hub:
         return _json({"items": items, "pending": self.pending_for(device)})
 
     def _chat_bypass_key(self, chat_id: str) -> Optional[str]:
-        """The Hermes session key an ordinary chat maps to, or None (Rooms, Updates, unknown chats,
+        """The Hermes session key an ordinary chat maps to, or None (Rooms, Reports, unknown chats,
         or a server whose Hermes has no per-session bypass)."""
         chat = self.store.get_chat(chat_id)
         if self.chat_approval_bypass is None or not chat or chat.get("kind") != "chat":
@@ -2500,7 +2506,7 @@ class Hub:
         for chat_id in self._typing:
             chat = self.store.get_chat(chat_id)
             if chat is not None and (chat.get("bot") or None) == _BOT.get():
-                names.append(str(chat.get("title") or chat_id))
+                names.append(str(_shown_title(chat) or chat_id))
         return sorted(names)
 
     async def set_typing(self, chat_id: str, on: bool) -> None:
@@ -4874,7 +4880,7 @@ class Hub:
         chat = self.store.get_chat(chat_id) or {"title": chat_id}
         with self._bot_context(chat.get("bot") or None):
             bot = self.bot()["title"]
-        title = bot if chat_id != HOME_CHAT_ID else f"{bot} · Update"
+        title = bot if chat_id != HOME_CHAT_ID else f"{bot} · Report"
         if chat.get("kind") == "chat" and chat.get("title") not in ("", "General"):
             title = f"{bot} · {chat['title']}"
         await self.push_now({"title": title, "body": _clip(message["text"], 180) or "Sent an attachment", "url": self.chat_path(chat_id),

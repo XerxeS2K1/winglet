@@ -571,9 +571,9 @@ class Projects:
 
     @staticmethod
     def _require_organizable(chat: Dict[str, Any], bot: Optional[str], device: Dict[str, Any]) -> None:
-        """The Updates feed and every bot/member's main chat stay out of projects."""
+        """The Reports feed and every bot/member's main chat stay out of projects."""
         chat_id = chat["id"]
         if chat.get("kind") != "chat":
-            raise ProjectError("The Updates feed can't be in a project.")
+            raise ProjectError("The Reports feed can't be in a project.")
         if chat_id in ("home", "general", f"b-{bot or ''}") or chat_id.startswith("m-"):
             raise ProjectError("A main chat can't be in a project.")
