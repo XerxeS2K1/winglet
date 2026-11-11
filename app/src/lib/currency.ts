@@ -4,8 +4,13 @@ export type Currency = 'gbp' | 'usd';
 /** Pounds by default. Kept on this device with the other preferences (prefs.currency). */
 export const DEFAULT_CURRENCY: Currency = 'gbp';
 
-/** A rate we can trust to multiply by: a finite number above zero. */
-export const usableRate = (rate: unknown): rate is number => typeof rate === 'number' && Number.isFinite(rate) && rate > 0;
+/** The band the server accepts a pounds-per-dollar rate in (plugin/fx.py RATE_MIN, RATE_MAX); anything outside is a broken value. */
+export const RATE_MIN = 0.05;
+export const RATE_MAX = 5;
+
+/** A rate we can trust to multiply by: a finite number inside the band the server uses. */
+export const usableRate = (rate: unknown): rate is number =>
+  typeof rate === 'number' && Number.isFinite(rate) && rate >= RATE_MIN && rate <= RATE_MAX;
 
 /**
  * The currency actually shown. Pounds need a rate; without one the numbers stay dollars, and say so with a '$',

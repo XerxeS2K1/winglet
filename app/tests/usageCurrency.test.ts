@@ -72,6 +72,15 @@ test('with no usable rate, pounds fall back to dollars and never get a £', () =
   }
 });
 
+test('a rate outside the server\'s 0.05 to 5 band is not used, and the edges are', () => {
+  for (const rate of [0.049, 0.0001, 5.01, 100, 745]) {
+    assert.equal(shownCurrency('gbp', rate), 'usd', String(rate));
+    assert.equal(formatCost(10, 'gbp', rate), '$10.00', String(rate));
+  }
+  assert.equal(formatCost(10, 'gbp', 0.05), '£0.50');
+  assert.equal(formatCost(10, 'gbp', 5), '£50.00');
+});
+
 test('dollars stay dollars whatever the rate, unconverted', () => {
   assert.equal(formatCost(10, 'usd', 0.745), '$10.00');
   assert.equal(formatCost(10, 'usd'), '$10.00');
@@ -85,6 +94,8 @@ test('the Usage screen has a £ / $ control that saves to the device and passes 
   assert.match(screen, /label: '£'/);
   assert.match(screen, /label: '\$'/);
   assert.match(screen, /usePrefs\(\(st\) => st\.prefs\.currency\)/);
+  assert.match(screen, /<Segmented label="Currency" value=\{shownCurrency\(currency, data\?\.usd_gbp\)\}/); // the pills match the figures
+  assert.doesNotMatch(screen, /label="Currency" value=\{currency\}/);
   assert.match(screen, /setCurrency\(\{ currency: c \}\)/);
   assert.match(screen, /formatCost\(usd, currency, data\?\.usd_gbp\)/);
   for (const part of ['HourlyBars payload={hours}', 'DailyBars rows={data.daily}', 'Models rows={data.by_model}']) {

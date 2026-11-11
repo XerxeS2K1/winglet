@@ -7,7 +7,7 @@ import { Screen } from '../components/Screen';
 import { withSelectedServer } from '../components/ServerScreen';
 import { Card, Footnote, ListGroup, ListRow, LoadError, SectionHeader, Segmented, Skeleton } from '../components/ui';
 import { api } from '../lib/api';
-import { formatCost, type Currency } from '../lib/currency';
+import { formatCost, shownCurrency, type Currency } from '../lib/currency';
 import { usePrefs } from '../lib/prefs';
 import { spring, useReducedMotion } from '../lib/motion';
 import { useApp } from '../lib/store';
@@ -72,7 +72,7 @@ function UsageScreen() {
             options={[{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }]} />
         </View>
         <View style={{ width: 104 }}>
-          <Segmented label="Currency" value={currency} onChange={(c: Currency) => setCurrency({ currency: c })}
+          <Segmented label="Currency" value={shownCurrency(currency, data?.usd_gbp)} onChange={(c: Currency) => setCurrency({ currency: c })}
             options={[{ value: 'gbp', label: '£' }, { value: 'usd', label: '$' }]} />
         </View>
       </View>
