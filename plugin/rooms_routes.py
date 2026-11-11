@@ -79,7 +79,7 @@ async def _run(request, kind):
                     except Exception:
                         logger.error('[winglet] could not broadcast project changes')
                 try:
-                    result['projects'] = hub.projects.snapshot(device, bot)
+                    result['projects'] = await asyncio.to_thread(hub.projects.snapshot, device, bot)
                 except Exception:
                     logger.error('[winglet] could not load project snapshot')
         return web.json_response(result)
