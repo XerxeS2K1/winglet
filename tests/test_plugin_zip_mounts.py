@@ -253,8 +253,8 @@ try:
 except Exception as exc:
     problem(f"verifying the installed tree failed: {type(exc).__name__}: {exc}")
 
-# 5. nothing came from the repository
-stray = sorted({m.__file__ for m in list(sys.modules.values()) if getattr(m, "__file__", None) and Path(m.__file__).resolve().is_relative_to(repo.resolve())})
+# 5. nothing came from the repository's own plugin/ folder (a Hermes checkout may sit elsewhere inside the repo, as in CI)
+stray = sorted({m.__file__ for m in list(sys.modules.values()) if getattr(m, "__file__", None) and Path(m.__file__).resolve().is_relative_to((repo / "plugin").resolve())})
 if stray:
     problem("modules were loaded from the repository, not the zip: " + ", ".join(stray[:3]))
 
