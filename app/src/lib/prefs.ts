@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { getJSON, setJSON } from './storage';
 import type { AccentName, DarkTone } from './theme';
 import type { SavedModel } from './modelOptions';
+import { DEFAULT_CURRENCY, type Currency } from './currency';
 
 export type Prefs = {
   voiceListenWith: 'server' | 'device';
@@ -34,11 +35,13 @@ export type Prefs = {
   /** Exact provider/model pairs, available only where the current server offers that provider. */
   favoriteModels: SavedModel[];
   recentModels: SavedModel[];
+  /** What the Usage screen shows costs in. Pounds when the server has a rate, else dollars. */
+  currency: Currency;
 };
 
 export const DEFAULT_PREFS: Prefs = {
   voiceListenWith: 'server', voiceSpeakWith: 'server',
-  theme: 'system', accent: 'iris', darkTone: 'charcoal', layout: 'bubbles', motion: 'system', transparency: 'system', haptics: true, sounds: true, busyMode: 'steer', appLock: false, updateCheck: true, mainBot: '', sidebar: 'auto', pinnedChats: [], archivedChats: [], favoriteModels: [], recentModels: [],
+  theme: 'system', accent: 'iris', darkTone: 'charcoal', layout: 'bubbles', motion: 'system', transparency: 'system', haptics: true, sounds: true, busyMode: 'steer', appLock: false, updateCheck: true, mainBot: '', sidebar: 'auto', pinnedChats: [], archivedChats: [], favoriteModels: [], recentModels: [], currency: DEFAULT_CURRENCY,
 };
 
 const KEY = 'winglet.prefs';
