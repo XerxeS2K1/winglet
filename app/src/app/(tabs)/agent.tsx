@@ -93,8 +93,6 @@ function AgentHub({ server }: { server: Server }) {
         <View style={s.actions}>
           <Button title="Open chat" style={s.action} icon={<MessageCircle size={17} color={t.colors.onInk} />}
             onPress={() => router.push(`/chat/${server.id}/${homeChat(rt)}`)} />
-          {child ? null : <Button title="Updates" variant="secondary" style={s.action} icon={<Sparkles size={17} color={t.colors.text} />}
-            onPress={() => router.push(`/chat/${server.id}/home`)} />}
         </View>
 
         <VerifyNotice server={server} />

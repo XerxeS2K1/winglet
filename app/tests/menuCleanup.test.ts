@@ -58,3 +58,12 @@ test('the chat menu no longer carries Connection details', () => {
   assert.match(menu, /Mute notifications/); // the rest of the menu is still there
   assert.match(menu, /Delete chat/);
 });
+
+test('the Agent hub has one button, Open chat, at full width: the feed is linked from Chats and Schedule instead', () => {
+  const hub = source('app/(tabs)/agent.tsx');
+  assert.doesNotMatch(hub, /title="Updates"|title="Reports"|\/home`/);
+  assert.equal((hub.match(/<Button /g) ?? []).length, 1);
+  assert.match(hub, /title="Open chat"/);
+  assert.match(source('app/(tabs)/chats.tsx'), /open\('home'\)/); // the Chats list pill is still the way in
+  assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/); // and Schedule's button
+});
