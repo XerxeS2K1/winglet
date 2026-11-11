@@ -9,8 +9,8 @@ import { BotSwitcher } from '../../components/BotSwitcher';
 import { HUB_BAR, HubBar } from '../../components/InboxView';
 import { LivePet } from '../../components/LivePet';
 import {
-  Activity, BarChart, Brain, CalendarClock, Check, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
-  ScrollText, ShieldCheck, Sparkles, SquareTerminal, Star, UserRoundPen,
+  Activity, BarChart, Brain, Check, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
+  ShieldCheck, Sparkles, SquareTerminal, Star, UserRoundPen,
 } from '../../components/icons';
 import { moodOf } from '../../lib/agent';
 import { activeModel, modelName } from '../../lib/modelOptions';
@@ -74,10 +74,8 @@ function AgentHub({ server }: { server: Server }) {
     <ListRow key="mcp" icon={<Plug />} title="MCP servers" onPress={() => router.push('/mcp')} />,
   ] : [];
   const historyRows = control ? [
-    <ListRow key="schedule" icon={<CalendarClock />} title="Schedule" onPress={() => router.push('/schedule')} />,
     ...(rt.info?.features?.checkpoints ? [<ListRow key="checkpoints" icon={<FileDiff />} title="Checkpoints" onPress={() => router.push('/checkpoints')} />] : []),
     ...(rt.info?.features?.sessions ? [<ListRow key="sessions" icon={<MessageSquareText />} title="Sessions" onPress={() => router.push('/sessions')} />] : []),
-    ...(!child ? [<ListRow key="logs" icon={<ScrollText />} title="Logs" onPress={() => router.push('/logs')} />] : []),
   ] : [];
 
   return (
@@ -105,7 +103,7 @@ function AgentHub({ server }: { server: Server }) {
 
         {brainRows.length ? <><SectionHeader title="Agent" /><ListGroup>{brainRows}</ListGroup></> : null}
         {abilityRows.length ? <><SectionHeader title="Abilities" /><ListGroup>{abilityRows}</ListGroup></> : null}
-        {historyRows.length ? <><SectionHeader title="Automation & history" /><ListGroup>{historyRows}</ListGroup></> : null}
+        {historyRows.length ? <><SectionHeader title="History" /><ListGroup>{historyRows}</ListGroup></> : null}
 
         <SectionHeader title="Server" />
         <ListGroup>
