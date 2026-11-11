@@ -179,7 +179,7 @@ ROUTE_POLICY = {
     "h_project_order": "signed", "h_project_delete": "signed", "h_project_chat_create": "signed",
     "h_project_chat_move": "signed", "h_project_chat_remove": "signed",
     "h_project_rooms": "device", "h_project_room_move": "owner_signed",
-    "h_models": "owner", "h_providers": "owner", "h_identity": "owner", "h_memory": "owner", "h_usage": "owner",
+    "h_models": "owner", "h_providers": "owner", "h_identity": "owner", "h_memory": "owner", "h_usage": "owner", "h_usage_hours": "owner",
     "h_model_default": "owner_signed", "h_provider_key": "owner_signed", "h_provider_key_delete": "owner_signed",
     "h_identity_put": "owner_signed", "h_memory_edit": "owner_signed",
     "h_bots": "owner", "h_bot_create": "owner_signed", "h_bot_rename": "owner_signed", "h_bot_delete": "owner_signed",
@@ -522,6 +522,7 @@ class Hub:
         r.add_get("/api/memory", self.h_memory)
         r.add_post("/api/memory", self.h_memory_edit)
         r.add_get("/api/usage", self.h_usage)
+        r.add_get("/api/usage/hours", self.h_usage_hours)
         r.add_get("/api/bots", self.h_bots)
         r.add_post("/api/bots", self.h_bot_create)
         r.add_patch("/api/bots/{name}", self.h_bot_rename)
@@ -3464,6 +3465,16 @@ class Hub:
         except ValueError:
             return _error(400, "days must be a number")
         return _json(await self._call(self._need_hermes().usage, days))
+
+    async def h_usage_hours(self, request: web.Request) -> web.Response:
+        """Tokens and cost per hour for the last ``days`` (default 7, at most 40); see ``hermes_api.usage_hours``."""
+        self._require(request)
+        try:
+            days = int(request.query.get("days") or 7)
+        except ValueError:
+            return _error(400, "days must be a number")
+        days = max(1, min(days, 40))
+        return _json(await self._call(self._need_hermes().usage_hours, days))
 
     # -- bots: other Hermes profiles on this server ----------------------------------------------
 

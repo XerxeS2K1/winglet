@@ -10,6 +10,7 @@ import { api } from '../lib/api';
 import { spring, useReducedMotion } from '../lib/motion';
 import { useApp } from '../lib/store';
 import { alpha } from '../lib/theme';
+import { barHeights, dayTotal, hasUsage, hourBars, type HoursPayload } from '../lib/usageHours';
 import { makeStyles, useTheme } from '../lib/themeContext';
 
 type Row = { input_tokens?: number; output_tokens?: number; estimated_cost?: number; sessions?: number };
@@ -39,10 +40,13 @@ function UsageScreen() {
   const [byDays, setByDays] = useState<Record<string, Usage>>({});
   const [error, setError] = useState('');
   const data = byDays[days] ?? null;
+  // Per-hour figures are always the last 7 days. A server without the route just has no hourly section.
+  const [hours, setHours] = useState<HoursPayload | null>(null);
 
   const load = () => {
     if (!server) return;
     const period = days;
+    api<HoursPayload>(server, '/api/usage/hours?days=7').then(setHours).catch(() => setHours(null));
     return api<Usage>(server, `/api/usage?days=${period}`)
       .then((d) => { setByDays((all) => ({ ...all, [period]: d })); setError(''); })
       .catch((e) => setError((e as Error).message));
@@ -67,6 +71,12 @@ function UsageScreen() {
             <Stat label="Sessions" value={String(data.totals.total_sessions ?? 0)} />
           </Animated.View>
           <Footnote>Costs use public prices and may differ from your bill.</Footnote>
+          {hours ? (
+            <Animated.View entering={rise(reduced, 1)}>
+              <SectionHeader title="Tokens per hour" />
+              <HourlyBars payload={hours} />
+            </Animated.View>
+          ) : null}
           <Animated.View entering={rise(reduced, 1)}>
             <SectionHeader title="Tokens per day" />
             <DailyBars rows={data.daily} />
@@ -133,6 +143,52 @@ export function DailyBars({ rows }: { rows: Usage['daily'] }) {
       <View style={s.axis}>
         <Text style={s.axisText}>{label(rows[0].day)}</Text>
         <Text style={s.axisText}>{label(rows[rows.length - 1].day)}</Text>
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * The last seven days, one thin bar per hour (input, output and cache tokens together). Tap an hour to see it;
+ * the day's total and cost sit under the chart. An hour's tokens are counted when its session last wrote, so a
+ * long session shows up at its end rather than spread across the hours it ran.
+ */
+export function HourlyBars({ payload }: { payload: HoursPayload }) {
+  const t = useTheme();
+  const s = useStyles();
+  const [picked, setPicked] = useState<number | null>(null);
+  if (!hasUsage(payload)) return <Card><Text style={s.empty}>No usage recorded yet</Text></Card>;
+  const bars = hourBars(payload);
+  const heights = barHeights(bars, 140);
+  const chosen = picked === null ? undefined : bars.find((b) => b.hour === picked);
+  const shown = chosen ?? bars[bars.length - 1];
+  const day = dayTotal(bars, shown.hour);
+  const when = (h: number) => new Date(h * 1000).toLocaleString([], { weekday: 'short', hour: 'numeric' });
+  const dayLabel = new Date(`${day.day}T12:00:00`).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+  return (
+    <Card style={{ gap: 14 }}>
+      <View style={s.readout} accessibilityLiveRegion="polite">
+        <Text style={s.readoutDay}>{when(shown.hour)}{chosen ? '' : ' (latest hour)'}</Text>
+        <View style={s.modelHead}>
+          <Text style={s.readoutValue}>{compact(shown.tokens)} tokens</Text>
+          <Text style={s.modelValue}>{money(shown.cents / 100)}</Text>
+        </View>
+      </View>
+      <View style={s.plot}>
+        <View style={s.grid} />
+        <View style={[s.bars, { gap: 1 }]}>
+          {bars.map((b, i) => (
+            <Pressable key={b.hour} onPress={() => setPicked(b.hour === picked ? null : b.hour)} style={s.hit} hitSlop={2}
+              accessibilityRole="button" accessibilityLabel={`${when(b.hour)}: ${compact(b.tokens)} tokens, ${money(b.cents / 100)}`}>
+              <View style={[s.bar, { minWidth: 1, height: heights[i], backgroundColor: t.colors.accent,
+                opacity: chosen && b.hour !== chosen.hour ? 0.3 : 1 }]} />
+            </Pressable>
+          ))}
+        </View>
+      </View>
+      <View style={s.modelHead} accessible accessibilityLabel={`${dayLabel}: ${compact(day.tokens)} tokens, ${money(day.cents / 100)}`}>
+        <Text style={s.empty}>{dayLabel} total</Text>
+        <Text style={s.modelValue}>{compact(day.tokens)} tokens · {money(day.cents / 100)}</Text>
       </View>
     </Card>
   );
