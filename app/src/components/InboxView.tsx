@@ -171,12 +171,12 @@ const InboxEntry = memo(function InboxEntry({ server, item, highlighted }: { ser
   const chat = rt?.chats[item.chat_id];
   return (
     <View style={[s.entry, highlighted && s.highlight]}>
-      <Tap feedback="selection" accessibilityRole="link" accessibilityLabel={`Open chat: ${chat?.kind === 'home' ? 'Updates' : chat?.title ?? 'chat'}`}
+      <Tap feedback="selection" accessibilityRole="link" accessibilityLabel={`Open chat: ${chat?.kind === 'home' ? 'Reports' : chat?.title ?? 'chat'}`}
         scaleTo={0.99} onPress={() => router.push(`/chat/${server.id}/${item.chat_id}`)}
         style={({ pressed, hovered }) => [s.meta, (pressed || hovered) && { opacity: 0.7 }]}>
         <AgentFace server={server} size={24} still />
         <Text style={s.metaText} numberOfLines={1}>
-          <Text style={s.metaBot}>{server.bot.title}</Text> · {chat?.kind === 'home' ? 'Updates' : chat?.title ?? item.chat_id}
+          <Text style={s.metaBot}>{server.bot.title}</Text> · {chat?.kind === 'home' ? 'Reports' : chat?.title ?? item.chat_id}
         </Text>
         <Text style={s.metaTime}>{ago(item.created_at)}</Text>
         <ChevronRight size={16} color={t.colors.textTertiary} />

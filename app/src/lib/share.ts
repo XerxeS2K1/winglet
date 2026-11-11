@@ -68,7 +68,7 @@ export function mainChat(homeChat: string | undefined, chats: Record<string, Cha
 
 /**
  * Where a share can go on one bot: its main chat first, then its other chats, most recent first. Not
- * Updates, and not another member's own chat, which an owner can see but shouldn't post into by accident.
+ * Reports, and not another member's own chat, which an owner can see but shouldn't post into by accident.
  */
 export function shareTargets(chats: Record<string, Chat> | undefined, main: string, deviceId: string,
   limit = 6): { id: string; title: string; main: boolean }[] {

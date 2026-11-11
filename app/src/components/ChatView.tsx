@@ -201,7 +201,7 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
 
   const view = connectionView(network, runtime, server.bot.title);
   const main = chatId === homeChat(runtime);
-  const title = composing ? landing!.title : main ? server.bot.title : chat?.kind === 'home' ? 'Updates' : chat?.title ?? 'Chat';
+  const title = composing ? landing!.title : main ? server.bot.title : chat?.kind === 'home' ? 'Reports' : chat?.title ?? 'Chat';
   const project = runtime?.projects ? projectOf(runtime.projects, chatId) : undefined;
   const status = view.kind === 'online' ? (typing ? 'Working…' : 'Online') : view.kind === 'connecting' ? 'Connecting…'
     : view.kind === 'recovering' ? 'Finding new address…' : view.kind === 'unreachable' ? 'Offline' : view.title;

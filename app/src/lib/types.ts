@@ -317,7 +317,7 @@ export type UpdatesInfo = {
   checked_at: number;
 };
 
-/** A scheduled routine: Hermes runs the prompt on its schedule and posts the result to Updates. */
+/** A scheduled routine: Hermes runs the prompt on its schedule and posts the result to Reports. */
 export type Routine = {
   id: string;
   name: string | null;

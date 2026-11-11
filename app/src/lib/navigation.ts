@@ -11,7 +11,7 @@ export function navigationWidth(width: number, mode: 'auto' | 'drawer' | 'pinned
   return mode === 'pinned' ? 64 : 0;
 }
 
-/** Pinned conversations first; archives and the separate Updates feed stay out of recents. */
+/** Pinned conversations first; archives and the separate Reports feed stay out of recents. */
 export function sidebarChats(servers: Server[], chats: Record<string, Record<string, Chat>>, pinned: string[], archived: string[], query = '', previews: Record<string, string | null> = {}) {
   const pins = new Set(pinned);
   const archives = new Set(archived);

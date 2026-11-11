@@ -67,3 +67,19 @@ test('the Agent hub has one button, Open chat, at full width: the feed is linked
   assert.match(source('app/(tabs)/chats.tsx'), /open\('home'\)/); // the Chats list pill is still the way in
   assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/); // and Schedule's button
 });
+
+test('the feed (kind home) is called Reports wherever the app names it; Updates is left for software updates', () => {
+  const files = ['lib/agent.ts', 'components/ChatView.tsx', 'components/InboxView.tsx', 'app/notifications.tsx',
+    'app/schedule.tsx', 'app/(tabs)/chats.tsx'];
+  for (const f of files) assert.doesNotMatch(source(f), /'Updates'|title="Updates"|>Updates<|Open Updates|Open updates|in Updates\.|Updates chat/, f);
+  assert.match(source('lib/agent.ts'), /kind === 'home' \? 'Reports'/);
+  assert.match(source('app/(tabs)/chats.tsx'), /accessibilityLabel="Open reports"/);
+  assert.match(source('app/schedule.tsx'), /title="Open Reports"/);
+  assert.match(source('app/schedule.tsx'), /posts its result in Reports\./);
+  // Software updates keep their name.
+  assert.match(source('app/server.tsx'), /<SectionHeader title="Updates"/);
+  assert.match(source('app/about.tsx'), /title="App updates"/);
+  assert.match(source('app/about.tsx'), /title="Server updates"/);
+  // The route and chat kind are identifiers, not words the user sees.
+  assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/);
+});

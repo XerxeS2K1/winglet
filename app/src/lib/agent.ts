@@ -26,7 +26,7 @@ export function moodOf(rt: ServerState | undefined, now = Date.now()): Mood {
 
 export function chatName(chat: Chat | undefined): string {
   if (!chat) return 'a chat';
-  return chat.kind === 'home' ? 'Updates' : chat.title;
+  return chat.kind === 'home' ? 'Reports' : chat.title;
 }
 
 /** One line for Home: what the agent is doing, in plain words. */

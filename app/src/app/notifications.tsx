@@ -63,7 +63,7 @@ function QuietSettings({ server, named }: { server: Server; named: boolean }) {
     usePushPrefs.getState().save(server, change).catch((e) => setError((e as Error).message));
   };
   const muted = Object.entries(prefs?.muted ?? {}).filter(([, until]) => until === 0 || until > Date.now() / 1000);
-  const chatName = (id: string) => id === '*' ? 'Everything' : id === homeChat(useApp.getState().runtime[server.id]) ? server.bot.title : chats?.[id]?.kind === 'home' ? 'Updates' : `#${chats?.[id]?.title ?? id}`;
+  const chatName = (id: string) => id === '*' ? 'Everything' : id === homeChat(useApp.getState().runtime[server.id]) ? server.bot.title : chats?.[id]?.kind === 'home' ? 'Reports' : `#${chats?.[id]?.title ?? id}`;
 
   return (
     <>
