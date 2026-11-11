@@ -619,7 +619,8 @@ class WingletAdapter(BasePlatformAdapter):
         if ident == "app":
             return True
         try:
-            return self._hub.current_device(ident) is not None
+            # fresh: this decides whether a turn runs, so a device unpaired a second ago must not pass on a cached row.
+            return self._hub.current_device(ident, fresh=True) is not None
         except Exception:
             logger.warning("[%s] couldn't re-check a device's pairing; refusing", self.name, exc_info=True)
             return False
