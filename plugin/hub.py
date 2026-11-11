@@ -3529,8 +3529,17 @@ class Hub:
         return name
 
     async def _bots_changed(self) -> None:
-        state = await asyncio.to_thread(self.bots_state, True)
-        await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
+        # The bot change itself has already happened; a failed refresh must be seen in the log, not die as an
+        # unretrieved task exception, and must not turn a finished rename or delete into an error.
+        try:
+            state = await asyncio.to_thread(self.bots_state, True)
+            await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
+        except Exception:
+            logger.warning("[winglet] couldn't tell the phones the bot list changed", exc_info=True)
+
+    def bots_changed_soon(self) -> asyncio.Task:
+        """Refresh every phone's bot list in the background (from the loop), keeping a reference to the task."""
+        return self._spawn(self._bots_changed())
 
     async def h_bot_rename(self, request: web.Request) -> web.Response:
         device = self._require(request)

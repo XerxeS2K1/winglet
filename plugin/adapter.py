@@ -349,8 +349,7 @@ class WingletAdapter(BasePlatformAdapter):
             hub.teamwork_ok = lambda: hermes_api.bots_available() and teamwork.can_deliver()
             if hub.bots_provider is not None:
                 loop = asyncio.get_running_loop()
-                teamwork.on_bots_changed = lambda: loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(hub._bots_changed()))
+                teamwork.on_bots_changed = lambda: loop.call_soon_threadsafe(hub.bots_changed_soon)
             # Members' tool limits hold only if every turn's final toolsets can be capped (see toolset_limit).
             hub.limits_members = hermes_api.limit_turn_toolsets(self.gateway_runner, PLATFORM) \
                 if getattr(self, "gateway_runner", None) is not None else False

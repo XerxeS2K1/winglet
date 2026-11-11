@@ -628,3 +628,32 @@ async def test_the_server_says_whether_bots_can_ask_each_other(hub):
         raise RuntimeError("no")
     hub.teamwork_ok = broken
     assert hub.features()["bot_teamwork"] is False  # an error means off, never a crash
+
+
+async def test_a_failed_bot_list_refresh_is_logged_and_the_task_is_kept(hub, caplog, monkeypatch):
+    import logging
+    seen = []
+
+    async def broken_broadcast(event, *a, **k):
+        seen.append(event["type"])
+        raise RuntimeError("socket table changed")
+
+    monkeypatch.setattr(hub, "broadcast", broken_broadcast)
+    with caplog.at_level(logging.WARNING, logger="plugin.hub"):
+        task = hub.bots_changed_soon()
+        assert task in hub._tasks  # referenced, so it cannot be collected mid-run
+        await task  # does not raise: nobody retrieves this task's exception in production
+    assert seen == ["system.bots"]
+    assert any("bot list changed" in r.getMessage() and r.exc_info for r in caplog.records)
+    await asyncio.sleep(0)
+    assert task not in hub._tasks  # and let go again when done
+
+
+async def test_a_good_bot_list_refresh_still_reaches_the_phones(client, hub):
+    owner = await pair_phone(client, hub)
+    ws, _ = await hello(client, owner)
+    hub.roster.append({"name": "writer", "title": "Writer", "description": "", "served": True})
+    await hub.bots_changed_soon()
+    event = await ws.receive_json(timeout=2)
+    assert event["type"] == "system.bots" and {b["name"] for b in event["bots"]} >= {"researcher", "writer"}
+    await ws.close()
