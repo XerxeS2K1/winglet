@@ -41,6 +41,7 @@ from urllib.parse import quote, unquote, urlsplit
 from aiohttp import WSMsgType, web
 
 from . import checkpoints as checkpoints_api, encrypted_push, keys, live_voice, recovery, self_update, uploads, webpush
+from . import local_send
 from . import screen as screen_api
 from .projects import ProjectConflict, ProjectError, Projects
 from .event_replay import EventStream, MAX_PAYLOAD
@@ -162,7 +163,7 @@ ROUTE_POLICY = {
     "h_context_operation": "owner", "h_context_compress": "owner_signed",
     "h_rooms": "paired", "h_room_state": "paired", "h_room_log": "paired",
     "h_room_create": "owner_signed", "h_room_action": "signed",
-    "h_info": "public", "h_pair": "public", "h_ws": "public", "h_static": "public", "h_media": "public",
+    "h_info": "public", "h_local_send": "public", "h_pair": "public", "h_ws": "public", "h_static": "public", "h_media": "public",
     "h_vapid": "public", "h_inbox_respond": "public", "h_server_key": "public", "h_address_check": "public",
     "h_me": "device", "h_connection": "device", "h_connection_status": "device", "h_unpair": "device", "h_chats": "device",
     "h_chat_create": "device", "h_chat_rename": "device", "h_chat_delete": "device", "h_messages": "device",
@@ -390,6 +391,8 @@ class Hub:
         self.execution: Any = None
         self.phone_tools = None
         self.processes = None
+        # The token a local script must present to post a message (plugin/local_send.py); None keeps the route off.
+        self.local_send_token: Optional[str] = None
         self.routine_history = None
         self._routine_history_lock = asyncio.Lock()
         self.rooms = None
@@ -447,6 +450,7 @@ class Hub:
         r.add_get("/api/phone-tools/log", self.h_phone_tools_log)
         r.add_get("/api/info", self.h_info)
         r.add_post("/api/pair", self.h_pair)
+        r.add_post(local_send.PATH, self.h_local_send)
         self.device_links.register(app)
         r.add_get("/api/ws", self.h_ws)
         r.add_get("/api/me", self.h_me)
@@ -2284,6 +2288,37 @@ class Hub:
                        f"chat {chat_id}" if was_on else f"chat {chat_id} (already off)")
         return _json({"enabled": False})
 
+    async def h_local_send(self, request: web.Request) -> web.Response:
+        """A script on this machine posts one bot message into an existing chat (see plugin/local_send.py).
+
+        Public in ROUTE_POLICY because it does its own check: loopback only, no proxy headers, and a token that
+        only a reader of the 0600 token file has. Off (404) unless the gateway turned it on at start.
+        """
+        auth = request.headers.get("Authorization", "")
+        problem = local_send.request_problem(request.remote, request.headers,
+                                             auth[7:].strip() if auth.lower().startswith("bearer ") else "",
+                                             self.local_send_token)
+        if problem == "off":
+            return _error(404, "Not found.")
+        if problem:
+            logger.warning("[winglet] refused a local send: %s", problem)
+            return _error(403, "Not allowed.")
+        body = await self._body(request)
+        notify = body.get("notify", True)
+        chat_id = body.get("chat_id")
+        if not isinstance(notify, bool) or not isinstance(chat_id, str) or not chat_id.strip():
+            return _error(400, "chat_id (a string) and notify (true or false) are needed.")
+        try:
+            text = local_send.clean_text(body.get("text"))
+        except local_send.Refused as exc:
+            return _error(413 if "limit" in str(exc) else 400, str(exc))
+        message = await self.post_message(chat_id.strip(), text, push=notify, existing_only=True,
+                                          meta={"origin": "local-send"})
+        if message is None:
+            return _error(404, "No such chat. Nothing was posted, and no chat was created.")
+        logger.info("[winglet] local send posted %d characters to chat %s", len(text), chat_id.strip()[:40])
+        return _json({"ok": True, "message_id": message["id"]})
+
     async def h_inbox_respond(self, request: web.Request) -> web.Response:
         item_id = request.match_info["item_id"]
         body = await self._body(request)
@@ -2470,11 +2505,13 @@ class Hub:
     # -- outbound (called by the adapter) ------------------------------------------------------
 
     async def post_message(self, chat_id: str, text: str, *, role: str = "bot", status: str = "final",
-                           meta: Optional[Dict[str, Any]] = None, push: bool = True) -> Optional[Dict[str, Any]]:
+                           meta: Optional[Dict[str, Any]] = None, push: bool = True,
+                           existing_only: bool = False) -> Optional[Dict[str, Any]]:
+        """``existing_only``: refuse (None) unless the chat already exists. add_message would otherwise create it."""
         if not push:
             meta = {**(meta or {}), "notify": False}
         message = await self.publish(
-            lambda: self.store.add_message(chat_id, role, text, status=status, meta=meta),
+            lambda: self.store.add_message(chat_id, role, text, status=status, meta=meta, existing_only=existing_only),
             lambda row: [{"type": "message.new", "chat_id": chat_id, "message": row},
                          {"type": "chat.update", "chat": _client_chat(cast(Dict[str, Any], self.store.get_chat(chat_id)))}])
         if message is None:

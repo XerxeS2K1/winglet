@@ -727,8 +727,12 @@ class Store:
     # -- messages ----------------------------------------------------------------
 
     def add_message(self, chat_id: str, role: str, text: str, *, status: str = "final",
-                    meta: Optional[Dict[str, Any]] = None, message_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                    meta: Optional[Dict[str, Any]] = None, message_id: Optional[str] = None,
+                    existing_only: bool = False) -> Optional[Dict[str, Any]]:
+        """None when the chat was deleted, or (``existing_only``) when it doesn't exist: nothing is created."""
         with self.transaction():
+            if existing_only and (self.chat_deleted(chat_id) or self._one("SELECT 1 FROM chats WHERE id = ?", (chat_id,)) is None):
+                return None
             if self.ensure_chat(chat_id, implicit=True) is None:
                 return None
             message_id, now = message_id or new_id(), _now()

@@ -28,7 +28,7 @@ from gateway.platforms._shared import extra_or_secret, get_scoped_secret, seed_e
 from gateway.platforms.base import BasePlatformAdapter, ExecApprovalPrompt, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 
-from . import bridge, checkpoints, cli, execution, fallback, hermes_api, screen, teamwork
+from . import bridge, checkpoints, cli, execution, fallback, hermes_api, local_send, screen, teamwork
 from .dependencies import missing_dependencies
 from .store import Store
 
@@ -250,6 +250,7 @@ class WingletAdapter(BasePlatformAdapter):
             self._port = int(extra_or_secret(extra, "port", "WINGLET_PORT", DEFAULT_PORT) or DEFAULT_PORT)
         except (TypeError, ValueError):
             self._port = DEFAULT_PORT
+        self._local_send = local_send.enabled(extra, get_scoped_secret("WINGLET_LOCAL_SEND", ""))
         self._ntfy_server = str(extra_or_secret(extra, "ntfy_server", "WINGLET_NTFY_SERVER", "https://ntfy.sh"))
         self._public_url = str(extra_or_secret(extra, "public_url", "WINGLET_PUBLIC_URL", "") or "").rstrip("/")
         self._hub: Optional[Hub] = None
@@ -383,6 +384,7 @@ class WingletAdapter(BasePlatformAdapter):
             self._runner = await bind_listener(self, hub.build_app(), self._host, self._port, "/api/ws",
                                                access_log=None)
             self._hub = hub
+            self._publish_local_send(hub)
             if self._connection == "quick":
                 from .tunnel import QuickTunnel, origin_url
                 self._tunnel = QuickTunnel(data_dir(), origin_url(self._host, self._port), hub.server_id(),
@@ -401,6 +403,22 @@ class WingletAdapter(BasePlatformAdapter):
                     self.name, self._host, self._port)
         return True
 
+    def _publish_local_send(self, hub) -> None:
+        """Opt-in: let a script on this machine post into a chat. Always clears any token left by an earlier run."""
+        directory = data_dir()
+        local_send.withdraw(directory)
+        hub.local_send_token = None
+        if not self._local_send:
+            return
+        if self._host not in ("0.0.0.0", "::", "127.0.0.1", "localhost", "::1"):
+            logger.warning("[%s] local send needs Winglet to listen on loopback or all addresses; it stays off", self.name)
+            return
+        try:
+            hub.local_send_token = local_send.publish(directory, self._port)
+            logger.info("[%s] local send is on (loopback only)", self.name)
+        except OSError:
+            logger.warning("[%s] couldn't write the local-send token file; it stays off", self.name)
+
     async def disconnect(self) -> None:
         self._running = False
         if self._is_secondary:
@@ -409,6 +427,7 @@ class WingletAdapter(BasePlatformAdapter):
             self._execution_tasks.clear()
             return
         self._unwatch_routines()
+        local_send.withdraw(data_dir())
         self._mark_disconnected()
         global _ACTIVE
         if _ACTIVE is self:
@@ -1094,10 +1113,14 @@ def register(ctx) -> None:
         env_enablement_fn=_env_enablement, cron_deliver_env_var="WINGLET_HOME_CHANNEL",
         max_message_length=MAX_MESSAGE_LENGTH, emoji="🪽", pii_safe=True, allow_update_command=True,
         platform_hint=PLATFORM_HINT)
-    try:
-        ctx.register_platform(**platform, parse_target_ref_fn=parse_target_ref)
-    except TypeError:
-        ctx.register_platform(**platform)  # a Hermes without target parsers looks targets up by name
+    # Newer Hermes accepts these; an older one raises TypeError, so try fewer until one is accepted.
+    for extras in ({"parse_target_ref_fn": parse_target_ref, "standalone_sender_fn": local_send.standalone_sender},
+                   {"parse_target_ref_fn": parse_target_ref}, {}):
+        try:
+            ctx.register_platform(**platform, **extras)
+            break
+        except TypeError:
+            continue
     ctx.register_cli_command(
         name="winglet", help="Pair phones and manage the Winglet app",
         setup_fn=cli.setup_parser, handler_fn=cli.main,
