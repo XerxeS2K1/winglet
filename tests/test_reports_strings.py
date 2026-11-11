@@ -56,6 +56,16 @@ async def test_a_push_for_the_feed_says_report_not_update(hub, monkeypatch):
     assert [n["title"] for n in sent] == ["Hermes · Report"]
 
 
+async def test_api_chats_shows_reports_while_db_still_says_updates(client, hub):
+    owner = await pair_phone(client, hub)
+    assert hub.store.get_chat(HOME_CHAT_ID)["title"] == "Updates"
+    response = await client.get("/api/chats", headers=owner.auth)
+    assert response.status == 200
+    chats = (await response.json())["chats"]
+    home = next(c for c in chats if c["id"] == HOME_CHAT_ID)
+    assert home["title"] == "Reports"
+
+
 async def test_an_old_stored_title_never_shows_in_the_export_name_goals_or_search(client, hub):
     owner = await pair_phone(client, hub)
     hub.store.add_message(HOME_CHAT_ID, "bot", "The backup finished.")

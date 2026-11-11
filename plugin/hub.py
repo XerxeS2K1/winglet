@@ -35,7 +35,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Set
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Set, cast
 from urllib.parse import quote, unquote, urlsplit
 
 from aiohttp import WSMsgType, web
@@ -286,6 +286,11 @@ SHADE_TOKEN_TTL = 15 * 60
 def _shown_title(chat: Dict[str, Any]) -> str:
     """The name to show for a chat. The Reports feed may be stored under its old name, so it is named by kind."""
     return HOME_TITLE if chat.get("kind") == "home" else (chat.get("title") or "")
+
+
+def _client_chat(chat: Dict[str, Any]) -> Dict[str, Any]:
+    """A chat dict safe to send to clients, with display title substituted."""
+    return {**chat, "title": _shown_title(chat)}
 
 
 def _clip(text: str, n: int) -> str:
@@ -1058,7 +1063,7 @@ class Hub:
 
     def visible_chats(self, device: Dict[str, Any]) -> List[Dict[str, Any]]:
         """The current bot's chats this device may see."""
-        return [c for c in self.store.list_chats(bot=_BOT.get()) if self.can_see(device, c)]
+        return [_client_chat(c) for c in self.store.list_chats(bot=_BOT.get()) if self.can_see(device, c)]
 
     def _in_bot(self, chat_id: str) -> bool:
         """Whether a chat belongs to the current bot."""
@@ -1472,8 +1477,8 @@ class Hub:
             lambda: self.store.create_chat(str(body.get("title") or ""),
                                            owner_device=None if device["role"] == "owner" else device["id"],
                                            bot=_BOT.get()),
-            lambda row: {"type": "chat.update", "chat": row})
-        return _json({"chat": chat})
+            lambda row: {"type": "chat.update", "chat": _client_chat(row)})
+        return _json({"chat": _client_chat(chat)})
 
     async def h_chat_rename(self, request: web.Request) -> web.Response:
         device = self._require(request)
@@ -1481,10 +1486,10 @@ class Hub:
         self._visible_chat(device, chat_id)
         body = await self._body(request)
         chat = await self.publish(lambda: self.store.rename_chat(chat_id, str(body.get("title") or "")),
-                                  lambda row: {"type": "chat.update", "chat": row})
+                                  lambda row: {"type": "chat.update", "chat": _client_chat(row)})
         if chat is None:
             return _error(404, "no such chat")
-        return _json({"chat": chat})
+        return _json({"chat": _client_chat(chat)})
 
     # -- naming chats from Hermes's own session title ------------------------------------------------
 
@@ -1513,7 +1518,7 @@ class Hub:
             self.store.set_kv(f"autotitle:{chat_id}", title)
             return row
 
-        chat = await self.publish(write, lambda row: {"type": "chat.update", "chat": row})
+        chat = await self.publish(write, lambda row: {"type": "chat.update", "chat": _client_chat(row)})
         return chat is not None
 
     async def h_chat_delete(self, request: web.Request) -> web.Response:
@@ -1813,7 +1818,7 @@ class Hub:
         message = await self.publish(
             lambda: self.store.add_message(chat_id, "user", text, meta=meta, message_id=message_id),
             lambda row: [{"type": "message.new", "chat_id": chat_id, "message": row},
-                         {"type": "chat.update", "chat": self.store.get_chat(chat_id)}])
+                         {"type": "chat.update", "chat": _client_chat(cast(Dict[str, Any], self.store.get_chat(chat_id)))}])
         if message is None:
             return None
         if refused:
@@ -2471,7 +2476,7 @@ class Hub:
         message = await self.publish(
             lambda: self.store.add_message(chat_id, role, text, status=status, meta=meta),
             lambda row: [{"type": "message.new", "chat_id": chat_id, "message": row},
-                         {"type": "chat.update", "chat": self.store.get_chat(chat_id)}])
+                         {"type": "chat.update", "chat": _client_chat(cast(Dict[str, Any], self.store.get_chat(chat_id)))}])
         if message is None:
             logger.debug("[winglet] discarded output for deleted chat %s", chat_id)
             return None
@@ -2494,7 +2499,7 @@ class Hub:
         gone = await self.publish(
             lambda: self.store.delete_message(message_id),
             lambda row: [{"type": "message.delete", "chat_id": row["chat_id"], "message_id": message_id},
-                         {"type": "chat.update", "chat": self.store.get_chat(row["chat_id"])}])
+                         {"type": "chat.update", "chat": _client_chat(cast(Dict[str, Any], self.store.get_chat(row["chat_id"])))}])
         if gone is None:
             return False
         await asyncio.to_thread(lambda: [self._remove_upload(row) for row in files])
@@ -2779,7 +2784,7 @@ class Hub:
                 elif event.get("type") == "chat.update":
                     previous = event.get("chat") or {}
                     current = self.store.get_chat(previous.get("id"))
-                    event = ({**event, "chat": current} if current else
+                    event = ({**event, "chat": _client_chat(current)} if current else
                              {"type": "chat.delete", "chat_id": previous.get("id"),
                               "owner_device": previous.get("owner_device"), "event_seq": event["event_seq"]})
                 elif event.get("type") in {"inbox.new", "inbox.update"}:
