@@ -51,3 +51,10 @@ test('the Connection screen offers one way into Notifications at a time and keep
   assert.match(screen, /On, through the \$\{channel\}/);
   assert.match(screen, /Not set up on this device/);
 });
+
+test('the chat menu no longer carries Connection details', () => {
+  const menu = source('components/ChatMenu.tsx');
+  assert.doesNotMatch(menu, /Connection details|\/connection\//);
+  assert.match(menu, /Mute notifications/); // the rest of the menu is still there
+  assert.match(menu, /Delete chat/);
+});
