@@ -3,8 +3,7 @@ import { router } from 'expo-router';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { Linking, Text, View } from 'react-native';
 import { InstallButton } from '../components/AppUpdate';
-import { AgentFace } from '../components/AgentFace';
-import { Activity, CircleArrowUp, ExternalLink, FileText, HardDrive, RefreshCw } from '../components/icons';
+import { CircleArrowUp, ExternalLink, FileText, HardDrive, RefreshCw } from '../components/icons';
 import { Logo } from '../components/Logo';
 import { Screen } from '../components/Screen';
 import { Button, Card, Footnote, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
@@ -14,14 +13,11 @@ import { checkCacheStatus, getCacheStatus, resetCache, subscribeCacheStatus } fr
 import { usePrefs } from '../lib/prefs';
 import { APP_PROTOCOL, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
-import { compareVersions } from '../lib/version';
 
-/** This app's version and updates, and the on-device cache. The server's versions and updates are on the Server screen. */
+/** This app's version, updates, storage and help. Everything about a bot or its server is on that bot's page and the Server screen. */
 export default function AboutScreen() {
   const t = useTheme();
   const s = useStyles();
-  const servers = useApp((st) => st.servers);
-  const runtime = useApp((st) => st.runtime);
   const clearCache = useApp((st) => st.clearCache);
   const [cleared, setCleared] = useState(false);
   const [confirmReset, setConfirmReset] = useState(false);
@@ -41,33 +37,6 @@ export default function AboutScreen() {
         </View>
       </View>
       <Footnote>Not affiliated with Nous Research.</Footnote>
-
-      <SectionHeader title="Your bots" />
-      <View style={{ gap: 10 }}>
-        {servers.map((srv) => {
-          const info = runtime[srv.id]?.info;
-          const compat = runtime[srv.id]?.compat;
-          const behind = !!info?.version && !!appVersion && compareVersions(info.version, appVersion) < 0;
-          return (
-            <Card key={srv.id} style={{ gap: t.space.md }}>
-              <View style={s.botRow}>
-                <AgentFace server={srv} size={44} still />
-                <View style={{ flex: 1, minWidth: 0 }}>
-                  <Text style={s.botName}>{srv.bot.title}</Text>
-                </View>
-                <Button size="sm" variant="secondary" title="Server" icon={<Activity size={15} color={t.colors.text} />} onPress={() => router.push(`/connection/${srv.id}`)} />
-              </View>
-              {compat === 'update-app' ? (
-                <Text style={s.warn}>Update this app to connect to {srv.bot.title}.</Text>
-              ) : compat === 'update-server' || behind ? (
-                <Text style={s.warn}>
-                  {compat ? 'Update needed' : 'Update available'}: Winglet is behind.
-                </Text>
-              ) : null}
-            </Card>
-          );
-        })}
-      </View>
 
       {appUpdateSupported ? (
         <AppUpdateCard appVersion={appVersion} />
@@ -161,8 +130,6 @@ const useStyles = makeStyles((t) => ({
   pill: { paddingHorizontal: t.space.md, paddingVertical: t.space.xs, borderRadius: t.radius.pill, backgroundColor: t.colors.pressed, borderWidth: 1, borderColor: t.colors.border },
   pillText: { ...t.type.caption, color: t.colors.textSecondary },
   meta: { ...t.type.footnote, color: t.colors.textSecondary, marginTop: 2 },
-  botRow: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  botName: { ...t.type.bodyStrong, color: t.colors.text },
   warn: { ...t.type.callout, color: t.colors.warning },
   mono: { fontFamily: t.fonts.mono, color: t.colors.text },
   note: { ...t.type.callout, color: t.colors.textSecondary },
