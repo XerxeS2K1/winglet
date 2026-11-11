@@ -96,6 +96,8 @@ def test_ipv6_mapped_loopback_is_local():
     ok = lambda remote: local_send.request_problem(remote, {}, TOKEN, TOKEN)
     assert ok("::ffff:127.0.0.1") is None
     assert ok("::1") is None
+    # Unwrapping the mapped form must not let a mapped outside address through.
+    assert ok("::ffff:8.8.8.8") == "not local" and ok("::ffff:192.168.1.5") == "not local"
 
 
 async def test_a_chat_that_does_not_exist_is_not_created(env):

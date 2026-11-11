@@ -144,7 +144,12 @@ def request_problem(remote: Optional[str], headers, bearer: str, token: Optional
     if not token:
         return "off"
     try:
-        if remote is None or not ipaddress.ip_address(remote).is_loopback:
+        if remote is None:
+            return "not local"
+        address = ipaddress.ip_address(remote)
+        # Older Python 3.12 releases do not call ::ffff:127.0.0.1 loopback; a dual-stack socket reports callers that way.
+        address = getattr(address, "ipv4_mapped", None) or address
+        if not address.is_loopback:
             return "not local"
     except ValueError:
         return "not local"
