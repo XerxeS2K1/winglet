@@ -61,6 +61,7 @@ def _key_in_use() -> web.Response:
 
 
 RESTART_DELAY_SECONDS = 0.8
+ROTATE_CLOSE_DELAY_SECONDS = 0.8  # same room as a restart: the new token must reach the phone before its old sockets close
 # An installed update restarts the gateway only when no chat is running. Waiting is bounded: 30 minutes is long enough for
 # a normal chat or hand-off to finish, and shorter than the hour after which an unconfirmed update stops blocking a new one
 # and than the cron watch's life. Hermes itself refuses a restart while sessions are live (and says so only in the log of
@@ -2992,7 +2993,7 @@ class Hub:
         for ws, meta in sockets:
             device = self.store.device_for_token(meta["auth_token"]) if meta.get("auth_token") else self.store.get_device(meta["device"]["id"])
             if device is None:
-                dead.append((ws, 4401, b"unpaired"))
+                dead.append((ws, 1012, b"token replaced, reconnect") if meta.get("replaced") else (ws, 4401, b"unpaired"))
                 continue
             if scope is not _ANY_BOT and scope != meta.get("bot"):
                 continue
@@ -3208,13 +3209,21 @@ class Hub:
             return _error(404, "no such device")
         self.audit("token.rotated", device, device["name"])
         # Sockets opened with the old token would otherwise be closed as "unpaired" by the next broadcast, which
-        # the app reads as signed out. Close them now with an ordinary "reconnect" code instead (the app retries
-        # with the token it just saved). They are not moved to the new token: the old one "no longer works".
-        for ws, meta in list(self._sockets.items()):
-            if meta["device"]["id"] == device["id"]:
-                with contextlib.suppress(Exception):
-                    await ws.close(code=1012, message=b"token replaced, reconnect")
+        # the app reads as signed out. They get an ordinary "reconnect" code instead, and only after the response
+        # has gone out: the app retries as soon as a socket closes and must already hold the new token, or it
+        # would present the old one. They are not moved to the new token: the old one "no longer works".
+        old = [ws for ws, meta in self._sockets.items() if meta["device"]["id"] == device["id"]]
+        for ws in old:
+            self._sockets[ws]["replaced"] = True  # a broadcast in the meantime must not call it "unpaired" either
+        if old:
+            self._spawn(self._close_replaced_sockets(old))
         return _json({"token": token})
+
+    async def _close_replaced_sockets(self, sockets: List[Any]) -> None:
+        await asyncio.sleep(ROTATE_CLOSE_DELAY_SECONDS)  # let the response reach the phone first
+        for ws in sockets:
+            with contextlib.suppress(Exception):
+                await ws.close(code=1012, message=b"token replaced, reconnect")
 
     async def h_audit(self, request: web.Request) -> web.Response:
         self._require(request)

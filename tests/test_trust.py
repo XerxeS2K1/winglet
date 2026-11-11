@@ -333,6 +333,21 @@ async def test_token_rotation_reconnects_open_sockets_instead_of_calling_them_un
     assert (await again.receive_json())["type"] == "hello"
 
 
+async def test_rotation_response_goes_out_before_old_sockets_close_and_a_broadcast_in_between_is_not_unpaired(client, hub):
+    phone = await pair_phone(client, hub)
+    ws = await client.ws_connect("/api/ws")
+    await ws.send_json({"type": "auth", "token": phone.token})
+    assert (await ws.receive_json())["type"] == "hello"
+    resp = await post_signed(client, phone, "/api/devices/me/rotate-token", {})
+    assert resp.status == 200  # the response is in the phone's hands...
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(ws.receive(), 0.1)  # ...and the old socket has not been closed yet
+    await hub.post_message("general", "in between", push=False)  # a broadcast while the old socket is still open
+    msg = await asyncio.wait_for(ws.receive(), 5)
+    assert msg.type.name in ("CLOSE", "CLOSED", "CLOSING")
+    assert ws.close_code == 1012  # not 4401
+
+
 async def test_approval_requires_signed_http_but_deny_remains_available(client, hub):
     owner = await pair_phone(client, hub)
     item = await hub.add_inbox('approval', 'general', 'Run?', '', {'choices': ['once', 'deny']}, push=False)
