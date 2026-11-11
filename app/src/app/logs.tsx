@@ -57,7 +57,7 @@ function LogsScreen() {
       </IconButton>} onRefresh={load}>
       <View style={{ gap: 12, marginTop: 16 }}>
         <Segmented label="Log" value={file} onChange={(v) => { setFile(v); setLines(300); }}
-          options={[{ value: 'agent', label: 'Agent' }, { value: 'gateway', label: 'Gateway' }, { value: 'errors', label: 'Errors' }]} />
+          options={[{ value: 'agent', label: 'Agent' }, { value: 'gateway', label: 'Server' }, { value: 'errors', label: 'Errors' }]} />
         <View style={s.chips}>
           {LEVELS.map((l) => <Chip key={l.value || 'all'} label={l.label} selected={level === l.value} onPress={() => setLevel(l.value)} />)}
         </View>

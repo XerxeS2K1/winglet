@@ -84,7 +84,7 @@ function SessionsScreen() {
           : <View style={{ gap: 10, marginTop: 18 }}>{[0, 1, 2, 3].map((i) => <Skeleton key={i} height={68} radius={t.radius.lg} />)}</View>
       ) : (
         <Animated.View entering={reduced ? undefined : FadeIn}>
-          <SectionHeader title={searching ? 'Search results' : 'Conversations'} right={<Text style={s.time}>{searching ? list.length : total}</Text>} />
+          <SectionHeader title={searching ? 'Search results' : 'Chats'} right={<Text style={s.time}>{searching ? list.length : total}</Text>} />
           {list.length ? <ListGroup>{list.map((row, i) => (
             <Animated.View key={row.id} entering={reduced || i > 12 ? undefined
               : FadeIn.duration(180)}>
@@ -94,7 +94,7 @@ function SessionsScreen() {
           {!list.length ? (
             <View style={s.empty}>
               <View style={s.emptyIcon}><Search size={24} color={t.colors.textSecondary} /></View>
-              <Text style={s.emptyText}>{searching ? `Nothing said matches "${query.trim()}".` : 'No conversations yet.'}</Text>
+              <Text style={s.emptyText}>{searching ? `Nothing said matches "${query.trim()}".` : 'No chats yet.'}</Text>
             </View>
           ) : null}
         </Animated.View>

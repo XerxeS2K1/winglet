@@ -61,11 +61,11 @@ function RoomsScreen() {
   if (params.room) return <RoomConversation key={`${server.id}:${params.room}`} server={server} roomId={params.room} online={online} owner={owner} />;
   return <Screen title="Rooms"
     right={online && feature && owner && !params.createProject ? <IconButton label="Create room" variant="tonal" onPress={() => setCreating(true)}><Plus size={22} color={t.colors.accent} /></IconButton> : undefined}>
-    {!online ? <Text style={s.notice}>Connect to load rooms.</Text> : !feature ? <Text style={s.notice}>Update this gateway to use rooms.</Text> : null}
+    {!online ? <Text style={s.notice}>Connect to load rooms.</Text> : !feature ? <Text style={s.notice}>Update the server to use rooms.</Text> : null}
     {error ? <View style={s.notice}><Text style={s.error}>{error}</Text><Button title="Reload rooms" variant="secondary" onPress={() => setRefresh(x => x+1)} /></View> : null}
     {online && feature && !list && !error ? <ActivityIndicator color={t.colors.accent} style={{ margin: 30 }} /> : null}
     {list && !list.rooms.length ? <View style={s.empty}><Users size={34} color={t.colors.textSecondary} /><Text style={s.title}>No rooms yet</Text><Text style={s.meta}>{owner ? 'Create a room with two to six bots.' : 'Ask an owner to invite you to a room.'}</Text>{owner && !params.createProject ? <Button title="Create a room" onPress={() => setCreating(true)} disabled={!online} /> : null}</View> : null}
-    {list?.rooms.length ? <><SectionHeader title="Conversations" /><ListGroup>{list.rooms.map(room => <ListRow key={room.id}
+    {list?.rooms.length ? <><SectionHeader title="Chats" /><ListGroup>{list.rooms.map(room => <ListRow key={room.id}
       icon={<Users />} title={room.title} subtitle={room.members.map(m=>m.display_name).join(', ')}
       value={room.archived ? 'Archived' : room.driver.working ? 'Working' : room.unread ? 'Unread' : 'Ready'}
       onPress={() => router.push({ pathname:'/rooms', params:{ room:room.id } })} />)}</ListGroup></> : null}

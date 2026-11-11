@@ -102,7 +102,7 @@ export default function PairScreen() {
 
             <View style={s.hero}>
               <Text style={s.tagline} accessibilityRole="header">
-                {showInstall ? 'Install Winglet' : result ? 'Connection' : hasServers ? 'Link a device' : 'Connect Winglet'}
+                {showInstall ? 'Install Winglet' : result ? 'Connection' : hasServers ? 'Add a device' : 'Connect to your server'}
               </Text>
             </View>
 
@@ -134,7 +134,7 @@ export default function PairScreen() {
                 ) : null}
                 <View style={s.panel}>
                   <Field label="Paste pairing link" value={link} onChangeText={setLink} placeholder="https://…/#pair=…&fp=…" autoCapitalize="none" autoCorrect={false} />
-                  <Button title="Connect and verify" loading={busy} disabled={!link.trim() || browserApproved} onPress={() => connect(link, '', undefined)} variant="secondary" />
+                  <Button title="Connect" loading={busy} disabled={!link.trim() || browserApproved} onPress={() => connect(link, '', undefined)} variant="secondary" />
                   <Footnote>Use the whole link from the server or Add a device on a trusted owner device.</Footnote>
                 </View>
                 {manual ? (

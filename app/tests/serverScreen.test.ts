@@ -21,7 +21,7 @@ test('the Server screen has its sections in order: status, health, controls, rea
 
 test('Reaching it keeps everything the Connection screen showed', () => {
   const part = source('components/ReachingIt.tsx');
-  for (const marker of ['title="Reaching it"', 'Notification settings', 'MoveSheet', 'hideDetails']) at(part, marker);
+  for (const marker of ['title="Reaching it"', 'Notifications', 'MoveSheet', 'hideDetails']) at(part, marker);
   at(part, 'export function ReachingIt');
 });
 
@@ -42,7 +42,7 @@ test('the hub has one Server row and no Status, Connection, Devices rows or vers
   assert.equal((hub.match(/title="Server"/g) ?? []).length, 1); // the row; no header repeating it
   at(hub, "router.push('/server')");
   assert.doesNotMatch(hub, /title="Status"|title="Connection"|title="Devices"|\/connection\/|'\/devices'|Server plugin|Footnote/);
-  at(hub, 'title="Agent configuration"'); // owner-only, unchanged
+  at(hub, 'title="Bot configuration"'); // owner-only, unchanged
   at(hub, '<SectionHeader title="Abilities" />'); at(hub, '<SectionHeader title="History" />');
 });
 

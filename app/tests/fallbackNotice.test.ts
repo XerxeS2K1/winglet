@@ -58,7 +58,7 @@ test('a rate limit names who is limited, what is answering, and the countdown', 
   assert.deepEqual({ ...text }, {
     title: 'Claude rate limited — using beam 1.0 501b a23b:free',
     countdown: '1 h 56 min',
-    detail: 'Claude is tried again in 1 h 56 min',
+    detail: 'Claude can be used again in 1 h 56 min',
   });
   // Once the cooldown is spent the primary is retried on the next message, and the strip says so.
   assert.equal(stripText(snap(rate), 1000 + 6912_000).countdown, 'next message');
@@ -68,11 +68,11 @@ test('without a cooldown the strip shows no timer and says there is none', () =>
   const text = stripText(snap({ active: true, reason: 'authentication failed', retry_in_s: null, from_model: 'claude-sonnet-5-5' }, 'claude-haiku-5-5'), 5000);
   assert.equal(text.title, 'Claude not signed in — using Claude Haiku 5.5');
   assert.equal(text.countdown, '', 'no cooldown means no timer to show');
-  assert.equal(text.detail, 'No retry time from the server; sending again tries Claude');
+  assert.equal(text.detail, 'No retry time from the server; the next message tries Claude again');
   const unknown = stripText(snap({ active: true, reason: 'request timeout' }, 'x-1'), 0);
   assert.equal(unknown.title, 'Timed out — using x 1');
   assert.equal(unknown.countdown, '');
-  assert.equal(unknown.detail, 'No retry time from the server; sending again tries it');
+  assert.equal(unknown.detail, 'No retry time from the server; the next message tries it again');
 });
 
 test('an empty or untidy reason never leaves a dangling separator', () => {

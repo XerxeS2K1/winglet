@@ -15,7 +15,7 @@ test('approval screen defaults member and needs explicit check-code confirmation
   const s = source('app/link-device.tsx'); assert.match(s, /useState<Role>\('member'\)/); assert.match(s, /useState\(false\)/); assert.match(s, /Only approve a browser you are signing into/); assert.match(s, /requester-supplied/); assert.match(s, /confirmed/);
 });
 test('trusted Add-device QR/copy/share remains alongside scan-to-authorize navigation', () => {
-  const s = source('app/devices.tsx'); assert.match(s, /Scan browser QR/); assert.match(s, /Add a device/); assert.match(s, /Copy link/); assert.match(s, /SystemShare.share/); assert.match(s, /<QrCode value=\{link\}/);
+  const s = source('app/devices.tsx'); assert.match(s, /Approve a browser/); assert.match(s, /Add a device/); assert.match(s, /Copy link/); assert.match(s, /SystemShare.share/); assert.match(s, /<QrCode value=\{link\}/);
 });
 test('web hash login opens a local approval route rather than navigating to the QR URL', () => {
   const s = source('app/(tabs)/index.tsx'); assert.match(s, /parseDeviceLink/); assert.match(s, /pathname: '\/link-device'/);

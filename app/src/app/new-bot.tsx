@@ -131,7 +131,7 @@ export default function NewBotScreen() {
               </View>
             </Animated.View>
             {error ? <Text style={s.error}>{error}</Text> : null}
-            <Button title="Create bot" icon={<Bot size={16} color={t.colors.onAccent} />} loading={busy}
+            <Button title="Add bot" icon={<Bot size={16} color={t.colors.onAccent} />} loading={busy}
               disabled={!title.trim() || !slug} onPress={create} />
           </View>
         )

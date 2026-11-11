@@ -65,7 +65,7 @@ function Approval({ link }: { link: string }) {
     </Card> : done ? <Card><Text style={s.note}>{done}</Text></Card> : !error ? <Footnote>Loading browser request…</Footnote> : null}
     {error ? <Text style={s.error} accessibilityRole="alert">{error}</Text> : null}
     {!preview && error ? <Button title="Connect this phone first" variant="secondary" onPress={() => router.replace('/pair')} /> : null}
-    <Button title="Close" variant="ghost" onPress={() => router.canGoBack() ? router.back() : router.replace('/')} />
+    <Button title="Cancel sign-in" variant="ghost" onPress={() => router.canGoBack() ? router.back() : router.replace('/')} />
   </Screen>;
 }
 const useStyles = makeStyles((t) => ({

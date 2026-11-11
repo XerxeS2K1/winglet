@@ -28,7 +28,7 @@ export function BrowserSignIn({ base, onPhase, sessionRef }: { base: string; onP
       <QrCode value={state.qr} size={220} label="Browser sign-in request" />
       <Text style={s.code} selectable>{state.code?.slice(0, 3)} {state.code?.slice(3)}</Text>
       <Text style={s.note}>Waiting for your phone</Text>
-      <Footnote>On your verified owner phone, open Devices → Link a device → Scan browser QR. Match this check code before approving.</Footnote>
+      <Footnote>On your verified owner phone, open Devices → Add a device → Approve a browser. Match this check code before approving.</Footnote>
     </> : null}
     {state.phase === 'idle' || state.phase === 'creating' || state.phase === 'saving' ? <Text style={s.note}>{state.phase === 'saving' ? 'Saving this browser…' : 'Preparing sign-in QR…'}</Text> : null}
     {state.phase === 'expired' ? <Text style={s.note}>This QR expired. Create a new one to try again.</Text> : null}

@@ -66,7 +66,7 @@ function AgentHub({ server }: { server: Server }) {
     <ListRow key="memory" icon={<Brain />} title="Memory" onPress={() => router.push('/memory')} />,
     <ListRow key="usage" icon={<BarChart />} title="Usage" onPress={() => router.push('/usage')} />,
   ] : [];
-  if (rt?.info?.features?.config_catalog && owner) brainRows.push(<ListRow key="config" icon={<Cpu />} title="Agent configuration" onPress={() => router.push('/advanced-config')} />);
+  if (rt?.info?.features?.config_catalog && owner) brainRows.push(<ListRow key="config" icon={<Cpu />} title="Bot configuration" onPress={() => router.push('/advanced-config')} />);
   const abilityRows = rt?.info?.features?.abilities && owner ? [
     <ListRow key="skills" icon={<Sparkles />} title="Skills" onPress={() => router.push('/skills')} />,
     <ListRow key="tools" icon={<SquareTerminal />} title="Tools" onPress={() => router.push('/tools')} />,
@@ -99,7 +99,7 @@ function AgentHub({ server }: { server: Server }) {
 
         <VerifyNotice server={server} />
 
-        {brainRows.length ? <><SectionHeader title="Agent" /><ListGroup>{brainRows}</ListGroup></> : null}
+        {brainRows.length ? <><SectionHeader title="Bot" /><ListGroup>{brainRows}</ListGroup></> : null}
         {abilityRows.length ? <><SectionHeader title="Abilities" /><ListGroup>{abilityRows}</ListGroup></> : null}
         {historyRows.length ? <><SectionHeader title="History" /><ListGroup>{historyRows}</ListGroup></> : null}
 

@@ -30,7 +30,7 @@ test('Settings has one Notifications entry, no separate About & storage row, and
 test('About keeps the app\'s own version and protocol, app updates, storage and help, in that order', () => {
   const about = source('app/about.tsx');
   const order = ['Version {appVersion}', '<AppUpdateCard', '<SectionHeader title="Storage" />', '<SectionHeader title="Help" />',
-    'title="App protocol"', 'title="Open-source notices"', 'title="Source code & help"'].map((m) => at(about, m));
+    'title="App/server protocol version"', 'title="Open-source notices"', 'title="Source code & help"'].map((m) => at(about, m));
   assert.deepEqual(order, [...order].sort((a, b) => a - b));
   at(about, '<SectionHeader title="App updates" />');
 });

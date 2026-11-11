@@ -148,7 +148,7 @@ export function InboxView() {
         ListEmptyComponent={
           <View style={s.empty}>
             {focus ? <LivePet server={focus} size={72} /> : null}
-            <Text style={s.emptyText}>{view === 'pending' ? 'Nothing needs you right now.' : 'Approvals, questions and results appear here.'}</Text>
+            <Text style={s.emptyText}>{view === 'pending' ? 'Nothing needs you right now.' : 'Approvals, questions and reports appear here.'}</Text>
           </View>
         }
         renderItem={renderItem}

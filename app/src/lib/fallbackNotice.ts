@@ -97,8 +97,8 @@ export function stripText(snapshot: FallbackSnapshot | null, now: number): Strip
   const who = primary ?? 'The main model';
   // Nothing known beyond the model in use: the title already says it, so there is no second line.
   const detail = !using || !lead ? null
-    : countdown ? `${who} is tried again in ${countdown}`
-    : `No retry time from the server; sending again tries ${who === 'The main model' ? 'it' : who}`;
+    : countdown ? `${who} can be used again in ${countdown}`
+    : `No retry time from the server; the next message tries ${who === 'The main model' ? 'it' : who} again`;
   return { title, countdown, detail };
 }
 
