@@ -501,6 +501,12 @@ class VoiceBridge:
                 self.sessions.release_transcription(session)
             logger.warning("[winglet] voice transcription provider failed")
             return _json({"error": "Transcription failed. Try again."}, status=502)
+        except BaseException:
+            # A cancelled request (the phone hung up mid-transcription) is not an Exception: without this the
+            # session stays "busy" and refuses every later utterance until it expires.
+            if claimed and session is not None:
+                self.sessions.release_transcription(session)
+            raise
         finally:
             self.sessions._unlink(audio_path)
 

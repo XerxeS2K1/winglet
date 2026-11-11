@@ -56,3 +56,23 @@ async def test_a_stop_that_arrives_while_the_file_is_being_written_leaves_no_aud
     answer = await pending
     assert answer.status == 409
     assert list(hub.voice.sessions.directory.glob("sp_*")) == []
+
+
+# -- #26 ---------------------------------------------------------------------------------------------------------------
+
+async def test_a_cancelled_transcription_does_not_leave_the_session_busy(client, hub):
+    token = await pair(client, hub)
+    session = await open_session(client, token)
+    state = hub.voice.sessions._sessions[session["session_id"]]
+
+    async def hung_up(path, mime):
+        assert state["busy"] == "u1"                                  # claimed while it ran
+        raise asyncio.CancelledError                                  # what aiohttp delivers when the phone goes away
+    hub.speech.transcribe = hung_up
+    with pytest.raises(aiohttp.ClientError):
+        await transcribe(client, token, session, utterance_id="u1")
+    assert state["busy"] is None
+
+    del hub.speech.transcribe                                         # back to the working fake
+    again = await transcribe(client, token, session, utterance_id="u2")
+    assert again.status == 200                                        # not 429 "still transcribing"
