@@ -1174,13 +1174,14 @@ class Hub:
     def _has_attr(obj: Any, name: str) -> bool:
         return obj is not None and callable(getattr(obj, name, None))
 
-    def current_device(self, device_id: str) -> Optional[Dict[str, Any]]:
+    def current_device(self, device_id: str, fresh: bool = False) -> Optional[Dict[str, Any]]:
         """A device as it is now, or None once unpaired. Unpairing or a role change can happen in
         another process (the CLI), so this reads the database, cached for a moment to keep streaming
-        broadcasts cheap."""
+        broadcasts cheap. Anything that decides what a device may do passes `fresh=True`, which skips
+        the cache (and refreshes it), so a demotion made from the CLI applies at once."""
         now = time.monotonic()
         cached = self._alive_cache.get(device_id)
-        if cached and now - cached[1] < ALIVE_CACHE_SECONDS:
+        if cached and not fresh and now - cached[1] < ALIVE_CACHE_SECONDS:
             return cached[0]
         device = self.store.get_device(device_id)
         self._alive_cache[device_id] = (device, now)
@@ -4548,8 +4549,9 @@ class Hub:
 
     def member_toolsets(self, device_id: str) -> Optional[List[str]]:
         """The tools a turn from this device may use: None for an owner, or for a member while their tools
-        aren't limited. A device that isn't paired any more gets none."""
-        device = self.current_device(device_id)
+        aren't limited. A device that isn't paired any more gets none. This decides what a turn may do, so it
+        reads the device fresh: a demotion from the CLI must not leave the old role's tools for two seconds."""
+        device = self.current_device(device_id, fresh=True)
         if device is not None and device["role"] == "owner":
             return None
         limits = self.member_tools()

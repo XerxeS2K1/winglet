@@ -710,3 +710,13 @@ def test_the_default_model_switch_uses_hermes_config_mutation_lock(monkeypatch):
     result = hermes_api.set_default_model("openai", "gpt-test", confirm=True)
     assert result == {"ok": True, "provider": "openai", "model": "gpt-test"}
     assert events == ["load", "prepare", "lock", "apply", "unlock"]
+
+
+async def test_a_demotion_from_the_cli_limits_a_members_tools_at_once(client, hub):
+    owner = await pair_phone(client, hub)
+    other = await pair_phone(client, hub, "Second owner")
+    hub.store.set_kv("member_tools", '{"limited": true, "toolsets": ["web"]}')
+    assert hub.member_toolsets(other.id) is None  # primes the two-second device cache with role owner
+    hub.store.update_device(other.id, role="member")  # what the CLI does, in another process
+    assert hub.member_toolsets(other.id) == ["web", "no_mcp"]
+    assert hub.member_toolsets(owner.id) is None
