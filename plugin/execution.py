@@ -187,7 +187,7 @@ class _Tool:
 
 class _Subagent:
     __slots__ = ("id", "parent_id", "goal", "role", "status", "started_at", "ended_at", "duration_ms",
-                 "summary", "activity", "started_known", "session_id")
+                 "summary", "activity", "started_known", "session_id", "_open")
 
     def __init__(self, subagent_id: str, *, parent_id: Optional[str], goal: str, role: str,
                  started_at: Optional[float], started_known: bool = True, session_id: Optional[str] = None,
@@ -204,26 +204,49 @@ class _Subagent:
         self.activity: List[Dict[str, Any]] = []
         self.started_known = started_known
         self.session_id = session_id
+        # Running rows by Hermes's tool_call_id, so overlapping calls of one tool each settle their own row.
+        # Kept here, not in the row: the row is what the app reads and its shape does not change.
+        self._open: Dict[str, Dict[str, Any]] = {}
 
-    def add_activity(self, name: Any, detail: Any = "", status: Any = None) -> None:
+    def add_activity(self, name: Any, detail: Any = "", status: Any = None, call_id: Any = None) -> None:
         line = {"name": redact(name, 80) or "tool", "detail": redact(detail, MAX_ACTIVITY_LINE),
                 "status": _activity_status(status)}
         if not line["detail"]:
             line.pop("detail")
-        # A repeated identical line from a progress batch is dropped; the tail still lands once.
-        if self.activity and self.activity[-1] == line:
+        key = redact(call_id, 120) if call_id else ""
+        # A repeated identical line from a progress batch is dropped; the tail still lands once. A call with
+        # its own id is a real call, even when it looks like the one before (two overlapping reads of one file).
+        if not key and self.activity and self.activity[-1] == line:
             return
         self.activity.append(line)
         del self.activity[:-MAX_ACTIVITY]
+        if key and line["status"] == TOOL_RUNNING:
+            self._open[key] = line
+        # Forget ids whose row has been trimmed away.
+        if self._open:
+            kept = {id(row) for row in self.activity}
+            self._open = {k: row for k, row in self._open.items() if id(row) in kept}
 
-    def finish_activity(self, name: Any, status: Any) -> None:
+    def finish_activity(self, name: Any, status: Any, call_id: Any = None) -> None:
         """Settle the running row for this tool instead of adding a second, detail-less copy."""
         label = redact(name, 80) or "tool"
+        key = redact(call_id, 120) if call_id else ""
+        row = self._open.pop(key, None) if key else None
+        if row is not None and row["status"] == TOOL_RUNNING:
+            row["status"] = _activity_status(status)
+            return
         for row in reversed(self.activity):
             if row["name"] == label and row["status"] == TOOL_RUNNING:
                 row["status"] = _activity_status(status)
                 return
         self.add_activity(label, "", status)
+
+    def settle_running(self) -> None:
+        """The child is over, so no tool of it is still running; we just never saw this one end."""
+        for row in self.activity:
+            if row["status"] == TOOL_RUNNING:
+                row["status"] = TOOL_UNKNOWN
+        self._open.clear()
 
     def payload(self) -> Dict[str, Any]:
         return {"id": self.id, "parent_id": self.parent_id, "goal": self.goal, "role": self.role,
@@ -374,7 +397,7 @@ class Tracker:
                 return
             if child is not None:
                 task, sub = child
-                sub.add_activity(tool_name, tool_preview(str(tool_name or ""), args), TOOL_RUNNING)
+                sub.add_activity(tool_name, tool_preview(str(tool_name or ""), args), TOOL_RUNNING, tool_call_id)
                 task.updated_at = now
                 payload = {"kind": "subagent.updated", "subagent": sub.payload()}
                 events = self._update_events(task, payload)
@@ -412,7 +435,7 @@ class Tracker:
                 return
             if child is not None:
                 task, sub = child
-                sub.finish_activity(tool_name or "tool", status)
+                sub.finish_activity(tool_name or "tool", status, tool_call_id)
                 task.updated_at = now
                 events = self._update_events(task, {"kind": "subagent.updated", "subagent": sub.payload()})
             else:
@@ -574,6 +597,8 @@ class Tracker:
                         continue
                     sub.add_activity(entry.get("tool_name") or entry.get("name"), entry.get("tool_input") or "",
                                      entry.get("status"))
+                sub._open.clear()
+            sub.settle_running()
             if child_session_id:
                 self._child_sessions.pop(str(child_session_id), None)
             task.updated_at = now
@@ -716,6 +741,7 @@ class Tracker:
                     # The turn ended before this child reported: not a success, not a failure we saw.
                     sub.status = SUB_UNKNOWN
                     sub.ended_at = sub.ended_at or now
+                sub.settle_running()
             for tool in task.tools.values():
                 if tool.status == TOOL_RUNNING:
                     # A tool cannot still be running once its turn is over; we simply never saw its end.

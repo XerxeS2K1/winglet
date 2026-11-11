@@ -8,6 +8,7 @@ primitives; it is skipped on machines without Hermes installed.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import time
@@ -599,3 +600,25 @@ async def test_copied_historical_turns_can_be_branched_and_edited_again(client, 
     })
     assert again["chat"]["id"] != child["id"]
     assert hub.store.all_messages(child["id"])[0]["text"] == "first question"
+
+
+async def test_branch_locks_are_forgotten_with_their_chat_but_still_exclude_while_in_use(hub):
+    import gc
+    service = hub.branching
+    for n in range(50):
+        assert service.busy(f"gone-{n}") is False  # opening the branch sheet on a chat looks the lock up
+    gc.collect()
+    assert len(service._locks) == 0  # nothing is held, so nothing is remembered
+
+    held = service._lock("live")
+    async with held:
+        assert service._lock("live") is held  # same lock while it is held...
+        assert service.busy("live") is True  # ...so busy still sees it
+        waiter = asyncio.ensure_future(service._lock("live").acquire())
+        await asyncio.sleep(0)
+        assert service._lock("live") is held  # and while someone waits on it
+    await asyncio.wait_for(waiter, 1)
+    service._lock("live").release()
+    del held, waiter
+    gc.collect()
+    assert len(service._locks) == 0

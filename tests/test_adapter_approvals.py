@@ -342,3 +342,25 @@ async def test_a_members_tools_fail_closed(adapter):
     hub, adapter._hub = adapter._hub, None
     assert adapter.toolset_limit(source("winglet:" + member["id"])) == set()
     adapter._hub = hub
+
+
+def test_a_deleted_general_chat_stays_deleted_across_a_restart(adapter):
+    module = SimpleNamespace(**type(adapter).__init__.__globals__)
+    store = adapter._hub.store
+    module.ensure_general_chat(store)
+    assert store.get_chat(module.GENERAL_CHAT_ID) is not None  # a new server gets General
+    assert store.delete_chat(module.GENERAL_CHAT_ID)
+    module.ensure_general_chat(store)  # the next start-up
+    assert store.get_chat(module.GENERAL_CHAT_ID) is None
+
+
+def test_a_turn_from_a_device_unpaired_a_moment_ago_is_refused(adapter, monkeypatch):
+    stale = {"d1": {"role": "owner"}}  # what the 2-second cache still holds
+    live: dict = {}  # what the store says now
+
+    def current_device(ident, fresh=False):
+        return (live if fresh else stale).get(ident)
+
+    monkeypatch.setattr(adapter._hub, "current_device", current_device)
+    source = SimpleNamespace(user_id=type(adapter).__init__.__globals__["USER_PREFIX"] + "d1")
+    assert asyncio.run(type(adapter).reauthorize_native_roles(adapter, source)) is False

@@ -123,6 +123,12 @@ def open_store() -> Store:
     return Store(data_dir() / "data.db")
 
 
+def ensure_general_chat(store: Store) -> None:
+    """Start-up makes the General chat on a new server, but not again once its owner deleted it: an explicit
+    ensure_chat clears the deletion record, so a deleted General came back at the next restart."""
+    store.ensure_chat(GENERAL_CHAT_ID, "General", implicit=True)
+
+
 def profile_info() -> Dict[str, Any]:
     """Name/title/description of the Hermes profile this gateway serves (its Bot Mode identity)."""
     from hermes_constants import get_hermes_home
@@ -290,7 +296,7 @@ class WingletAdapter(BasePlatformAdapter):
 
         try:
             store = open_store()
-            store.ensure_chat(GENERAL_CHAT_ID, "General")
+            ensure_general_chat(store)
             # Hermes keeps waiting approvals/questions in memory: after a restart none of the old cards
             # can be answered any more.
             for kind in ("approval", "question"):
@@ -343,8 +349,7 @@ class WingletAdapter(BasePlatformAdapter):
             hub.teamwork_ok = lambda: hermes_api.bots_available() and teamwork.can_deliver()
             if hub.bots_provider is not None:
                 loop = asyncio.get_running_loop()
-                teamwork.on_bots_changed = lambda: loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(hub._bots_changed()))
+                teamwork.on_bots_changed = lambda: loop.call_soon_threadsafe(hub.bots_changed_soon)
             # Members' tool limits hold only if every turn's final toolsets can be capped (see toolset_limit).
             hub.limits_members = hermes_api.limit_turn_toolsets(self.gateway_runner, PLATFORM) \
                 if getattr(self, "gateway_runner", None) is not None else False
@@ -614,7 +619,8 @@ class WingletAdapter(BasePlatformAdapter):
         if ident == "app":
             return True
         try:
-            return self._hub.current_device(ident) is not None
+            # fresh: this decides whether a turn runs, so a device unpaired a second ago must not pass on a cached row.
+            return self._hub.current_device(ident, fresh=True) is not None
         except Exception:
             logger.warning("[%s] couldn't re-check a device's pairing; refusing", self.name, exc_info=True)
             return False

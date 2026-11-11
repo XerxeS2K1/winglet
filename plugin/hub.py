@@ -61,6 +61,7 @@ def _key_in_use() -> web.Response:
 
 
 RESTART_DELAY_SECONDS = 0.8
+ROTATE_CLOSE_DELAY_SECONDS = 0.8  # same room as a restart: the new token must reach the phone before its old sockets close
 # An installed update restarts the gateway only when no chat is running. Waiting is bounded: 30 minutes is long enough for
 # a normal chat or hand-off to finish, and shorter than the hour after which an unconfirmed update stops blocking a new one
 # and than the cron watch's life. Hermes itself refuses a restart while sessions are live (and says so only in the log of
@@ -1174,13 +1175,14 @@ class Hub:
     def _has_attr(obj: Any, name: str) -> bool:
         return obj is not None and callable(getattr(obj, name, None))
 
-    def current_device(self, device_id: str) -> Optional[Dict[str, Any]]:
+    def current_device(self, device_id: str, fresh: bool = False) -> Optional[Dict[str, Any]]:
         """A device as it is now, or None once unpaired. Unpairing or a role change can happen in
         another process (the CLI), so this reads the database, cached for a moment to keep streaming
-        broadcasts cheap."""
+        broadcasts cheap. Anything that decides what a device may do passes `fresh=True`, which skips
+        the cache (and refreshes it), so a demotion made from the CLI applies at once."""
         now = time.monotonic()
         cached = self._alive_cache.get(device_id)
-        if cached and now - cached[1] < ALIVE_CACHE_SECONDS:
+        if cached and not fresh and now - cached[1] < ALIVE_CACHE_SECONDS:
             return cached[0]
         device = self.store.get_device(device_id)
         self._alive_cache[device_id] = (device, now)
@@ -2991,7 +2993,7 @@ class Hub:
         for ws, meta in sockets:
             device = self.store.device_for_token(meta["auth_token"]) if meta.get("auth_token") else self.store.get_device(meta["device"]["id"])
             if device is None:
-                dead.append((ws, 4401, b"unpaired"))
+                dead.append((ws, 1012, b"token replaced, reconnect") if meta.get("replaced") else (ws, 4401, b"unpaired"))
                 continue
             if scope is not _ANY_BOT and scope != meta.get("bot"):
                 continue
@@ -3206,7 +3208,22 @@ class Hub:
         if token is None:
             return _error(404, "no such device")
         self.audit("token.rotated", device, device["name"])
+        # Sockets opened with the old token would otherwise be closed as "unpaired" by the next broadcast, which
+        # the app reads as signed out. They get an ordinary "reconnect" code instead, and only after the response
+        # has gone out: the app retries as soon as a socket closes and must already hold the new token, or it
+        # would present the old one. They are not moved to the new token: the old one "no longer works".
+        old = [ws for ws, meta in self._sockets.items() if meta["device"]["id"] == device["id"]]
+        for ws in old:
+            self._sockets[ws]["replaced"] = True  # a broadcast in the meantime must not call it "unpaired" either
+        if old:
+            self._spawn(self._close_replaced_sockets(old))
         return _json({"token": token})
+
+    async def _close_replaced_sockets(self, sockets: List[Any]) -> None:
+        await asyncio.sleep(ROTATE_CLOSE_DELAY_SECONDS)  # let the response reach the phone first
+        for ws in sockets:
+            with contextlib.suppress(Exception):
+                await ws.close(code=1012, message=b"token replaced, reconnect")
 
     async def h_audit(self, request: web.Request) -> web.Response:
         self._require(request)
@@ -3521,8 +3538,17 @@ class Hub:
         return name
 
     async def _bots_changed(self) -> None:
-        state = await asyncio.to_thread(self.bots_state, True)
-        await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
+        # The bot change itself has already happened; a failed refresh must be seen in the log, not die as an
+        # unretrieved task exception, and must not turn a finished rename or delete into an error.
+        try:
+            state = await asyncio.to_thread(self.bots_state, True)
+            await self.broadcast({"type": "system.bots", "bot": None, "bots": state["bots"]})
+        except Exception:
+            logger.warning("[winglet] couldn't tell the phones the bot list changed", exc_info=True)
+
+    def bots_changed_soon(self) -> asyncio.Task:
+        """Refresh every phone's bot list in the background (from the loop), keeping a reference to the task."""
+        return self._spawn(self._bots_changed())
 
     async def h_bot_rename(self, request: web.Request) -> web.Response:
         device = self._require(request)
@@ -4548,8 +4574,9 @@ class Hub:
 
     def member_toolsets(self, device_id: str) -> Optional[List[str]]:
         """The tools a turn from this device may use: None for an owner, or for a member while their tools
-        aren't limited. A device that isn't paired any more gets none."""
-        device = self.current_device(device_id)
+        aren't limited. A device that isn't paired any more gets none. This decides what a turn may do, so it
+        reads the device fresh: a demotion from the CLI must not leave the old role's tools for two seconds."""
+        device = self.current_device(device_id, fresh=True)
         if device is not None and device["role"] == "owner":
             return None
         limits = self.member_tools()
