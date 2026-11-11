@@ -35,10 +35,10 @@ test('shared text joins an existing draft instead of replacing it', () => {
   assert.equal(mergeDraft('keep me', ''), 'keep me');
 });
 
-test("a bot offers its main chat first, then recent chats, never Updates or someone else's chat", () => {
+test("a bot offers its main chat first, then recent chats, never Reports or someone else's chat", () => {
   const chats = {
     general: { id: 'general', title: 'General', kind: 'chat', updated_at: 1 },
-    home: { id: 'home', title: 'Updates', kind: 'home', updated_at: 9 },
+    home: { id: 'home', title: 'Reports', kind: 'home', updated_at: 9 },
     a: { id: 'a', title: 'Trip', kind: 'chat', updated_at: 5 },
     b: { id: 'b', title: 'Taxes', kind: 'chat', updated_at: 7 },
     alex: { id: 'm-alex', title: 'Alex', kind: 'chat', updated_at: 8, owner_device: 'alex' },
