@@ -12,7 +12,7 @@ import { Folder, Hash, MessageSquarePlus, MoreHorizontal, Pin, Search, Sparkles,
 import { useTabBarSpace } from '../../components/TabBar';
 import { Button, Chip, IconButton, SearchField, SectionHeader, Skeleton, Tap } from '../../components/ui';
 import { projectChatIds } from '../../features/projects/logic';
-import { ago } from '../../lib/agent';
+import { ago, chatName } from '../../lib/agent';
 import { api } from '../../lib/api';
 import { startNewChat } from '../../lib/actions';
 import { requestFocus } from '../../lib/focus';
@@ -27,7 +27,7 @@ import { makeStyles, useTheme } from '../../lib/themeContext';
 import type { Chat, SearchResult, Server } from '../../lib/types';
 import { easeOut, spring, useReducedMotion } from '../../lib/motion';
 
-/** The main chat, the Updates feed, and side chats for separate topics. Wide screens show the chat alongside. */
+/** The main chat, the Reports feed, and side chats for separate topics. Wide screens show the chat alongside. */
 export default function ChatsTab() {
   const servers = useApp((s) => s.servers);
   const selection = useApp((s) => s.selection);
@@ -73,7 +73,7 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
 
   const q = query.trim().toLowerCase();
   const draftOf = (c: Chat) => draftPreview(drafts[`${server.id}:${c.id}`], draftFiles[`${server.id}:${c.id}`], !!replyTo[`${server.id}:${c.id}`]);
-  const match = (c: Chat) => !q || `${c.title} ${c.preview} ${draftOf(c) ?? ''}`.toLowerCase().includes(q);
+  const match = (c: Chat) => !q || `${chatName(c)} ${c.preview} ${draftOf(c) ?? ''}`.toLowerCase().includes(q);
   const mainId = homeChat(rt);
   const groups = useMemo(() => organizeChats(Object.values(rt?.chats ?? {}), server.id, mainId, pinnedChats, archivedChats), [rt?.chats, server.id, mainId, pinnedChats, archivedChats]);
   const inScope = (list: Chat[]) => projectIds ? list.filter((chat) => projectIds.has(chat.id)) : list;
@@ -155,8 +155,8 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
         <View style={s.filters}>
           <Text style={s.filterText} numberOfLines={1}>{archived ? 'On this device' : activeFilter ? `${filtered.length} ${filtered.length === 1 ? 'chat' : 'chats'}` : project ? `Project · ${project.name}` : `${actionable.length} chats`}</Text>
           <View style={{ flex: 1 }} />
-          {updates ? <Tap accessibilityLabel="Open updates" onPress={() => open('home')} feedback="selection" style={s.updates}>
-            <View style={s.updatesPill}><Sparkles size={14} color={t.colors.textSecondary} /><Text style={s.updateLabel} numberOfLines={1}>Updates</Text></View>
+          {updates ? <Tap accessibilityLabel="Open reports" onPress={() => open('home')} feedback="selection" style={s.updates}>
+            <View style={s.updatesPill}><Sparkles size={14} color={t.colors.textSecondary} /><Text style={s.updateLabel} numberOfLines={1}>Reports</Text></View>
           </Tap> : null}
         </View>
 
@@ -170,7 +170,7 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
             {!archived && !activeFilter && resume && match(resume) ? <><SectionHeader title="Continue" style={s.section} />{row(resume, false, true)}</> : null}
             {(archived || activeFilter ? side : recents.slice(1)).some(match) ? <SectionHeader title={archived ? 'Archived chats' : filter === 'running' ? 'Running' : filter === 'needs-you' ? 'Needs you' : 'Recent'} style={s.section} /> : null}
             {(archived || activeFilter ? side : recents.slice(1)).filter(match).map((c) => row(c))}
-            {q && !archived && !activeFilter && updates && match(updates) ? <ChatRow server={server} showFace={multiBot} title="Updates" time={updates.updated_at} onPress={() => open('home')} /> : null}
+            {q && !archived && !activeFilter && updates && match(updates) ? <ChatRow server={server} showFace={multiBot} title="Reports" time={updates.updated_at} onPress={() => open('home')} /> : null}
             {!(archived || activeFilter ? side.length : recents.length || pinned.length) && !q ? (
               <View style={s.empty}>
                 <AgentFace server={server} size={64} />
@@ -256,7 +256,7 @@ function ResultRow({ server, result, query, onPress }: { server: Server; result:
   const t = useTheme();
   const s = useStyles();
   const rt = useApp((st) => st.runtime[server.id]);
-  const where = result.chat.id === homeChat(rt) ? server.bot.title : result.chat.kind === 'home' ? 'Updates' : `#${result.chat.title}`;
+  const where = result.chat.id === homeChat(rt) ? server.bot.title : result.chat.kind === 'home' ? 'Reports' : `#${result.chat.title}`;
   const who = result.message.role === 'bot' ? server.bot.title : 'You';
   const parts = splitMatch(result.snippet, query);
   return (

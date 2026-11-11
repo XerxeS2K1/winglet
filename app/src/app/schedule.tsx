@@ -29,7 +29,7 @@ export type Draft = { id?: string; name: string; prompt: string; schedule: strin
 const rise = (reduced: boolean, i: number) => (reduced ? undefined
   : FadeIn.duration(180));
 
-/** Prompts your agent runs on its own schedule. Results arrive in the Updates chat. */
+/** Prompts your agent runs on its own schedule. Results arrive in the Reports chat. */
 export default withSelectedServer(ScheduleScreen);
 
 function ScheduleScreen() {
@@ -58,7 +58,7 @@ function ScheduleScreen() {
       setRoutines((list) => (list ?? []).map((x) => (x.id === r.id ? routine : x)));
       haptic.success();
       if (action === 'run') {
-        useApp.getState().toast({ serverId: server.id, title: 'Run requested', body: `${r.name || 'The routine'} posts its result in Updates.`,
+        useApp.getState().toast({ serverId: server.id, title: 'Run requested', body: `${r.name || 'The routine'} posts its result in Reports.`,
           href: `/chat/${server.id}/home` });
       }
     } catch (e) {
@@ -94,7 +94,7 @@ function ScheduleScreen() {
               ))}
             </View>
           ) : null)}
-          <Button title="Open Updates" style={{ marginTop: t.space.md }} variant="secondary" onPress={() => router.push(`/chat/${server.id}/home`)} />
+          <Button title="Open Reports" style={{ marginTop: t.space.md }} variant="secondary" onPress={() => router.push(`/chat/${server.id}/home`)} />
         </>
       )}
       {history ? <ArchivedRoutineLinks server={server} revision={routines} /> : null}

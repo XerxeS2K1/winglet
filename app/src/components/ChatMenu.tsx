@@ -1,4 +1,3 @@
-import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Text, View } from 'react-native';
 import { exportChat } from '../lib/exportChat';
@@ -9,7 +8,6 @@ import { homeChat, useApp } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
 import type { Server } from '../lib/types';
 import { Activity, Archive, ArchiveRestore, Bell, BellOff, Clock, Download, FileDiff, Folder, Cpu, Images, Pencil, Pin, PinOff, Target, Trash2 } from './icons';
-import Wifi from 'lucide-react-native/icons/wifi';
 import { Sheet, SheetAction, SheetGroup } from './Sheet';
 import { ProjectPicker } from '../features/projects/MoveToProjectSheet';
 import { Button, Field } from './ui';
@@ -117,7 +115,6 @@ export function ChatMenu({ server, chatId, title, visible, onClose, onGoal, hasG
                 }
               }} />
             ) : null}
-            <SheetAction icon={<Wifi />} label="Connection details" onPress={() => { close(); router.push(`/connection/${server.id}`); }} />
           </SheetGroup>
           <SheetGroup>
             {side ? <SheetAction icon={<Trash2 />} label="Delete chat" destructive onPress={() => setMode('delete')} /> : null}

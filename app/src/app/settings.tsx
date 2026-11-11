@@ -1,15 +1,15 @@
 import { router } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Platform, Text, useWindowDimensions, View, StyleSheet } from 'react-native';
-import { useAddBot } from '../components/AddBot';
 import { AgentFace } from '../components/AgentFace';
 import { NavigationToggle } from '../components/AppNavigation';
-import { Bell, ChevronRight, Fingerprint, Info, Palette, Plus, Smartphone } from '../components/icons';
+import { Bell, Check, ChevronRight, Fingerprint, Info, Palette, Smartphone, Star } from '../components/icons';
 import { Screen } from '../components/Screen';
 import { Footnote, ListGroup, ListRow, SectionHeader, Segmented, Tap, Toggle } from '../components/ui';
 import { lockAvailable, unlock } from '../lib/appLock';
 import { useAppUpdate } from '../lib/appUpdateCheck';
 import { connectionView } from '../lib/connection';
+import { setMainBot, useMainBot } from '../lib/mainBot';
 import { useApp, useServerState } from '../lib/store';
 import { usePrefs } from '../lib/prefs';
 import { ACCENTS, WIDE_BREAKPOINT } from '../lib/theme';
@@ -27,7 +27,7 @@ export default function SettingsScreen() {
   const prefs = usePrefs((st) => st.prefs);
   const update = usePrefs((st) => st.update);
   const appUpdate = useAppUpdate((st) => st.update);
-  const addBot = useAddBot();
+  const mainBot = useMainBot();
   const [canLock, setCanLock] = useState<boolean | null>(null);
   useEffect(() => {
     if (Platform.OS === 'android') lockAvailable().then(setCanLock);
@@ -53,6 +53,10 @@ export default function SettingsScreen() {
     <ListGroup>
       <ListRow title="Appearance" value={`${themeLabel} · ${ACCENTS[prefs.accent].label}`} icon={<Palette />} onPress={() => router.push('/appearance')} />
       <ListRow title="Notifications" icon={<Bell />} onPress={() => router.push('/notifications')} />
+      {server ? <ListRow title="Open the app on" icon={<Star />} value={server.bot.title}
+        subtitle={mainBot?.id === server.id ? undefined : 'Tap to open the app on this bot'}
+        right={mainBot?.id === server.id ? <Check size={20} color={t.colors.accent} /> : undefined} chevron={false}
+        onPress={mainBot?.id === server.id ? undefined : () => setMainBot(server.id)} /> : null}
       {Platform.OS === 'android' ? <ListRow title="App lock" icon={<Fingerprint />}
         right={<Toggle label="App lock" value={prefs.appLock} onValueChange={async (on) => {
           if (!canLock) return;
@@ -77,13 +81,6 @@ export default function SettingsScreen() {
         <ListRow title="Wear OS" icon={<Smartphone />} onPress={() => router.push('/wear-settings')} />
       </ListGroup>
     </> : null}
-
-    <SectionHeader title="Bots" />
-    <ListGroup>
-      <ListRow title="Your bots" value={String(servers.length)} icon={<Smartphone />} onPress={() => router.push('/bots')} />
-      <ListRow title="Add a bot" icon={<Plus />} onPress={addBot.open} />
-    </ListGroup>
-    {addBot.sheet}
 
     <SectionHeader title="About" />
     <ListGroup>

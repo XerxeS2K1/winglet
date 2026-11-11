@@ -9,8 +9,8 @@ import { BotSwitcher } from '../../components/BotSwitcher';
 import { HUB_BAR, HubBar } from '../../components/InboxView';
 import { LivePet } from '../../components/LivePet';
 import {
-  Activity, BarChart, Brain, CalendarClock, Check, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
-  ScrollText, ShieldCheck, Sparkles, SquareTerminal, Star, UserRoundPen,
+  Activity, BarChart, Brain, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
+  ShieldCheck, Sparkles, SquareTerminal, UserRoundPen,
 } from '../../components/icons';
 import { moodOf } from '../../lib/agent';
 import { activeModel, modelName } from '../../lib/modelOptions';
@@ -18,7 +18,6 @@ import { api } from '../../lib/api';
 import { useTabBarSpace } from '../../components/TabBar';
 import { Button, Footnote, ListGroup, ListRow, SectionHeader } from '../../components/ui';
 import { connectionView } from '../../lib/connection';
-import { setMainBot, useMainBot } from '../../lib/mainBot';
 import { homeChat, isOwner, useApp, useServerState } from '../../lib/store';
 import type { AgentInfo, Server } from '../../lib/types';
 import { WIDE_BREAKPOINT } from '../../lib/theme';
@@ -43,7 +42,6 @@ function AgentHub({ server }: { server: Server }) {
   const rt = useServerState(server.id);
   const network = useApp((st) => st.network);
   const mood = useApp((st) => moodOf(st.runtime[server.id]));
-  const mainBot = useMainBot();
   const y = useSharedValue(0);
   const onScroll = useAnimatedScrollHandler((e) => { y.value = e.contentOffset.y; });
   const child = !!server.parent;
@@ -74,10 +72,8 @@ function AgentHub({ server }: { server: Server }) {
     <ListRow key="mcp" icon={<Plug />} title="MCP servers" onPress={() => router.push('/mcp')} />,
   ] : [];
   const historyRows = control ? [
-    <ListRow key="schedule" icon={<CalendarClock />} title="Schedule" onPress={() => router.push('/schedule')} />,
     ...(rt.info?.features?.checkpoints ? [<ListRow key="checkpoints" icon={<FileDiff />} title="Checkpoints" onPress={() => router.push('/checkpoints')} />] : []),
     ...(rt.info?.features?.sessions ? [<ListRow key="sessions" icon={<MessageSquareText />} title="Sessions" onPress={() => router.push('/sessions')} />] : []),
-    ...(!child ? [<ListRow key="logs" icon={<ScrollText />} title="Logs" onPress={() => router.push('/logs')} />] : []),
   ] : [];
 
   return (
@@ -97,15 +93,13 @@ function AgentHub({ server }: { server: Server }) {
         <View style={s.actions}>
           <Button title="Open chat" style={s.action} icon={<MessageCircle size={17} color={t.colors.onInk} />}
             onPress={() => router.push(`/chat/${server.id}/${homeChat(rt)}`)} />
-          {child ? null : <Button title="Updates" variant="secondary" style={s.action} icon={<Sparkles size={17} color={t.colors.text} />}
-            onPress={() => router.push(`/chat/${server.id}/home`)} />}
         </View>
 
         <VerifyNotice server={server} />
 
         {brainRows.length ? <><SectionHeader title="Agent" /><ListGroup>{brainRows}</ListGroup></> : null}
         {abilityRows.length ? <><SectionHeader title="Abilities" /><ListGroup>{abilityRows}</ListGroup></> : null}
-        {historyRows.length ? <><SectionHeader title="Automation & history" /><ListGroup>{historyRows}</ListGroup></> : null}
+        {historyRows.length ? <><SectionHeader title="History" /><ListGroup>{historyRows}</ListGroup></> : null}
 
         <SectionHeader title="Server" />
         <ListGroup>
@@ -120,9 +114,6 @@ function AgentHub({ server }: { server: Server }) {
         <ListGroup>
           {!child && rt?.info?.features?.roles ? <ListRow icon={<ShieldCheck />} title="Devices"
             value={rt.me ? rt.me.role === 'owner' ? 'Owner' : 'Member' : undefined} onPress={() => router.push('/devices')} /> : null}
-          <ListRow icon={<Star />} title="Open the app on this bot" value={mainBot?.id === server.id ? 'Main' : undefined}
-            right={mainBot?.id === server.id ? <Check size={20} color={t.colors.accent} /> : undefined} chevron={false}
-            onPress={mainBot?.id === server.id ? undefined : () => setMainBot(server.id)} />
         </ListGroup>
         {child && parent && owner ? <ManageBot server={server} parent={parent} /> : null}
 

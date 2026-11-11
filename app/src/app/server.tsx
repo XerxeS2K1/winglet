@@ -4,7 +4,7 @@ import { Text, View } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 import { JobSheet } from '../components/JobSheet';
 import {
-  CalendarClock, Check, CircleAlert, CircleArrowUp, CirclePause, CircleHelp, RefreshCw, RotateCw, ScrollText, ShieldCheck,
+  Check, CircleAlert, CircleArrowUp, CirclePause, CircleHelp, RefreshCw, RotateCw, ScrollText, ShieldCheck,
 } from '../components/icons';
 import { Screen } from '../components/Screen';
 import { withSelectedServer } from '../components/ServerScreen';
@@ -167,8 +167,6 @@ function ServerScreen() {
 
       <SectionHeader title="Tools" />
       <ListGroup>
-        <ListRow icon={<CalendarClock size={18} color={t.colors.textSecondary} />} title="Schedule"
-          onPress={() => router.push('/schedule')} />
         <ListRow icon={<ScrollText size={18} color={t.colors.textSecondary} />} title="Logs"
           onPress={() => router.push('/logs')} />
         <ListRow icon={<ShieldCheck size={18} color={t.colors.textSecondary} />} title="Activity"
