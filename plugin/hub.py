@@ -2305,8 +2305,6 @@ class Hub:
         if problem:
             logger.warning("[winglet] refused a local send: %s", problem)
             return _error(403, "Not allowed.")
-        if not local_send.rate_ok():
-            return _error(429, "Too many local-send posts. Wait a minute.")
         body = await self._body(request)
         notify = body.get("notify", True)
         chat_id = body.get("chat_id")
@@ -2316,6 +2314,8 @@ class Hub:
             text = local_send.clean_text(body.get("text"))
         except local_send.Refused as exc:
             return _error(exc.status, str(exc))
+        if not local_send.rate_ok():    # counted only for a well-formed post, so bad requests can't use up the cap
+            return _error(429, "Too many local-send posts. Wait a minute.")
         message = await self.post_message(chat_id.strip(), text, push=notify, existing_only=True,
                                           meta={"origin": "local-send"})
         if message is None:

@@ -49,7 +49,20 @@ FILE_NAME = "local-send.json"
 MAX_TEXT = 16_000                      # same ceiling as a typed message; over it is refused, not cut
 # Proxy headers mean the request passed through a proxy. In quick mode a Host header matching the
 # tunnel host is also refused, because that traffic came through the public tunnel.
-PROXY_HEADERS = ("X-Forwarded-For", "Forwarded", "X-Real-IP", "CF-Connecting-IP", "Cf-Ray", "X-Forwarded-Host")
+# Any header a proxy or CDN adds counts, so this matches names and prefixes (lower case) rather than a fixed list:
+# a local reverse proxy that adds only one of them must still look like a proxy.
+PROXY_HEADER_NAMES = frozenset({"forwarded", "via", "x-real-ip", "true-client-ip", "x-client-ip", "x-cluster-client-ip",
+                                "x-originating-ip", "x-original-forwarded-for", "x-original-host", "x-envoy-external-address"})
+PROXY_HEADER_PREFIXES = ("x-forwarded-", "cf-", "x-amzn-", "x-azure-", "fastly-", "x-envoy-")
+
+
+def proxied(headers) -> bool:
+    """True when the request carries any header that shows it passed through a proxy or tunnel."""
+    for name in headers.keys():
+        low = str(name).lower()
+        if low in PROXY_HEADER_NAMES or low.startswith(PROXY_HEADER_PREFIXES):
+            return True
+    return False
 NOTIFY_ENV = "WINGLET_SEND_NOTIFY"
 FILE_ENV = "WINGLET_LOCAL_SEND_FILE"
 TIMEOUT = 10
@@ -84,7 +97,7 @@ def clean_text(text: Any) -> str:
     return kept
 
 
-def enabled(extra: Optional[Dict[str, Any]], secret: Any = None) -> bool:
+def enabled(extra: Optional[Dict[str, Any]]) -> bool:
     """True when WINGLET_LOCAL_SEND env (or YAML extra local_send) is truthy. Env beats YAML."""
     value = extra_or_secret(extra, "local_send", "WINGLET_LOCAL_SEND", False)
     if isinstance(value, bool):
@@ -93,11 +106,21 @@ def enabled(extra: Optional[Dict[str, Any]], secret: Any = None) -> bool:
 
 
 def _write_private(path: Path, data: Dict[str, Any]) -> None:
-    tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump(data, f)
-    os.replace(tmp, path)
+    # A fresh, unpredictable temp name opened with O_EXCL (never an existing file or a planted symlink), 0600 from
+    # creation, then moved over the old file.
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{secrets.token_hex(6)}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(tmp, flags, 0o600)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(data, f)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
     os.chmod(path, 0o600)
 
 
@@ -153,7 +176,7 @@ def request_problem(remote: Optional[str], headers, bearer: str, token: Optional
             return "not local"
     except ValueError:
         return "not local"
-    if any(headers.get(h) for h in PROXY_HEADERS):
+    if proxied(headers):
         return "not local"
     if tunnel_host is not None and headers.get("Host") == tunnel_host:
         return "not local"
@@ -179,6 +202,9 @@ def _post(url: str, token: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         with opener.open(request, timeout=TIMEOUT) as response:
             return json.loads(response.read(65536) or b"{}")
     except urllib.error.HTTPError as exc:
+        if exc.code == 403:    # the hub answers every refusal alike; from a local caller the likely cause is a stale token
+            raise Refused("Winglet refused the token. If the gateway was restarted or killed, restart it so it writes "
+                          "a fresh token file (or check WINGLET_LOCAL_SEND_FILE points at this gateway's file)") from None
         try:
             said = json.loads(exc.read(4096)).get("error")
         except Exception:

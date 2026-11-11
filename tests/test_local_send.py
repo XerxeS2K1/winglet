@@ -54,6 +54,12 @@ async def test_a_post_lands_in_the_chat_as_a_live_bot_message_and_notifies(env):
     assert env.hub.pushes == [("general", body["message_id"], True)]
 
 
+async def test_the_row_says_a_script_posted_it(env):
+    await send(env, {"chat_id": "general", "text": "from a script"})
+    row = env.store.list_messages("general")[-1]
+    assert row["role"] == "bot" and row["meta"]["origin"] == "local-send"
+
+
 async def test_notify_false_posts_quietly(env):
     r = await send(env, {"chat_id": "general", "text": "quiet", "notify": False})
     assert r.status == 200
@@ -73,7 +79,8 @@ async def test_no_token_or_a_wrong_one_is_refused(env, token):
     assert r.status == 403 and texts(env) == []
 
 
-@pytest.mark.parametrize("header", ["X-Forwarded-For", "CF-Connecting-IP", "Forwarded", "X-Real-IP"])
+@pytest.mark.parametrize("header", ["X-Forwarded-For", "CF-Connecting-IP", "Forwarded", "X-Real-IP", "Via", "X-Forwarded-Proto",
+                                    "True-Client-IP", "X-Client-IP", "X-Cluster-Client-IP", "CF-Visitor", "x-forwarded-port"])
 async def test_traffic_that_came_through_a_tunnel_is_refused_even_with_the_token(env, header):
     r = await send(env, {"chat_id": "general", "text": "x"}, headers={header: "203.0.113.9"})
     assert r.status == 403 and texts(env) == []
@@ -84,6 +91,12 @@ async def test_a_request_with_the_quick_tunnel_host_header_is_refused_even_with_
     monkeypatch.setattr(env.hub, "tunnel_host", "tunnel-123.example.invalid")
     r = await send(env, {"chat_id": "general", "text": "x"}, headers={"Host": env.hub.tunnel_host})
     assert r.status == 403 and texts(env) == []
+
+
+def test_proxied_looks_at_names_not_values_and_ignores_ordinary_headers():
+    assert local_send.proxied({"via": ""}) and local_send.proxied({"X-Forwarded-Anything": "1"})
+    assert not local_send.proxied({"Host": "127.0.0.1:8787", "Authorization": "Bearer x", "Content-Type": "application/json",
+                                   "User-Agent": "python-urllib", "Accept-Encoding": "identity"})
 
 
 def test_only_loopback_addresses_pass():
@@ -159,6 +172,27 @@ def test_publish_writes_a_private_file_and_withdraw_removes_it(tmp_path):
     local_send.withdraw(tmp_path)                        # already gone: fine
 
 
+def test_publish_never_writes_through_a_planted_temp_file_or_symlink(tmp_path, monkeypatch):
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep me")
+    monkeypatch.setattr(local_send.secrets, "token_hex", lambda n=6: "fixed")
+    plant = tmp_path / f"{local_send.FILE_NAME}.{os.getpid()}.fixed.tmp"
+    try:
+        plant.symlink_to(victim)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlinks unavailable here")
+    with pytest.raises(FileExistsError):                  # O_EXCL: an existing name is never reused
+        local_send.publish(tmp_path, "127.0.0.1", 8787)
+    assert victim.read_text() == "keep me"
+
+
+def test_a_failed_publish_leaves_no_temp_file_behind(tmp_path, monkeypatch):
+    monkeypatch.setattr(local_send.os, "replace", lambda *a: (_ for _ in ()).throw(OSError("disk full")))
+    with pytest.raises(OSError):
+        local_send.publish(tmp_path, "127.0.0.1", 8787)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_publish_uses_an_ipv6_url_when_the_hub_listens_on_loopback_ipv6(tmp_path):
     token = local_send.publish(tmp_path, "::1", 8788)
     assert json.loads((tmp_path / local_send.FILE_NAME).read_text())["url"] == "http://[::1]:8788"
@@ -178,6 +212,11 @@ def test_publish_falls_back_to_ipv4_loopback_when_the_hub_listens_on_all_address
 def test_it_is_off_unless_asked_for(extra, want, monkeypatch):
     monkeypatch.setenv("WINGLET_LOCAL_SEND", "")
     assert local_send.enabled(extra) is want
+
+
+def test_enabled_takes_only_the_extra():
+    import inspect
+    assert list(inspect.signature(local_send.enabled).parameters) == ["extra"]
 
 
 def test_the_env_beats_the_yaml_extra_for_local_send(monkeypatch):
@@ -237,6 +276,14 @@ def test_sender_reports_an_unreachable_gateway_without_the_token(tmp_path, monke
     monkeypatch.setattr(local_send, "_data_dir", lambda cfg: tmp_path)
     answer = asyncio.run(local_send.standalone_sender(None, "general", "hi"))
     assert "isn't reachable" in answer["error"] and token not in answer["error"]
+
+
+async def test_sender_explains_a_stale_token_file(env, tmp_path, monkeypatch):
+    """A gateway killed hard leaves its token file; the next run should be told what to do, not just 'Not allowed'."""
+    local_send.publish(tmp_path, "127.0.0.1", env.client.port)        # a token the hub does not hold
+    monkeypatch.setattr(local_send, "_data_dir", lambda cfg: tmp_path)
+    answer = await local_send.standalone_sender(None, "general", "hi")
+    assert "restart" in answer["error"] and "token file" in answer["error"] and texts(env) == []
 
 
 async def test_sender_end_to_end_against_a_running_hub(env, tmp_path, monkeypatch):
@@ -305,6 +352,16 @@ def test_a_host_the_loopback_cannot_reach_keeps_it_off(wired):
     wired.adapter._local_send, wired.adapter._host = True, "192.168.1.5"
     wired.adapter._publish_local_send(wired.hub)
     assert wired.hub.local_send_token is None and not (wired.dir / local_send.FILE_NAME).exists()
+
+
+async def test_malformed_posts_do_not_use_up_the_rate_cap(env, monkeypatch):
+    monkeypatch.setattr(local_send, "_rate_times", local_send.collections.deque())
+    for _ in range(40):
+        assert (await send(env, {"chat_id": "general", "text": ""})).status == 400
+        assert (await send(env, {"chat_id": "general", "text": "x", "notify": "yes"})).status == 400
+        assert (await send(env, {"chat_id": 7, "text": "x"})).status == 400
+    assert len(local_send._rate_times) == 0
+    assert (await send(env, {"chat_id": "general", "text": "still allowed"})).status == 200
 
 
 async def test_a_per_process_rate_limit_blocks_excess_posts(env, monkeypatch):
