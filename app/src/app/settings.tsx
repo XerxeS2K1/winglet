@@ -49,14 +49,10 @@ export default function SettingsScreen() {
       <ChevronRight size={18} color={t.colors.textTertiary} />
     </Tap> : null}
 
-    <SectionHeader title="App" />
+    <SectionHeader title="Preferences" />
     <ListGroup>
       <ListRow title="Appearance" value={`${themeLabel} · ${ACCENTS[prefs.accent].label}`} icon={<Palette />} onPress={() => router.push('/appearance')} />
       <ListRow title="Notifications" icon={<Bell />} onPress={() => router.push('/notifications')} />
-      {server ? <ListRow title="Open the app on" icon={<Star />} value={server.bot.title}
-        subtitle={mainBot?.id === server.id ? undefined : 'Tap to open the app on this bot'}
-        right={mainBot?.id === server.id ? <Check size={20} color={t.colors.accent} /> : undefined} chevron={false}
-        onPress={mainBot?.id === server.id ? undefined : () => setMainBot(server.id)} /> : null}
       {Platform.OS === 'android' ? <ListRow title="App lock" icon={<Fingerprint />}
         right={<Toggle label="App lock" value={prefs.appLock} onValueChange={async (on) => {
           if (!canLock) return;
@@ -82,9 +78,13 @@ export default function SettingsScreen() {
       </ListGroup>
     </> : null}
 
-    <SectionHeader title="About" />
+    <SectionHeader title="App" />
     <ListGroup>
-      <ListRow title="About & storage" value={appUpdate ? `Update to ${appUpdate.version}` : undefined} icon={<Info />}
+      {server ? <ListRow title="Open the app on" icon={<Star />} value={server.bot.title}
+        subtitle={mainBot?.id === server.id ? undefined : 'Tap to open the app on this bot'}
+        right={mainBot?.id === server.id ? <Check size={20} color={t.colors.accent} /> : undefined} chevron={false}
+        onPress={mainBot?.id === server.id ? undefined : () => setMainBot(server.id)} /> : null}
+      <ListRow title="About" value={appUpdate ? `Update to ${appUpdate.version}` : undefined} icon={<Info />}
         iconColor={appUpdate ? t.colors.success : undefined} onPress={() => router.push('/about')} />
     </ListGroup>
   </Screen>;

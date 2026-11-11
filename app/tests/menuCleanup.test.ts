@@ -27,9 +27,8 @@ test('"Open the app on" moved from the Agent hub to the App group in Settings, w
   assert.match(hub, /title="Server"[\s\S]{0,120}router\.push\('\/server'\)/); // Devices now sits on the Server screen
   const settings = source('app/settings.tsx');
   const from = settings.indexOf('<SectionHeader title="App" />');
-  const to = settings.indexOf('title="On this phone"');
-  assert.ok(from >= 0 && to > from, 'the App group markers must be found, or this slice means nothing');
-  const app = settings.slice(from, to);
+  assert.ok(from >= 0, 'the App group marker must be found, or this slice means nothing');
+  const app = settings.slice(from);
   assert.match(app, /title="Open the app on"/);
   assert.match(app, /value=\{server\.bot\.title\}/);
   assert.match(app, /mainBot\?\.id === server\.id \? undefined : \(\) => setMainBot\(server\.id\)/);

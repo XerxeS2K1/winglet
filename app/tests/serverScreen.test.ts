@@ -73,7 +73,8 @@ test('the old Connection route redirects to the Server screen after selecting th
 
 test('every entry point to Connection, Devices and the Server screen still lands somewhere', () => {
   at(source('components/ConnectionBanner.tsx'), '`/connection/${server.id}`');
-  at(source('app/about.tsx'), '`/connection/${srv.id}`');
+  assert.doesNotMatch(source('app/about.tsx'), /\/connection\//); // About's bot cards (and their Server button) are gone; the bot page has the Server row
+  at(source('app/settings.tsx'), "router.push('/agent')");           // Settings' bot card reaches the bot page
   at(source('app/server.tsx'), "router.push('/devices')");
   for (const route of ['app/server.tsx', 'app/devices.tsx', 'app/connection/[serverId].tsx']) assert.ok(existsSync(new URL(`../src/${route}`, import.meta.url)), route);
 });
