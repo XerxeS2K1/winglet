@@ -52,6 +52,17 @@ def test_nonsense_is_not_a_rate(bad):
     assert fx.parse_rate(bad) is None
 
 
+@pytest.mark.parametrize("body", [
+    {"date": "2026-11-11", "base": "EUR", "quote": "USD", "rate": 1.16},      # v2, euro to dollar: in the band, wrong pair
+    {"date": "2026-11-11", "base": "USD", "quote": "EUR", "rate": 0.86},      # v2, right base, wrong quote
+    {"date": "2026-11-11", "base": "EUR", "quote": "GBP", "rate": 0.87},      # v2, euro to pound
+    {"amount": 1.0, "base": "EUR", "date": "2026-11-10", "rates": {"GBP": 0.87}},  # v1, euro base
+])
+def test_another_currency_pair_is_not_the_rate_even_inside_the_band(body):
+    assert fx.parse_rate(body) is None
+    assert fx.parse_rate([body]) is None
+
+
 # -- the cache ----------------------------------------------------------------------------------
 
 async def test_a_fetched_rate_is_kept_on_disk_and_survives_a_restart(tmp_path):

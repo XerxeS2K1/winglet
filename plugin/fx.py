@@ -42,6 +42,9 @@ def parse_rate(body: Any) -> Optional[float]:
         body = body[0]
     if not isinstance(body, dict):
         return None
+    # It must be the dollar-to-pound pair; a body that names another pair is somebody else's rate, even inside the band.
+    if body.get("base", "USD") != "USD" or body.get("quote", "GBP") != "GBP":
+        return None
     value = body.get("rate")
     if value is None and isinstance(body.get("rates"), dict):
         value = body["rates"].get("GBP")
