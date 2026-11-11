@@ -700,12 +700,18 @@ def paused() -> Optional[dict]:
 
 
 def set_paused(on: bool, reason: str = "") -> Optional[dict]:
-    from agent import estop
+    """Hold or release new work. Like ``paused()``, a Hermes without this switch is "unavailable", never a crash."""
+    try:
+        from agent import estop
+        change = estop.engage if on else estop.disengage
+        read = estop.get_state
+    except Exception as exc:  # ImportError, or the module is there but a function was renamed
+        raise HermesUnavailable("pause unavailable") from exc
     if on:
-        estop.engage(reason or "paused from Winglet")
+        change(reason or "paused from Winglet")
     else:
-        estop.disengage()
-    return estop.get_state()
+        change()
+    return read()
 
 
 def spawn_restart() -> int:
@@ -2429,8 +2435,30 @@ def sessions_available() -> bool:
         r = _router("sessions")
     except HermesUnavailable:
         return False
-    return all(hasattr(r, name) for name in ("get_sessions", "search_sessions", "get_session_detail",
-                                             "get_session_messages"))
+    # Every keyword the calls below pass. A Hermes that renamed one would otherwise 500 the Sessions screen on every
+    # open; reporting it unavailable turns the screen off instead.
+    needed = {
+        "get_sessions": ("limit", "offset", "min_messages", "archived", "order", "source", "sources", "exclude_sources",
+                         "cwd_prefix", "full", "profile"),
+        "search_sessions": ("q", "limit", "profile", "source", "sources", "exclude_sources"),
+        "get_session_detail": ("profile",),          # the session id goes in by position
+        "get_session_messages": ("profile", "limit", "offset", "order", "include_compacted",
+                                 "inline_images"),
+    }
+    return all(callable(getattr(r, name, None)) and _accepts(getattr(r, name), keywords)
+               for name, keywords in needed.items())
+
+
+def _accepts(fn, keywords) -> bool:
+    """True when ``fn`` can be called with all of these keyword arguments (or cannot be inspected: then assume yes)."""
+    import inspect
+    try:
+        params = inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return True
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()):
+        return True
+    return all(name in params and params[name].kind is not inspect.Parameter.POSITIONAL_ONLY for name in keywords)
 
 
 def _session_row(row: dict) -> dict:
@@ -2823,6 +2851,21 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
 BACKGROUND_FILE = "processes.json"  # Hermes's crash-recovery checkpoint, written atomically
 BACKGROUND_FILE_MAX_BYTES = 2 * 1024 * 1024
 BACKGROUND_MAX_ENTRIES = 500
+def _started_before(ticks: int, recorded) -> bool:
+    """For an entry with no ``host_start_time``: did this process start no later than the entry says it was spawned?
+    A reused pid belongs to a process that started afterwards. With no usable ``started_at`` it cannot be shown."""
+    import os
+    if type(recorded) not in (int, float) or not 0 < recorded < 2**40:
+        return False
+    try:
+        boot = next(int(line.split()[1]) for line in (_PROC_ROOT / "stat").read_text().splitlines()
+                    if line.startswith("btime "))
+        started = boot + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, StopIteration, ValueError, IndexError):
+        return False
+    return started <= recorded + 2   # btime is whole seconds: allow for that
+
+
 _PROC_ROOT = Path("/proc")  # Linux process table; absent elsewhere, where a recorded start time cannot be verified
 
 
@@ -2882,6 +2925,8 @@ def _background_count(home: Path, profile: str) -> int:
                     fields = (_PROC_ROOT / str(pid) / "stat").read_text().rsplit(")", 1)[1].split()
                     if fields[0] in ("Z", "X") or expected is not None and int(fields[19]) != expected:
                         continue
+                    if expected is None and not _started_before(int(fields[19]), entry.get("started_at")):
+                        continue  # no recorded start: a process that began after the entry was written is a reused pid
                 elif expected is not None:
                     continue  # cannot prove this is still the recorded process on this platform
             except (OSError, ValueError, IndexError, OverflowError):

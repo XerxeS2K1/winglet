@@ -34,6 +34,7 @@ ASSETS = {
 }
 QUICK_URL = re.compile(r"https://[a-z0-9]+(?:-[a-z0-9]+)*\.trycloudflare\.com")
 MAX_DOWNLOAD = 100 * 1024 * 1024
+VERIFY_DEADLINE = 15  # seconds for one whole readiness check: httpx's timeout is per phase, so a trickle never trips it
 
 
 def asset() -> tuple[str, str]:
@@ -116,14 +117,16 @@ async def verify_url(url: str, server_id: str) -> bool:
     """HTTPS request through Cloudflare, with no bearer token and no redirects."""
     if not QUICK_URL.fullmatch(url):
         return False
-    try:
+    async def check() -> bool:
         async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
             response = await client.get(url + "/api/info")
             if response.status_code != 200 or len(response.content) > 64 * 1024:
                 return False
             info = response.json()
             return isinstance(info, dict) and info.get("app") == "winglet" and info.get("server_id") == server_id
-    except (httpx.HTTPError, ValueError):
+    try:
+        return await asyncio.wait_for(check(), VERIFY_DEADLINE)
+    except (httpx.HTTPError, ValueError, asyncio.TimeoutError):
         return False
 
 

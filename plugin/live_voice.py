@@ -261,6 +261,27 @@ class VoiceSessions:
 
     def store_speech(self, session: Dict[str, Any], turn_id: str, data: bytes, mime: str,
                      provider: str, message_id: str) -> Dict[str, Any]:
+        turn, speech_id, path = self._prepare_speech(session, turn_id, data, mime)
+        path.write_bytes(data)
+        return self._register_speech(session, turn, turn_id, speech_id, path, data, mime, provider, message_id)
+
+    async def store_speech_off_loop(self, session: Dict[str, Any], turn_id: str, data: bytes, mime: str,
+                                    provider: str, message_id: str) -> Dict[str, Any]:
+        """``store_speech`` for the event loop: the file (up to MAX_SPEECH_BYTES) is written on a worker thread.
+        The session is only read and changed here on the loop, and the turn is checked again afterwards: a
+        stop that arrived while the file was being written must not leave audio behind."""
+        turn, speech_id, path = self._prepare_speech(session, turn_id, data, mime)
+        try:
+            await asyncio.to_thread(path.write_bytes, data)
+            turn = self.turn(session, turn_id, create=False)
+            if turn is None or turn["status"] == "cancelled":
+                raise VoiceError(409, "That turn was interrupted.")
+        except BaseException:
+            self._unlink(str(path))
+            raise
+        return self._register_speech(session, turn, turn_id, speech_id, path, data, mime, provider, message_id)
+
+    def _prepare_speech(self, session: Dict[str, Any], turn_id: str, data: bytes, mime: str):
         turn = self.turn(session, turn_id)
         if turn is None or turn["status"] == "cancelled":
             raise VoiceError(409, "That turn was interrupted.")
@@ -269,8 +290,9 @@ class VoiceSessions:
         self.directory.mkdir(parents=True, exist_ok=True)
         speech_id = "sp_" + secrets.token_hex(8)
         ext = next((e for e, m in SPEECH_MIME_BY_EXT.items() if m == mime), ".mp3")
-        path = self.directory / f"{speech_id}{ext}"
-        path.write_bytes(data)
+        return turn, speech_id, self.directory / f"{speech_id}{ext}"
+
+    def _register_speech(self, session, turn, turn_id, speech_id, path, data, mime, provider, message_id):
         expires = self._clock() + SPEECH_TTL_SECONDS
         session["speech"][speech_id] = {
             "id": speech_id, "path": str(path), "mime": mime, "turn_id": turn_id,
@@ -479,6 +501,12 @@ class VoiceBridge:
                 self.sessions.release_transcription(session)
             logger.warning("[winglet] voice transcription provider failed")
             return _json({"error": "Transcription failed. Try again."}, status=502)
+        except BaseException:
+            # A cancelled request (the phone hung up mid-transcription) is not an Exception: without this the
+            # session stays "busy" and refuses every later utterance until it expires.
+            if claimed and session is not None:
+                self.sessions.release_transcription(session)
+            raise
         finally:
             self.sessions._unlink(audio_path)
 
@@ -508,7 +536,7 @@ class VoiceBridge:
             self._current_authority(session)
             if not audio:
                 raise VoiceError(502, "Speech synthesis returned no audio.")
-            stored = self.sessions.store_speech(session, turn_id, audio, mime, provider, message_id)
+            stored = await self.sessions.store_speech_off_loop(session, turn_id, audio, mime, provider, message_id)
             return _json(stored)
         except VoiceError as exc:
             return _error(exc)
