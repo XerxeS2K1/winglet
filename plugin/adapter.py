@@ -123,6 +123,12 @@ def open_store() -> Store:
     return Store(data_dir() / "data.db")
 
 
+def ensure_general_chat(store: Store) -> None:
+    """Start-up makes the General chat on a new server, but not again once its owner deleted it: an explicit
+    ensure_chat clears the deletion record, so a deleted General came back at the next restart."""
+    store.ensure_chat(GENERAL_CHAT_ID, "General", implicit=True)
+
+
 def profile_info() -> Dict[str, Any]:
     """Name/title/description of the Hermes profile this gateway serves (its Bot Mode identity)."""
     from hermes_constants import get_hermes_home
@@ -290,7 +296,7 @@ class WingletAdapter(BasePlatformAdapter):
 
         try:
             store = open_store()
-            store.ensure_chat(GENERAL_CHAT_ID, "General")
+            ensure_general_chat(store)
             # Hermes keeps waiting approvals/questions in memory: after a restart none of the old cards
             # can be answered any more.
             for kind in ("approval", "question"):
