@@ -317,6 +317,22 @@ async def test_token_rotation_replaces_the_old_token(client, hub):
     assert (await client.get("/api/me", headers={"Authorization": f"Bearer {new}"})).status == 200
 
 
+async def test_token_rotation_reconnects_open_sockets_instead_of_calling_them_unpaired(client, hub):
+    phone = await pair_phone(client, hub)
+    ws = await client.ws_connect("/api/ws")
+    await ws.send_json({"type": "auth", "token": phone.token})
+    assert (await ws.receive_json())["type"] == "hello"
+    resp = await post_signed(client, phone, "/api/devices/me/rotate-token", {})
+    new = (await resp.json())["token"]
+    await hub.post_message("general", "next event", push=False)  # what used to close it as "unpaired"
+    msg = await asyncio.wait_for(ws.receive(), 5)
+    assert msg.type.name in ("CLOSE", "CLOSED", "CLOSING")
+    assert ws.close_code == 1012  # "reconnect", not 4401 "unpaired"
+    again = await client.ws_connect("/api/ws")
+    await again.send_json({"type": "auth", "token": new})
+    assert (await again.receive_json())["type"] == "hello"
+
+
 async def test_approval_requires_signed_http_but_deny_remains_available(client, hub):
     owner = await pair_phone(client, hub)
     item = await hub.add_inbox('approval', 'general', 'Run?', '', {'choices': ['once', 'deny']}, push=False)

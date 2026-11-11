@@ -3207,6 +3207,13 @@ class Hub:
         if token is None:
             return _error(404, "no such device")
         self.audit("token.rotated", device, device["name"])
+        # Sockets opened with the old token would otherwise be closed as "unpaired" by the next broadcast, which
+        # the app reads as signed out. Close them now with an ordinary "reconnect" code instead (the app retries
+        # with the token it just saved). They are not moved to the new token: the old one "no longer works".
+        for ws, meta in list(self._sockets.items()):
+            if meta["device"]["id"] == device["id"]:
+                with contextlib.suppress(Exception):
+                    await ws.close(code=1012, message=b"token replaced, reconnect")
         return _json({"token": token})
 
     async def h_audit(self, request: web.Request) -> web.Response:
