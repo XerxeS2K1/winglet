@@ -12,7 +12,7 @@ import { Folder, Hash, MessageSquarePlus, MoreHorizontal, Pin, Search, Sparkles,
 import { useTabBarSpace } from '../../components/TabBar';
 import { Button, Chip, IconButton, SearchField, SectionHeader, Skeleton, Tap } from '../../components/ui';
 import { projectChatIds } from '../../features/projects/logic';
-import { ago } from '../../lib/agent';
+import { ago, chatName } from '../../lib/agent';
 import { api } from '../../lib/api';
 import { startNewChat } from '../../lib/actions';
 import { requestFocus } from '../../lib/focus';
@@ -73,7 +73,7 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
 
   const q = query.trim().toLowerCase();
   const draftOf = (c: Chat) => draftPreview(drafts[`${server.id}:${c.id}`], draftFiles[`${server.id}:${c.id}`], !!replyTo[`${server.id}:${c.id}`]);
-  const match = (c: Chat) => !q || `${c.title} ${c.preview} ${draftOf(c) ?? ''}`.toLowerCase().includes(q);
+  const match = (c: Chat) => !q || `${chatName(c)} ${c.preview} ${draftOf(c) ?? ''}`.toLowerCase().includes(q);
   const mainId = homeChat(rt);
   const groups = useMemo(() => organizeChats(Object.values(rt?.chats ?? {}), server.id, mainId, pinnedChats, archivedChats), [rt?.chats, server.id, mainId, pinnedChats, archivedChats]);
   const inScope = (list: Chat[]) => projectIds ? list.filter((chat) => projectIds.has(chat.id)) : list;

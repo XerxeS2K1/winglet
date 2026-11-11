@@ -26,7 +26,10 @@ test('"Open the app on" moved from the Agent hub to the App group in Settings, w
   assert.doesNotMatch(hub, /Open the app on|setMainBot|useMainBot/);
   assert.match(hub, /title="Devices"/); // the Access group keeps Devices
   const settings = source('app/settings.tsx');
-  const app = settings.slice(settings.indexOf('<SectionHeader title="App" />'), settings.indexOf('title="On this phone"'));
+  const from = settings.indexOf('<SectionHeader title="App" />');
+  const to = settings.indexOf('title="On this phone"');
+  assert.ok(from >= 0 && to > from, 'the App group markers must be found, or this slice means nothing');
+  const app = settings.slice(from, to);
   assert.match(app, /title="Open the app on"/);
   assert.match(app, /value=\{server\.bot\.title\}/);
   assert.match(app, /mainBot\?\.id === server\.id \? undefined : \(\) => setMainBot\(server\.id\)/);
@@ -45,7 +48,7 @@ test('Settings has no Bots section, and the bot switcher still reaches Add a bot
 test('the Connection screen offers one way into Notifications at a time and keeps Test and the channel line', () => {
   const screen = source('app/connection/[serverId].tsx');
   // Not set up: the "Set up" button is the way in. Set up: the Quiet hours row is. Never both.
-  assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Quiet hours and muted chats"[^\n]*\/notifications[^\n]*: null\}/);
+  assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Notification settings"[^\n]*\/notifications[^\n]*: null\}/);
   assert.equal((screen.match(/title="Set up"/g) ?? []).length, 1);
   assert.match(screen, /title="Test"/);
   assert.match(screen, /On, through the \$\{channel\}/);
@@ -62,8 +65,11 @@ test('the chat menu no longer carries Connection details', () => {
 test('the Agent hub has one button, Open chat, at full width: the feed is linked from Chats and Schedule instead', () => {
   const hub = source('app/(tabs)/agent.tsx');
   assert.doesNotMatch(hub, /title="Updates"|title="Reports"|\/home`/);
-  assert.equal((hub.match(/<Button /g) ?? []).length, 1);
-  assert.match(hub, /title="Open chat"/);
+  const start = hub.indexOf('<View style={s.actions}>');
+  assert.ok(start >= 0, 'the hub header action row must be found');
+  const row = hub.slice(start, hub.indexOf('</View>', start));
+  assert.ok(row.includes('title="Open chat"'), 'the action row must contain Open chat');
+  assert.equal((row.match(/<Button /g) ?? []).length, 1);
   assert.match(source('app/(tabs)/chats.tsx'), /open\('home'\)/); // the Chats list pill is still the way in
   assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/); // and Schedule's button
 });
@@ -82,4 +88,13 @@ test('the feed (kind home) is called Reports wherever the app names it; Updates 
   assert.match(source('app/about.tsx'), /title="Server updates"/);
   // The route and chat kind are identifiers, not words the user sees.
   assert.match(source('app/schedule.tsx'), /\/chat\/\$\{server\.id\}\/home/);
+});
+
+test('searching Chats finds the feed by its shown name, Reports, and no longer by Updates', () => {
+  const chats = source('app/(tabs)/chats.tsx');
+  assert.match(chats, /import \{ ago, chatName \} from '\.\.\/\.\.\/lib\/agent'/);
+  assert.match(chats, /const match = \(c: Chat\) => [^\n]*\$\{chatName\(c\)\} \$\{c\.preview\}/); // not c.title, which the server stores as Updates
+  assert.doesNotMatch(chats, /const match = [^\n]*\$\{c\.title\}/);
+  const agent = source('lib/agent.ts');
+  assert.match(agent, /chat\.kind === 'home' \? 'Reports' : chat\.title/);
 });
