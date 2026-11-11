@@ -25,6 +25,7 @@ import re
 import shutil
 import time
 import uuid
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -556,7 +557,10 @@ class BranchService:
         self.hub = hub
         self.adapter = adapter
         self.bridge = HermesBranchBridge(adapter)
-        self._locks: Dict[str, asyncio.Lock] = {}
+        # Weak: a chat's lock lives only while someone holds or waits on it, so chats that are long gone are
+        # forgotten. (Popping it when unlocked would be wrong: a waiter on the old lock and a newcomer on a new one
+        # would then both run.) Every user keeps the lock in a local variable for as long as it matters.
+        self._locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = weakref.WeakValueDictionary()
 
     def available(self) -> bool:
         return self.bridge.available()
