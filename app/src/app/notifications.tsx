@@ -175,7 +175,7 @@ function WebPushSettings({ servers }: { servers: Server[] }) {
       <>
         <Text style={s.note}>
           {state === 'granted' ? `Notifications are on for ${server.bot.title}.`
-            : 'Notify me about approvals, questions and results.'}
+            : 'Notify me about approvals, questions and reports.'}
         </Text>
         <View style={s.buttons}>
           <Button title={state === 'granted' ? 'Re-register this device' : 'Turn on notifications'} icon={<BellRing size={17} color={t.colors.onAccent} />}

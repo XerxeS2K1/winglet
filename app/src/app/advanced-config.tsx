@@ -76,7 +76,7 @@ function AdvancedConfig() {
   };
   const discard = () => { generation.current++; keepDraft(key); setChanges({}); setPreview(null); setBusy(false); setError(''); };
   const visible = matchingFields(catalog?.fields ?? [], query);
-  return <Screen title="Agent configuration" onRefresh={!count ? load : undefined}>
+  return <Screen title="Bot configuration" onRefresh={!count ? load : undefined}>
     {!isOwner(rt) ? <Text style={s.note}>Only an owner can manage these settings.</Text> : <>
       {!live ? <Text style={s.note}>Offline. Reconnect to review or save; your draft is kept.</Text> : null}
       {error ? count ? <Text style={s.error} accessibilityLiveRegion="polite">{error}</Text> : <LoadError message={error} onRetry={load} /> : null}

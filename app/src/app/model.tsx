@@ -65,7 +65,7 @@ function ModelScreen() {
   const providers = useMemo(() => modelProviders({ providers: options?.providers, current_model: options?.model, current_provider: options?.provider }, q), [options, q]);
 
   return (
-    <Screen title="Default model"
+    <Screen title="Model"
       onRefresh={load}>
       {options?.model && !options.providers.some((p) => p.slug === options.provider && p.models.includes(options.model)) ? <>
         <SectionHeader title="Selected" />

@@ -29,7 +29,7 @@ export default function BotsScreen() {
   const chosenMain = usePrefs((st) => st.prefs.mainBot);
   const noTeamwork = teamworkOff(servers, Object.fromEntries(servers.map((x) => [x.id, runtime[x.id]?.info])));
   return (
-    <Screen title="Your bots">
+    <Screen title="Bots">
       <SectionHeader title={`${servers.length} paired`} />
       <View style={s.list}>
         {mainFirst(servers, chosenMain).map((srv, i) => {
@@ -56,8 +56,8 @@ export default function BotsScreen() {
                 {parent ? null : (
                   // Removing mustn't also open the bot (on the web a click bubbles to the card).
                   <Pressable accessible={false} onPress={() => undefined}>
-                    <Button size="sm" variant={confirm === srv.id ? 'danger' : 'ghost'} title={confirm === srv.id ? 'Remove' : ''}
-                      accessibilityLabel={confirm === srv.id ? `Confirm removing ${srv.bot.title}` : `Remove ${srv.bot.title}`}
+                    <Button size="sm" variant={confirm === srv.id ? 'danger' : 'ghost'} title={confirm === srv.id ? 'Delete bot' : ''}
+                      accessibilityLabel={confirm === srv.id ? `Confirm deleting ${srv.bot.title}` : `Delete ${srv.bot.title}`}
                       icon={<Trash2 size={16} color={t.colors.danger} />} style={s.remove}
                       onPress={() => { if (confirm !== srv.id) setConfirm(srv.id); else { setConfirm(null); removeServer(srv.id); } }} />
                   </Pressable>
@@ -69,7 +69,7 @@ export default function BotsScreen() {
         <Button title="Add a bot" variant="secondary" icon={<Plus size={18} color={t.colors.text} />} onPress={addBot.open} style={s.add} />
       </View>
       {addBot.sheet}
-      {noTeamwork ? <Footnote>Your bots can't ask each other for help on this server yet. Its Hermes needs updating to v0.22.5 or later.</Footnote> : null}
+      {noTeamwork ? <Footnote>Bots can't ask each other for help on this server yet. Its Hermes needs updating to v0.22.5 or later.</Footnote> : null}
       <Footnote>Removing a server unpairs all its bots from this phone. Chats stay on the server; you can pair again.</Footnote>
     </Screen>
   );

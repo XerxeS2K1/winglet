@@ -189,7 +189,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
         </>
       ) : null}
       <Footnote>Contains no passwords, tokens, addresses or messages. Paste it when asking for help.</Footnote>
-      <Button style={{ marginTop: t.space.md }} title={copied ? 'Copied' : 'Copy report'} icon={<Copy size={16} color={t.colors.onAccent} />} onPress={async () => {
+      <Button style={{ marginTop: t.space.md }} title={copied ? 'Copied' : 'Copy diagnostics'} icon={<Copy size={16} color={t.colors.onAccent} />} onPress={async () => {
         await Clipboard.setStringAsync(report());
         setCopied(true);
         setTimeout(() => setCopied(false), 2000);
@@ -245,7 +245,7 @@ function Notifications({ server, status, now, testing, onTest }: {
           subtitle={channel ? last ?? 'Nothing sent since the server started.' : undefined}
           right={channel ? <Button size="sm" variant="tonal" title="Test" loading={testing} onPress={onTest} />
             : <Button size="sm" title="Set up" onPress={() => router.push('/notifications')} />} />
-        {channel ? <ListRow icon={<Moon size={18} color={t.colors.textSecondary} />} title="Notification settings" onPress={() => router.push('/notifications')} /> : null}
+        {channel ? <ListRow icon={<Moon size={18} color={t.colors.textSecondary} />} title="Notifications" onPress={() => router.push('/notifications')} /> : null}
       </ListGroup>
     </>
   );

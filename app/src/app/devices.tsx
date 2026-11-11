@@ -54,7 +54,7 @@ function Devices({ server }: { server: Server }) {
   if (!roles) {
     return (
       <Screen title="Devices" subtitle={server.bot.title}>
-        <Card><Text style={s.note}>Update the server with `hermes plugins update winglet`, then restart it to enable devices and roles.</Text></Card>
+        <Card><Text style={s.note}>Update the Winglet plugin on the server, then restart it to enable devices and roles.</Text></Card>
       </Screen>
     );
   }
@@ -66,12 +66,12 @@ function Devices({ server }: { server: Server }) {
       {owner ? (
         <>
           {me?.verified ? <>
-            <SectionHeader title="Link a device" />
+            <SectionHeader title="Add a device" />
             <ListGroup>
               <ListRow title="Add a device" icon={<UserPlus size={18} color={t.colors.textSecondary} />} onPress={() => setAdding(true)} />
-              {Platform.OS !== 'web' ? <ListRow title="Scan browser QR" icon={<QrIcon size={18} color={t.colors.textSecondary} />} onPress={() => router.push('/scan')} /> : null}
+              {Platform.OS !== 'web' ? <ListRow title="Approve a browser" icon={<QrIcon size={18} color={t.colors.textSecondary} />} onPress={() => router.push('/scan')} /> : null}
             </ListGroup>
-            <Footnote>Add a device shows a pairing code. Scan browser QR approves a browser waiting to sign in.</Footnote>
+            <Footnote>Add a device shows a pairing code. Approve a browser signs in a browser that is waiting.</Footnote>
           </> : null}
           <SectionHeader title="Paired" />
           {devices === null ? (error ? <LoadError message={error} onRetry={load} /> : (
@@ -89,7 +89,7 @@ function Devices({ server }: { server: Server }) {
             </ListGroup>
           )}
           {error && devices ? <Text style={[s.note, { color: t.colors.danger, marginTop: 8 }]}>{error}</Text> : null}
-          <SectionHeader title="History" />
+          <SectionHeader title="Activity" />
           <ListGroup>
             <ListRow icon={<Activity size={18} color={t.colors.textSecondary} />} title="Activity"
               onPress={() => router.push('/activity')} />
@@ -221,7 +221,7 @@ function DeviceSheet({ server, device, canEdit, onClose, onChanged }: {
         <Text style={s.sheetNote}>Verify this phone to rename, change or remove devices.</Text>
       ) : mode === 'menu' ? (
         <>
-          <ListGroup><ListRow title="Role" value={d.role === 'owner' ? 'Owner' : 'Member'} /><ListRow title="Platform" value={d.platform || 'Unknown'} /><ListRow title="Paired" value={agoText(d.created_at)} /></ListGroup>
+          <ListGroup><ListRow title="Role" value={d.role === 'owner' ? 'Owner' : 'Member'} /><ListRow title="Platform" value={d.platform || 'Unknown'} /></ListGroup>
           <SheetAction label="Rename" onPress={() => { setName(d.name); setMode('rename'); }} />
           <SheetAction label={d.role === 'owner' ? 'Make a member' : 'Make an owner'} onPress={() => setMode('role')} />
           <SheetAction icon={<Trash2 size={20} color={t.colors.danger} />} label={d.current ? 'Remove this phone' : 'Remove'} destructive onPress={() => setMode('remove')} />

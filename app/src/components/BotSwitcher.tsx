@@ -24,7 +24,7 @@ export function useBotSheet(server: Server | undefined, onSwitch?: (serverId: st
   const [open, setOpen] = useState(false);
   const addBot = useAddBot();
   const sheet = server ? <>
-    <Sheet visible={open} onClose={() => setOpen(false)} title="Your bots" scrollable>
+    <Sheet visible={open} onClose={() => setOpen(false)} title="Bots" scrollable>
       <BotList server={server} onDone={() => setOpen(false)} onSwitch={onSwitch} />
       <ListGroup style={{ marginTop: t.space.md }}>
         <ListRow icon={<Plus />} title="Add a bot" onPress={() => { setOpen(false); addBot.open(); }} />
@@ -104,7 +104,7 @@ export function BotFaces({ server }: { server: Server }) {
   const picker = useBotSheet(server);
   return <>
     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={s.row} style={s.scroll}
-      accessibilityLabel="Your bots" keyboardShouldPersistTaps="handled">
+      accessibilityLabel="Bots" keyboardShouldPersistTaps="handled">
       {mainFirst(servers, chosen).map((x) => {
         const on = x.id === server.id;
         const waiting = pending[x.id] ?? 0;
@@ -117,7 +117,7 @@ export function BotFaces({ server }: { server: Server }) {
           {waiting && !on ? <Badge count={waiting} dot style={s.dot} /> : null}
         </Tap>;
       })}
-      <Tap feedback="selection" scaleTo={0.9} accessibilityLabel="Your bots. Add or manage bots" onPress={picker.open}
+      <Tap feedback="selection" scaleTo={0.9} accessibilityLabel="Bots. Add or manage bots" onPress={picker.open}
         style={({ hovered, pressed }) => [s.face, s.more, (hovered || pressed) && { backgroundColor: t.colors.pressed }]}>
         <ChevronsUpDown size={16} color={t.colors.textSecondary} />
       </Tap>

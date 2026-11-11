@@ -29,6 +29,6 @@ function nodes(value: any): any[] { if (!value || typeof value !== 'object') ret
 test('a browser storage failure cannot fall through to manual pairing and create a second identity', async () => {
   const h = pairScreen(); const panel = nodes(h.render()).find((n) => n.type === 'BrowserSignIn');
   assert.equal(typeof panel.props.onPhase, 'function'); panel.props.onPhase('save-error');
-  const action = nodes(h.render()).find((n) => n.props?.title === 'Connect and verify');
+  const action = nodes(h.render()).find((n) => n.props?.title === 'Connect');
   assert.equal(action.props.disabled, true); await action.props.onPress(); assert.equal(h.requests(), 0);
 });

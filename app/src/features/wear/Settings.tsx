@@ -55,7 +55,7 @@ export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:Wea
     const setup=frozen.current;
     if(setup.scope.association!==watch.association)throw new Error('Finish or cancel the current watch setup first.');
     await linkWatch(setup.server,setup.scope,setup.background,signal,wearNative);frozen.current=null;
-    if(alive.current)setMessage('Watch linked. Refresh on the watch to see shared conversations.');
+    if(alive.current)setMessage('Watch linked. Refresh on the watch to see shared chats.');
   });
   return <Screen title="Wear OS">
     <ListGroup style={s.status}><ListRow title={!wearNative||!supported?'Android watch setup unavailable':links.length?`${links.length} ${links.length===1?'watch linked':'watches linked'}`:pending.length?'Watch ready to link':'No watch linked'}
@@ -64,11 +64,11 @@ export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:Wea
       <SectionHeader title="Bot"/><ListGroup>{servers.map(value=><ListRow key={value.id} title={value.bot.title}
         right={value.id===serverId?<Check size={20} color={t.colors.accent} accessibilityLabel="Selected"/>:undefined}
         chevron={false} disabled={busy||!!frozen.current} onPress={()=>setServerId(value.id)}/>)}</ListGroup>
-      <SectionHeader title="Conversations" right={<Text style={s.note}>{selected.length} of 12</Text>}/>
-      {chats.length?<ListGroup>{chats.map(chat=><ListRow key={chat.id} title={chat.title||'Conversation'}
+      <SectionHeader title="Chats" right={<Text style={s.note}>{selected.length} of 12</Text>}/>
+      {chats.length?<ListGroup>{chats.map(chat=><ListRow key={chat.id} title={chat.title||'Chat'}
         right={selected.includes(chat.id)?<Check size={20} color={t.colors.accent} accessibilityLabel="Shared on linking"/>:undefined}
         chevron={false} disabled={busy||!!frozen.current} onPress={()=>setSelected(value=>value.includes(chat.id)?value.filter(id=>id!==chat.id):value.length<12?[...value,chat.id]:value)}/>)}</ListGroup>
-        :<Footnote>Create a conversation on a supported bot to share it.</Footnote>}
+        :<Footnote>Create a chat on a supported bot to share it.</Footnote>}
       <SectionHeader title="Access"/>
       <ListGroup>
         <ListRow title="Allow short replies" right={<Toggle label="Allow short replies" value={reply} onValueChange={value=>{if(!busy&&!frozen.current)setReply(value);}}/>}/>
@@ -79,7 +79,7 @@ export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:Wea
       {!pending.length?<Footnote>Tap Link on your watch; its code appears here for two minutes.</Footnote>:null}
       {pending.map(watch=><Card key={watch.association} style={s.card}>
         <Text style={s.heading}>{watch.name}</Text><Text style={s.code}>{watch.code}</Text>
-        <Text style={s.note}>Check this code matches your watch. {selected.length} conversations selected.</Text>
+        <Text style={s.note}>Check this code matches your watch. {selected.length} chats selected.</Text>
         <Button title={frozen.current?'Retry setup':'Link watch'} disabled={busy||!server||!selected.length} onPress={()=>pair(watch)}/>
         <Button title="Cancel setup" variant="secondary" disabled={busy} onPress={()=>void run(async()=>{
           frozen.current=null;await wearNative?.cancel(watch.association);
@@ -113,7 +113,7 @@ export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:Wea
       <ListGroup>
         <ListRow title="Platform" value="Android + Wear OS"/>
         <ListRow title="Link lifetime" value="30 days"/>
-        <ListRow title="Conversation limit" value="12"/>
+        <ListRow title="Chat limit" value="12"/>
         <ListRow title="Approvals and tools" value="On phone"/>
       </ListGroup>
       <Footnote>Install matching Winglet builds on a paired phone and watch with Google Play services, then tap Link on the watch.</Footnote>

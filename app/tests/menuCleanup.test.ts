@@ -47,7 +47,7 @@ test('Settings has no Bots section, and the bot switcher still reaches Add a bot
 test('the Connection screen offers one way into Notifications at a time and keeps Test and the channel line', () => {
   const screen = source('components/ReachingIt.tsx');
   // Not set up: the "Set up" button is the way in. Set up: the Quiet hours row is. Never both.
-  assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Notification settings"[^\n]*\/notifications[^\n]*: null\}/);
+  assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Notifications"[^\n]*\/notifications[^\n]*: null\}/);
   assert.equal((screen.match(/title="Set up"/g) ?? []).length, 1);
   assert.match(screen, /title="Test"/);
   assert.match(screen, /On, through the \$\{channel\}/);

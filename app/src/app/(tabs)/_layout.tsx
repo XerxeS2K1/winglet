@@ -13,9 +13,9 @@ export default function TabsLayout() {
       screenOptions={{ headerShown: false, animation: 'fade', sceneStyle: { backgroundColor: t.colors.bg }, freezeOnBlur: true }}
     >
       <Tabs.Screen name="index" options={{ title: 'Chat' }} />
-      <Tabs.Screen name="chats" options={{ title: 'Chats' }} />
+      <Tabs.Screen name="chats" options={{ title: 'All chats' }} />
       <Tabs.Screen name="inbox" options={{ title: 'Inbox' }} />
-      <Tabs.Screen name="agent" options={{ title: 'Agent' }} />
+      <Tabs.Screen name="agent" options={{ title: 'Bot' }} />
     </Tabs>
   );
 }

@@ -243,7 +243,7 @@ export function EditSheet({ server, draft, onClose, onSaved }: { server: Server;
             {parseError || (preview ? `Runs ${preview.display}${preview.next_run_at ? ` · first ${whenNext(preview.next_run_at)}` : ''}` : 'Try "weekdays at 9am", "every 2h" or "in 30m".')}
           </Text>
         </View>
-        <Button title={form.id ? 'Save' : 'Schedule it'} loading={busy} disabled={!ready || busy} onPress={save} />
+        <Button title={form.id ? 'Save' : 'Save routine'} loading={busy} disabled={!ready || busy} onPress={save} />
         {form.id ? <ConfirmButton title="Delete routine" loading={busy} onConfirm={remove} /> : null}
         {error ? <Text style={[s.previewText, { color: t.colors.danger, textAlign: 'center' }]}>{error}</Text> : null}
       </View>

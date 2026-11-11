@@ -71,7 +71,7 @@ export default function AboutScreen() {
 
       <SectionHeader title="Help" />
       <ListGroup>
-        <ListRow title="App protocol" value={String(APP_PROTOCOL)} />
+        <ListRow title="App/server protocol version" value={String(APP_PROTOCOL)} />
         <ListRow icon={<FileText size={18} color={t.colors.textSecondary} />} title="Open-source notices" onPress={() => router.push('/open-source-notices')} />
         <ListRow icon={<ExternalLink size={18} color={t.colors.textSecondary} />} title="Source code & help" onPress={() => Linking.openURL('https://github.com/XerxeS2K1/winglet')} />
       </ListGroup>

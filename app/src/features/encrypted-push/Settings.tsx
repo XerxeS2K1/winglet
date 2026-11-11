@@ -15,14 +15,14 @@ import type {RemotePushStatus} from './registration';
 
 const errors:Record<string,string>={
   key_lost:'The device key is unavailable. Rotate the key to repair delivery.',
-  registration_failed:'The distributor could not register Winglet. Open your push app (for example ntfy) if you use one, then retry.',
+  registration_failed:'The push service could not register this phone. Open your push app (for example ntfy) if you use one, then retry.',
   distributor_unavailable:'The push service is temporarily unavailable. Check your network (and your push app, if you use one) and retry.',
-  unregistered:'The distributor removed this registration. Repair delivery to register again.',
+  unregistered:'This phone was unregistered. Repair delivery to register again.',
   notifications_blocked:'Android blocked display. Allow Winglet notifications in Android settings.',
   unsupported_endpoint:'Use a push service that supports encrypted Web Push, such as ntfy or the built-in option.',
-  invalid_or_unavailable_key:'A payload could not be verified. If delivery keeps failing, rotate the key.',
-  transport_decryption_failed:'The distributor could not decrypt the transport payload. Repair delivery to resync its endpoint.',
-  oversized_payload:'An oversized payload was refused. Update the server before testing again.',
+  invalid_or_unavailable_key:'A delivery could not be verified. If delivery keeps failing, rotate the key.',
+  transport_decryption_failed:'The push service could not decrypt the delivery. Repair delivery to resync.',
+  oversized_payload:'An oversized message was refused. Update the server before testing again.',
 };
 const when=(value?:number)=>value?new Date(value*1000).toLocaleString():'Not observed yet';
 export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{server:Server;nativeClient?:PushNative|null}){
@@ -84,13 +84,13 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
       currentPairing(server,signal);
       const {public_key}=await api<{public_key:string}>(server,'/api/push/vapid');currentPairing(server,signal);
       await native.prepare(server.id,server.deviceId,distributor,public_key,rotate,server.url,server.token);currentPairing(server,signal);
-      if(alive.current)setMessage('Waiting for your push distributor…');
+      if(alive.current)setMessage('Waiting for your push service…');
       let registered=false;
       for(let attempt=0;attempt<24;attempt++){
         currentPairing(server,signal);
         const state=await native.status(server.id,server.deviceId);currentPairing(server,signal);
         if(state.error && ['registration_failed','distributor_unavailable','unregistered','unsupported_endpoint','key_lost'].includes(state.error))
-          throw new Error(errors[state.error] ?? 'The distributor could not register. Open your push app (for example ntfy) if you use one, then retry.');
+          throw new Error(errors[state.error] ?? 'The push service could not register this phone. Open your push app (for example ntfy) if you use one, then retry.');
         if(state.registered){registered=true;break;}
         await new Promise(resolve=>setTimeout(resolve,750));
       }
@@ -140,10 +140,10 @@ export function EncryptedPushSettings({server,nativeClient=defaultPushNative}:{s
     </>:null}
     {message?<Text style={s.note} accessibilityLiveRegion="polite">{message}</Text>:null}
     {error?<Text style={s.error} accessibilityLiveRegion="polite">{error}</Text>:null}
-    <Sheet visible={choose} onClose={()=>setChoose(false)} title={rotate?'Rotate key':'Push distributor'}>
+    <Sheet visible={choose} onClose={()=>setChoose(false)} title={rotate?'Rotate key':'Push service'}>
       <ListGroup>{[...(cap?.distributors ?? [])].sort((x,y)=>Number(x.id===cap?.self)-Number(y.id===cap?.self)).map(item=><ListRow key={item.id} title={item.name} value={item.id===cap?.self?undefined:item.id} onPress={()=>setup(item.id)}/>)}</ListGroup>
       {cap?.self && cap.distributors.some(item=>item.id===cap.self)?<Footnote>Built-in delivery uses Google Play services and needs no other app. Message content stays encrypted; Google can see timing, size and this phone's push address. Choose ntfy or another UnifiedPush app if you prefer not to involve Google.</Footnote>:null}
-      <Footnote>{rotate?'The old local key retires immediately; delivery resumes after server confirmation.':'Only encrypted payloads pass through this distributor, never your credentials or delivery key.'}</Footnote>
+      <Footnote>{rotate?'The old local key retires immediately; delivery resumes after server confirmation.':'Only encrypted messages pass through this service, never your credentials or delivery key.'}</Footnote>
     </Sheet>
     <Sheet visible={diagnostics} onClose={()=>setDiagnostics(false)} title="Delivery details" scrollable>
       <ListGroup>

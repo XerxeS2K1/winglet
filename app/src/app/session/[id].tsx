@@ -34,13 +34,11 @@ export default function SessionScreen() {
   if (!server) return null;
   const session = data?.session;
   return (
-    <Screen title={session ? sessionTitle(session) : 'Session'}>
+    <Screen title={session ? sessionTitle(session) : 'Chat history'}>
       {session ? <>
-        <SectionHeader title="Session" />
         <ListGroup>
           <ListRow title="Source" value={sourceLabel(session.source)} />
           {session.model ? <ListRow title="Model" value={session.model} /> : null}
-          {session.started_at ? <ListRow title="Started" value={agoText(session.started_at)} /> : null}
         </ListGroup>
       </> : null}
       {error ? <Text style={s.error}>{error}</Text> : null}

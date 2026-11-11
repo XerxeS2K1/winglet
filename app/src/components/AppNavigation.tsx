@@ -343,7 +343,7 @@ function NavigationRail() {
     <View style={{ flex: 1 }} />
     <View style={s.railDivider} />
     {item('Rooms', Users, '/rooms')}
-    {item('Agent', Bot, '/agent')}
+    {item('Bot', Bot, '/agent')}
     {item('Settings', Settings, '/settings')}
   </View>;
 }
