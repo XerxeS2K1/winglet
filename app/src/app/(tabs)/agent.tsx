@@ -9,14 +9,14 @@ import { BotSwitcher } from '../../components/BotSwitcher';
 import { HUB_BAR, HubBar } from '../../components/InboxView';
 import { LivePet } from '../../components/LivePet';
 import {
-  Activity, BarChart, Brain, Cpu, FileDiff, HeartPulse, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
-  ShieldCheck, Sparkles, SquareTerminal, UserRoundPen,
+  BarChart, Brain, Cpu, FileDiff, Key, MessageCircle, MessageSquareText, PawPrint, Plug,
+  Server as ServerIcon, Sparkles, SquareTerminal, UserRoundPen,
 } from '../../components/icons';
 import { moodOf } from '../../lib/agent';
 import { activeModel, modelName } from '../../lib/modelOptions';
 import { api } from '../../lib/api';
 import { useTabBarSpace } from '../../components/TabBar';
-import { Button, Footnote, ListGroup, ListRow, SectionHeader } from '../../components/ui';
+import { Button, ListGroup, ListRow, SectionHeader } from '../../components/ui';
 import { connectionView } from '../../lib/connection';
 import { homeChat, isOwner, useApp, useServerState } from '../../lib/store';
 import type { AgentInfo, Server } from '../../lib/types';
@@ -66,11 +66,13 @@ function AgentHub({ server }: { server: Server }) {
     <ListRow key="memory" icon={<Brain />} title="Memory" onPress={() => router.push('/memory')} />,
     <ListRow key="usage" icon={<BarChart />} title="Usage" onPress={() => router.push('/usage')} />,
   ] : [];
+  if (rt?.info?.features?.config_catalog && owner) brainRows.push(<ListRow key="config" icon={<Cpu />} title="Agent configuration" onPress={() => router.push('/advanced-config')} />);
   const abilityRows = rt?.info?.features?.abilities && owner ? [
     <ListRow key="skills" icon={<Sparkles />} title="Skills" onPress={() => router.push('/skills')} />,
     <ListRow key="tools" icon={<SquareTerminal />} title="Tools" onPress={() => router.push('/tools')} />,
     <ListRow key="mcp" icon={<Plug />} title="MCP servers" onPress={() => router.push('/mcp')} />,
   ] : [];
+  const paused = !!(control && !child && rt?.paused);
   const historyRows = control ? [
     ...(rt.info?.features?.checkpoints ? [<ListRow key="checkpoints" icon={<FileDiff />} title="Checkpoints" onPress={() => router.push('/checkpoints')} />] : []),
     ...(rt.info?.features?.sessions ? [<ListRow key="sessions" icon={<MessageSquareText />} title="Sessions" onPress={() => router.push('/sessions')} />] : []),
@@ -101,23 +103,11 @@ function AgentHub({ server }: { server: Server }) {
         {abilityRows.length ? <><SectionHeader title="Abilities" /><ListGroup>{abilityRows}</ListGroup></> : null}
         {historyRows.length ? <><SectionHeader title="History" /><ListGroup>{historyRows}</ListGroup></> : null}
 
-        <SectionHeader title="Server" />
         <ListGroup>
-          {control && !child ? <ListRow icon={<HeartPulse />} iconColor={rt.paused ? t.colors.warning : undefined}
-            title="Status" value={rt.paused ? 'Paused' : undefined} onPress={() => router.push('/server')} /> : null}
-          <ListRow icon={<Activity />} title="Connection" value={online ? 'Online' : view.title}
-            onPress={() => router.push(`/connection/${server.parent ?? server.id}`)} />
-          {rt?.info?.features?.config_catalog && owner ? <ListRow icon={<Cpu />} title="Agent configuration" onPress={() => router.push('/advanced-config')} /> : null}
-        </ListGroup>
-
-        <SectionHeader title="Access" />
-        <ListGroup>
-          {!child && rt?.info?.features?.roles ? <ListRow icon={<ShieldCheck />} title="Devices"
-            value={rt.me ? rt.me.role === 'owner' ? 'Owner' : 'Member' : undefined} onPress={() => router.push('/devices')} /> : null}
+          <ListRow icon={<ServerIcon />} iconColor={paused ? t.colors.warning : undefined} title="Server" value={online ? paused ? 'Paused' : 'Online' : view.title}
+            onPress={() => router.push('/server')} />
         </ListGroup>
         {child && parent && owner ? <ManageBot server={server} parent={parent} /> : null}
-
-        {rt?.info?.version ? <Footnote style={s.version}>Server plugin {rt.info.version}{rt.info.hermes_version ? ` · Hermes ${rt.info.hermes_version}` : ''}</Footnote> : null}
       </Animated.ScrollView>
       <HubBar y={y} title={server.bot.title} right={<BotSwitcher />} />
     </View>
@@ -147,5 +137,4 @@ const useStyles = makeStyles((t) => ({
   dot: { width: 7, height: 7, borderRadius: 4 },
   actions: { flexDirection: 'row', gap: t.space.sm, marginTop: t.space.xl },
   action: { flex: 1 },
-  version: { alignItems: 'center', paddingTop: t.space.xl },
 }));

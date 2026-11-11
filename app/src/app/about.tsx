@@ -9,16 +9,14 @@ import { Logo } from '../components/Logo';
 import { Screen } from '../components/Screen';
 import { Button, Card, Footnote, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
 import { agoText } from '../lib/agent';
-import { api, signedApi } from '../lib/api';
 import { appUpdateSupported, useAppUpdate } from '../lib/appUpdateCheck';
 import { checkCacheStatus, getCacheStatus, resetCache, subscribeCacheStatus } from '../lib/cache';
 import { usePrefs } from '../lib/prefs';
 import { APP_PROTOCOL, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
-import type { Server, ServerInfo, SystemInfo } from '../lib/types';
 import { compareVersions } from '../lib/version';
 
-/** Versions on both sides, what to update, and the on-device cache. */
+/** This app's version and updates, and the on-device cache. The server's versions and updates are on the Server screen. */
 export default function AboutScreen() {
   const t = useTheme();
   const s = useStyles();
@@ -56,9 +54,8 @@ export default function AboutScreen() {
                 <AgentFace server={srv} size={44} still />
                 <View style={{ flex: 1, minWidth: 0 }}>
                   <Text style={s.botName}>{srv.bot.title}</Text>
-                  <ServerVersion server={srv} info={info} />
                 </View>
-                <Button size="sm" variant="secondary" title="Connection" icon={<Activity size={15} color={t.colors.text} />} onPress={() => router.push(`/connection/${srv.id}`)} />
+                <Button size="sm" variant="secondary" title="Server" icon={<Activity size={15} color={t.colors.text} />} onPress={() => router.push(`/connection/${srv.id}`)} />
               </View>
               {compat === 'update-app' ? (
                 <Text style={s.warn}>Update this app to connect to {srv.bot.title}.</Text>
@@ -73,10 +70,7 @@ export default function AboutScreen() {
       </View>
 
       {appUpdateSupported ? (
-        <>
-          <AppUpdateCard appVersion={appVersion} />
-          <ServerAutoUpdateCard />
-        </>
+        <AppUpdateCard appVersion={appVersion} />
       ) : null}
 
       <SectionHeader title="Storage" />
@@ -116,38 +110,6 @@ export default function AboutScreen() {
   );
 }
 
-/** The server's plugin version and the last time it updated itself, read-only. */
-export function ServerVersion({ server, info }: { server: Server; info?: ServerInfo }) {
-  const s = useStyles();
-  const [system, setSystem] = useState<SystemInfo | null>(null);
-  useEffect(() => {
-    let alive = true;
-    setSystem(null);
-    api<SystemInfo>(server, '/api/system')
-      .then((next) => { if (alive) setSystem(next); })
-      .catch(() => undefined);
-    return () => { alive = false; };
-  }, [server.id, server.url, server.token]);
-  const version = system?.version || info?.version;
-  const updated = system?.updatedAt;
-  return (
-    <Text style={s.meta} numberOfLines={2}>
-      {version ? `Plugin ${version}` : 'Plugin version unknown'}
-      {updated ? ` · updated ${whenText(updated)}` : ' · update time unavailable'}
-      {info?.hermes_version ? ` · Hermes ${info.hermes_version}` : ''}
-    </Text>
-  );
-}
-
-/** "09:41" for today, or a short date for an older update. */
-function whenText(value: number | string): string {
-  const date = typeof value === 'number' ? new Date(value > 1e12 ? value : value * 1000) : new Date(value);
-  if (Number.isNaN(date.getTime())) return 'unknown';
-  const sameDay = date.toDateString() === new Date().toDateString();
-  return sameDay ? date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
-    : date.toLocaleDateString([], { day: 'numeric', month: 'short' });
-}
-
 /** Whether a newer Android app is out, with a single Update action. */
 export function AppUpdateCard({ appVersion }: { appVersion: string }) {
   const t = useTheme();
@@ -185,60 +147,6 @@ export function AppUpdateCard({ appVersion }: { appVersion: string }) {
         </ListGroup>
       </View>
       <Footnote>App updates come from GitHub. The server updates its own plugin; this phone never starts a server update.</Footnote>
-    </>
-  );
-}
-
-/**
- * Owner-only setting. The server reads this itself; the phone writes it and otherwise leaves the
- * server alone. Members do not see the switch because the server would refuse the write.
- */
-export function ServerAutoUpdateCard() {
-  const t = useTheme();
-  const s = useStyles();
-  const server = useApp((st) => st.servers.find((item) => item.id === st.selection.serverId) ?? st.servers[0]);
-  const owner = useApp((st) => (server ? st.runtime[server.id]?.me?.role === 'owner' : false));
-  const [value, setValue] = useState<boolean | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState('');
-  useEffect(() => {
-    if (!server || !owner) return;
-    let alive = true;
-    setValue(null);
-    setError('');
-    api<{ autoUpdate: boolean }>(server, '/api/settings')
-      .then((next) => { if (alive) setValue(next.autoUpdate); })
-      .catch((e) => { if (alive) setError((e as Error).message); });
-    return () => { alive = false; };
-  }, [server?.id, server?.url, owner]);
-  if (!server || !owner) return null;
-  const change = async (on: boolean) => {
-    const before = value;
-    setValue(on);
-    setSaving(true);
-    setError('');
-    try {
-      const next = await signedApi<{ autoUpdate: boolean }>(server, 'PUT', '/api/settings', { autoUpdate: on });
-      setValue(next.autoUpdate);
-    } catch (e) {
-      setValue(before);
-      setError((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <>
-      <SectionHeader title="Server updates" />
-      <ListGroup>
-        <ListRow icon={<CircleArrowUp size={18} color={t.colors.textSecondary} />} title="Update automatically"
-          value={value === null ? 'Loading…' : value ? 'On' : 'Off'}
-          right={value === null ? <Text style={s.note}>Loading…</Text>
-            : <Toggle label="Update the server plugin automatically" value={value}
-              onValueChange={(on) => { if (!saving) void change(on); }} />} />
-      </ListGroup>
-      <Footnote>Winglet updates the server plugin by itself when no chat or job is busy. It uses the same backup and rollback as a manual update; the phone is only showing the setting.</Footnote>
-      {error ? <Text style={s.warn} accessibilityRole="alert">{error}</Text> : null}
     </>
   );
 }
