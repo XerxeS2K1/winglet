@@ -78,3 +78,14 @@ def test_the_doc_only_promises_what_the_workflow_checks():
     assert "Nothing is published from any other branch." not in body                  # the old, unchecked promise
     workflow = (REPO / ".github" / "workflows" / "release.yml").read_text()
     assert "git merge-base --is-ancestor \"$GITHUB_SHA\" refs/remotes/origin/main" in workflow
+
+
+def test_it_describes_the_manual_test_build_switches_the_workflow_really_has():
+    body = section("Trying a smaller build (R8), off by default")
+    assert "Building a test APK from the Actions tab" in body
+    for phrase in ("**timing**", "EXPO_PUBLIC_WINGLET_PERF=1", "**r8**", "WINGLET_MINIFY=1", "-timing-r8", "publishes nothing",
+                   "cannot turn them on", "never contains timing or R8"):
+        assert phrase in body, phrase
+    workflow = (REPO / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    for promise in ("EXPO_PUBLIC_WINGLET_PERF: ${{", "WINGLET_MINIFY: ${{", "inputs:\n      timing:", "      r8:", "-timing", "-r8"):
+        assert promise in workflow, promise
