@@ -63,6 +63,9 @@ function isProgressLine(line: string): boolean {
 
 const isFriendlyLine = (line: string) => FRIENDLY_LINE.test(line.trim());
 
+/** True when a script on the server's machine posted this message into the chat, not the bot itself. */
+export const sentByScript = (m: Message): boolean => m.role === 'bot' && m.meta?.origin === 'local-send';
+
 /** A bot message that could be Hermes narrating its work, with no attachment, picker, card or reply on it. */
 function isPlainBot(m: Message): boolean {
   const meta = m.meta ?? {};

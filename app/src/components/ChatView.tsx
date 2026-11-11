@@ -22,7 +22,7 @@ import { chatKey } from '../lib/chatOrganization';
 import { clearFocus, requestFocus, useFocusRequest } from '../lib/focus';
 import { haptic } from '../lib/haptics';
 import { afterOlderPage, atStart, canLoadOlder, newPaging } from '../lib/history';
-import { chatMessages, groupActivity, isActivity, type Entry } from '../lib/messages';
+import { chatMessages, groupActivity, isActivity, sentByScript, type Entry } from '../lib/messages';
 import { useModelSheet } from '../lib/modelSheet';
 import { easeOut, spring, useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
@@ -51,7 +51,7 @@ import { PausedBanner } from './PausedBanner';
 import { ApprovalBypassBanner } from './ApprovalBypassBanner';
 import { Glass } from './Glass';
 import {
-  ArrowDown, CalendarClock, Check, ChevronDown, Clock, Copy, FileText, Folder, GitBranch, MoreHorizontal, Pencil, Reply, RotateCcw, Share,
+  ArrowDown, CalendarClock, Check, ChevronDown, Clock, Copy, FileText, Folder, GitBranch, MoreHorizontal, Pencil, Reply, RotateCcw, Share, SquareTerminal,
 } from './icons';
 import { InboxCard } from './InboxCards';
 import { Markdown } from './Markdown';
@@ -685,6 +685,12 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
   const runId = typeof message.meta?.run_id === 'string' ? message.meta.run_id : undefined;
   const text = (onAccent: boolean) => message.meta?.picker ? <PickerCard server={server} message={message} /> : (
     <>
+      {sentByScript(message) ? (
+        <View style={s.routine} accessibilityLabel="Posted by a script on the server's machine, not written by the bot">
+          <SquareTerminal size={13} color={t.colors.textSecondary} />
+          <Text style={s.routineText} numberOfLines={1}>Sent by a script</Text>
+        </View>
+      ) : null}
       {routine ? (
         <Tap style={s.routine} disabled={!history || !routineId} accessibilityLabel={`From the routine ${routine}${history && routineId ? ", open history" : ""}`}
           onPress={() => router.push(routineHref(server.id, routineId, runId) as any)}>

@@ -167,6 +167,8 @@ export type Message = {
     /** The routine (scheduled job) whose result this is. */
     routine?: string;
     routine_id?: string; run_id?: string;
+    /** 'local-send': a script on the server's machine posted this, not the bot itself. */
+    origin?: string;
     /** Set by the server on Hermes's own progress (a tool running), which the chat folds away. */
     activity?: boolean;
     /** Another bot this chat's bot asked for help, with what was asked and answered; the chat shows it as one tappable line. */
