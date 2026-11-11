@@ -150,7 +150,8 @@ async def test_the_token_never_reaches_the_log(env, caplog):
 def test_publish_writes_a_private_file_and_withdraw_removes_it(tmp_path):
     token = local_send.publish(tmp_path, "127.0.0.1", 8787)
     path = tmp_path / local_send.FILE_NAME
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+    if sys.platform != "win32":    # Windows has no POSIX modes: every file reads 0o666 there
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
     assert json.loads(path.read_text()) == {"url": "http://127.0.0.1:8787", "token": token}
     assert local_send.publish(tmp_path, "127.0.0.1", 8787) != token   # a new token every start
     local_send.withdraw(tmp_path)
