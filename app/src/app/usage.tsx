@@ -7,6 +7,8 @@ import { Screen } from '../components/Screen';
 import { withSelectedServer } from '../components/ServerScreen';
 import { Card, Footnote, ListGroup, ListRow, LoadError, SectionHeader, Segmented, Skeleton } from '../components/ui';
 import { api } from '../lib/api';
+import { formatCost, shownCurrency, type Currency } from '../lib/currency';
+import { usePrefs } from '../lib/prefs';
 import { spring, useReducedMotion } from '../lib/motion';
 import { useApp } from '../lib/store';
 import { alpha } from '../lib/theme';
@@ -19,10 +21,14 @@ type Usage = {
   by_model: (Row & { model: string })[];
   totals: { total_input?: number; total_output?: number; total_estimated_cost?: number; total_actual_cost?: number; total_sessions?: number };
   period_days: number;
+  /** Pounds per dollar, from the server's daily rate. Absent on an older server or before a rate is fetched. */
+  usd_gbp?: number;
 };
 
 const compact = (n: number) => n >= 1e9 ? `${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n));
-const money = (n: number) => n === 0 ? '$0' : n < 0.01 ? '<$0.01' : `$${n.toFixed(2)}`;
+/** Shows a cost (given in dollars) as text; the screen passes one in the chosen currency, tests and old callers get dollars. */
+type Money = (usd: number) => string;
+const dollars: Money = (n) => formatCost(n, 'usd');
 const tokens = (r: Row) => (r.input_tokens ?? 0) + (r.output_tokens ?? 0);
 const rise = (reduced: boolean, i: number) => (reduced ? undefined
   : FadeIn.duration(180));
@@ -36,6 +42,8 @@ function UsageScreen() {
   const reduced = useReducedMotion();
   const server = useApp((st) => st.servers.find((x) => x.id === st.selection.serverId) ?? st.servers[0]);
   const [days, setDays] = useState<'7' | '30' | '90'>('30');
+  const currency = usePrefs((st) => st.prefs.currency);
+  const setCurrency = usePrefs((st) => st.update);
   // Each period's figures, kept: switching back shows them at once while they refresh.
   const [byDays, setByDays] = useState<Record<string, Usage>>({});
   const [error, setError] = useState('');
@@ -55,10 +63,19 @@ function UsageScreen() {
 
   const totalTokens = (data?.totals.total_input ?? 0) + (data?.totals.total_output ?? 0);
   const cost = data?.totals.total_actual_cost || data?.totals.total_estimated_cost || 0;
+  const money: Money = (usd) => formatCost(usd, currency, data?.usd_gbp);
   return (
     <Screen title="Usage" onRefresh={load}>
-      <Segmented label="Period" value={days} onChange={setDays}
-        options={[{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }]} />
+      <View style={s.controls}>
+        <View style={{ flex: 1 }}>
+          <Segmented label="Period" value={days} onChange={setDays}
+            options={[{ value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }]} />
+        </View>
+        <View style={{ width: 104 }}>
+          <Segmented label="Currency" value={shownCurrency(currency, data?.usd_gbp)} onChange={(c: Currency) => setCurrency({ currency: c })}
+            options={[{ value: 'gbp', label: '£' }, { value: 'usd', label: '$' }]} />
+        </View>
+      </View>
       {error && data ? <Text style={s.error}>{error}</Text> : null}
       {!data ? (error ? <LoadError message={error} onRetry={load} />
         : <View style={{ gap: 12, marginTop: 16 }}><Skeleton height={140} radius={t.radius.lg} /><Skeleton height={220} radius={t.radius.lg} /></View>) : (
@@ -74,16 +91,16 @@ function UsageScreen() {
           {hours ? (
             <Animated.View entering={rise(reduced, 1)}>
               <SectionHeader title="Tokens per hour" />
-              <HourlyBars payload={hours} />
+              <HourlyBars payload={hours} money={money} />
             </Animated.View>
           ) : null}
           <Animated.View entering={rise(reduced, 1)}>
             <SectionHeader title="Tokens per day" />
-            <DailyBars rows={data.daily} />
+            <DailyBars rows={data.daily} money={money} />
           </Animated.View>
           <Animated.View entering={rise(reduced, 2)}>
             <SectionHeader title="By model" />
-            <Models rows={data.by_model} />
+            <Models rows={data.by_model} money={money} />
           </Animated.View>
         </>
       )}
@@ -106,7 +123,7 @@ function Stat({ label, value }: { label: string; value: string }) {
  * One series, one hue: a bar per day, tap one for its numbers. The pick is a day, not a position: switching
  * period keeps it when that day is in the new one, and shows the latest day when it isn't.
  */
-export function DailyBars({ rows }: { rows: Usage['daily'] }) {
+export function DailyBars({ rows, money = dollars }: { rows: Usage['daily']; money?: Money }) {
   const t = useTheme();
   const s = useStyles();
   const [day, setDay] = useState<string | null>(null);
@@ -153,7 +170,7 @@ export function DailyBars({ rows }: { rows: Usage['daily'] }) {
  * the day's total and cost sit under the chart. An hour's tokens are counted when its session last wrote, so a
  * long session shows up at its end rather than spread across the hours it ran.
  */
-export function HourlyBars({ payload }: { payload: HoursPayload }) {
+export function HourlyBars({ payload, money = dollars }: { payload: HoursPayload; money?: Money }) {
   const t = useTheme();
   const s = useStyles();
   const [picked, setPicked] = useState<number | null>(null);
@@ -194,7 +211,7 @@ export function HourlyBars({ payload }: { payload: HoursPayload }) {
   );
 }
 
-function Models({ rows }: { rows: Usage['by_model'] }) {
+function Models({ rows, money }: { rows: Usage['by_model']; money: Money }) {
   const s = useStyles();
   return (
     <ListGroup>
@@ -207,6 +224,7 @@ function Models({ rows }: { rows: Usage['by_model'] }) {
 }
 
 const useStyles = makeStyles((t) => ({
+  controls: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   error: { ...t.type.callout, color: t.colors.danger, marginTop: 10 },
   empty: { ...t.type.callout, color: t.colors.textSecondary },
   tiles: {

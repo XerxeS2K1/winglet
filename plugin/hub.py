@@ -389,6 +389,8 @@ class Hub:
         self.started_at = time.time()
         self._tasks: Set[asyncio.Task] = set()
         self._update_check: Dict[str, Any] = {}
+        # The daily USD->GBP rate for the Usage screen (plugin/fx.py), installed by the adapter; None adds nothing.
+        self.rates: Any = None
         self._pet_thumbs = asyncio.Semaphore(PET_THUMB_FETCHES)
         # The other bots this gateway serves (Hermes profiles), installed by the adapter:
         # () -> {"bots": [{name, title, description, served}], "multiplex": bool, "reason": str}.
@@ -600,6 +602,8 @@ class Hub:
             self._janitor = asyncio.create_task(self._janitor_loop())
             self._spawn(self.reconcile_jobs())
             self._spawn(self.handoffs.watch())
+            if self.rates is not None:
+                self._spawn(self.rates.run())
             try:
                 if await asyncio.to_thread(self_update.record_health, VERSION, self.update_home):
                     self.audit("self_update.ok", None, f"Winglet {VERSION} started after an update")
@@ -3481,7 +3485,11 @@ class Hub:
             days = int(request.query.get("days") or 30)
         except ValueError:
             return _error(400, "days must be a number")
-        return _json(await self._call(self._need_hermes().usage, days))
+        data = await self._call(self._need_hermes().usage, days)
+        rate = getattr(self.rates, "rate", None)
+        if rate and isinstance(data, dict):
+            data = {**data, "usd_gbp": rate}  # additive: absent until a rate has been fetched
+        return _json(data)
 
     async def h_usage_hours(self, request: web.Request) -> web.Response:
         """Tokens and cost per hour for the last ``days`` (default 7, at most 40); see ``hermes_api.usage_hours``."""
