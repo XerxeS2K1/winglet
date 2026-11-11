@@ -364,4 +364,3 @@ def test_a_turn_from_a_device_unpaired_a_moment_ago_is_refused(adapter, monkeypa
     monkeypatch.setattr(adapter._hub, "current_device", current_device)
     source = SimpleNamespace(user_id=type(adapter).__init__.__globals__["USER_PREFIX"] + "d1")
     assert asyncio.run(type(adapter).reauthorize_native_roles(adapter, source)) is False
-
