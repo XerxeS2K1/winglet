@@ -32,3 +32,12 @@ test('"Open the app on" moved from the Agent hub to the App group in Settings, w
   assert.match(app, /mainBot\?\.id === server\.id \? undefined : \(\) => setMainBot\(server\.id\)/);
   assert.match(settings, /import \{ setMainBot, useMainBot \} from '\.\.\/lib\/mainBot'/);
 });
+
+test('Settings has no Bots section, and the bot switcher still reaches Add a bot and /bots', () => {
+  const settings = source('app/settings.tsx');
+  assert.doesNotMatch(settings, /title="Bots"|Your bots|Add a bot|useAddBot|'\/bots'/);
+  const switcher = source('components/BotSwitcher.tsx');
+  assert.match(switcher, /title="Add a bot"/);
+  assert.match(switcher, /title="Manage bots"[^\n]*router\.push\('\/bots'\)/);
+  assert.match(source('app/(tabs)/agent.tsx'), /<BotSwitcher \/>/); // the switcher is on the hub's bar
+});
