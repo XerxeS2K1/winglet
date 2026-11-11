@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.11.5](docs/releases/v0.11.5.md):** a message typed on the home screen starts a new chat instead of appending to your main one, over-long messages are refused instead of silently cut at 16,000 characters, and batch one of the code review lands eight security and data-loss fixes.
+> **New in [v0.12.0](docs/releases/v0.12.0.md):** the menus and their words are reworked (one Server screen, Settings regrouped, 15 wording fixes), the routine-results feed is called Reports, usage is in pounds, and fourteen plugin fixes from the full review land.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
