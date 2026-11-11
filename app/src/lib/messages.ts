@@ -79,6 +79,18 @@ function isPlainBot(m: Message): boolean {
  * start with, so it counts only where an answer follows (see `groupActivity`).
  */
 export function activityKind(m: Message): 'sure' | 'maybe' | null {
+  // Messages are never changed in place (an update is a new object), and this is the expensive part of building the
+  // rows, run for every message on every streamed update. So each message object is classified once.
+  const known = kinds.get(m);
+  if (known !== undefined) return known;
+  const kind = classify(m);
+  kinds.set(m, kind);
+  return kind;
+}
+
+const kinds = new WeakMap<Message, 'sure' | 'maybe' | null>();
+
+function classify(m: Message): 'sure' | 'maybe' | null {
   const meta = m.meta ?? {};
   if (m.role === 'user' || meta.inbox_id || meta.picker || meta.kind || meta.attachments?.length || meta.reply_to || meta.routine) return null;
   if (meta.activity) return 'sure';
