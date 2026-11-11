@@ -300,6 +300,12 @@ class WingletAdapter(BasePlatformAdapter):
             hub = Hub(store, web_root=Path(__file__).parent / "web", bot_info=profile_info,
                       ntfy_server=self._ntfy_server, screen=_SCREEN)
             hub.update_home = hermes_api._home()
+            from . import fx
+
+            async def _usd_gbp() -> Any:
+                return await fx.frankfurter(await hub._client())
+
+            hub.rates = fx.UsdGbp(Path(store.path).parent / "usd-gbp.json", _usd_gbp)
             hub.connection = {"mode": self._connection, "url": None}
             hub.public_url = self._public_url or None
             hub.listen = f"{self._host}:{self._port}"
