@@ -700,7 +700,13 @@ def paused() -> Optional[dict]:
 
 
 def set_paused(on: bool, reason: str = "") -> Optional[dict]:
-    from agent import estop
+    """Hold or release new work. Like ``paused()``, a Hermes without this switch is "unavailable", never a crash."""
+    try:
+        from agent import estop
+        change = estop.engage if on else estop.disengage
+        read = estop.get_state
+    except Exception as exc:  # ImportError, or the module is there but a function was renamed
+        raise HermesUnavailable("pause unavailable") from exc
     if on:
         estop.engage(reason or "paused from Winglet")
     else:
