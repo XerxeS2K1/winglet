@@ -204,26 +204,28 @@ def test_publish_falls_back_to_ipv4_loopback_when_the_hub_listens_on_all_address
         assert json.loads((tmp_path / local_send.FILE_NAME).read_text())["url"] == "http://127.0.0.1:8789"
 
 
-@pytest.mark.parametrize("extra,want", [
-    ({}, False),
-    ({"local_send": True}, True),
-    ({"local_send": False}, False),
+@pytest.mark.parametrize("env,extra,want", [
+    ("", {}, False),
+    ("", {"local_send": True}, False),          # a config line alone opens nothing
+    ("1", {}, False),                           # nor does the environment alone
+    ("1", {"local_send": False}, False),
+    ("false", {"local_send": True}, False),
+    ("1", {"local_send": True}, True),
+    ("true", {"local_send": "yes"}, True),
 ])
-def test_it_is_off_unless_asked_for(extra, want, monkeypatch):
-    monkeypatch.setenv("WINGLET_LOCAL_SEND", "")
+def test_it_is_off_unless_both_switches_are_on(env, extra, want, monkeypatch):
+    monkeypatch.setenv("WINGLET_LOCAL_SEND", env)
     assert local_send.enabled(extra) is want
+
+
+def test_unset_environment_is_off(monkeypatch):
+    monkeypatch.delenv("WINGLET_LOCAL_SEND", raising=False)
+    assert local_send.enabled({"local_send": True}) is False and local_send.enabled(None) is False
 
 
 def test_enabled_takes_only_the_extra():
     import inspect
     assert list(inspect.signature(local_send.enabled).parameters) == ["extra"]
-
-
-def test_the_env_beats_the_yaml_extra_for_local_send(monkeypatch):
-    monkeypatch.setenv("WINGLET_LOCAL_SEND", "false")
-    assert local_send.enabled({"local_send": True}) is False
-    monkeypatch.setenv("WINGLET_LOCAL_SEND", "true")
-    assert local_send.enabled({"local_send": False}) is True
 
 
 # -- the sender Hermes calls for `hermes send --to winglet:<chat>` -------------------------------------------------

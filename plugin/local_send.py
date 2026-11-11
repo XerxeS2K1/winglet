@@ -7,7 +7,8 @@ loopback-only POST, and this module holds both halves:
 * the hub side: the on/off switch, the token file, the checks the request must pass, and the text clean-up;
 * the sender side: ``standalone_sender_fn``, which Hermes calls for ``hermes send --to winglet:<chat id>``.
 
-It is OFF unless ``WINGLET_LOCAL_SEND`` (or ``local_send`` in the platform's ``extra``) is true. When on, the
+It is OFF unless BOTH ``WINGLET_LOCAL_SEND`` (the gateway's environment) and ``local_send: true`` (the platform's
+``extra`` in config.yaml) are true: a stray environment variable alone, or a leftover config line alone, opens nothing. When on, the
 gateway writes ``<plugin data>/local-send.json`` (mode 0600: the loopback URL and a fresh random token) at
 start and removes it on stop. Only a process that can read that file can post. It never creates a chat:
 a chat that does not exist, or was deleted, is refused.
@@ -28,19 +29,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Deque, Dict, Optional
-
-try:
-    from gateway.platforms._shared import extra_or_secret
-except ImportError:  # pragma: no cover - tests run outside the Hermes gateway
-    def extra_or_secret(extra, key, env, default, *, blank_is_unset=True):
-        if env:
-            env_value = os.environ.get(env)
-            if env_value is not None and str(env_value).strip():
-                return env_value
-        value = (extra or {}).get(key)
-        if value is None or (blank_is_unset and isinstance(value, str) and not value.strip()):
-            return default
-        return value
 
 logger = logging.getLogger(__name__)
 
@@ -98,11 +86,10 @@ def clean_text(text: Any) -> str:
 
 
 def enabled(extra: Optional[Dict[str, Any]]) -> bool:
-    """True when WINGLET_LOCAL_SEND env (or YAML extra local_send) is truthy. Env beats YAML."""
-    value = extra_or_secret(extra, "local_send", "WINGLET_LOCAL_SEND", False)
-    if isinstance(value, bool):
-        return value
-    return str(value or "").strip().lower() in _TRUTHY
+    """True only when the WINGLET_LOCAL_SEND env var AND the YAML extra ``local_send`` are both truthy."""
+    def truthy(value: Any) -> bool:
+        return value if isinstance(value, bool) else str(value or "").strip().lower() in _TRUTHY
+    return truthy(os.environ.get("WINGLET_LOCAL_SEND")) and truthy((extra or {}).get("local_send"))
 
 
 def _write_private(path: Path, data: Dict[str, Any]) -> None:
