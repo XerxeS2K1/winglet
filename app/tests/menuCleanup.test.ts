@@ -41,3 +41,13 @@ test('Settings has no Bots section, and the bot switcher still reaches Add a bot
   assert.match(switcher, /title="Manage bots"[^\n]*router\.push\('\/bots'\)/);
   assert.match(source('app/(tabs)/agent.tsx'), /<BotSwitcher \/>/); // the switcher is on the hub's bar
 });
+
+test('the Connection screen offers one way into Notifications at a time and keeps Test and the channel line', () => {
+  const screen = source('app/connection/[serverId].tsx');
+  // Not set up: the "Set up" button is the way in. Set up: the Quiet hours row is. Never both.
+  assert.match(screen, /\{channel \? <ListRow icon=\{<Moon [^\n]*title="Quiet hours and muted chats"[^\n]*\/notifications[^\n]*: null\}/);
+  assert.equal((screen.match(/title="Set up"/g) ?? []).length, 1);
+  assert.match(screen, /title="Test"/);
+  assert.match(screen, /On, through the \$\{channel\}/);
+  assert.match(screen, /Not set up on this device/);
+});

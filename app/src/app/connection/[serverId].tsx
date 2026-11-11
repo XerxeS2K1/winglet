@@ -243,7 +243,7 @@ function Notifications({ server, status, now, testing, onTest }: {
           subtitle={channel ? last ?? 'Nothing sent since the server started.' : undefined}
           right={channel ? <Button size="sm" variant="tonal" title="Test" loading={testing} onPress={onTest} />
             : <Button size="sm" title="Set up" onPress={() => router.push('/notifications')} />} />
-        <ListRow icon={<Moon size={18} color={t.colors.textSecondary} />} title="Quiet hours and muted chats" onPress={() => router.push('/notifications')} />
+        {channel ? <ListRow icon={<Moon size={18} color={t.colors.textSecondary} />} title="Quiet hours and muted chats" onPress={() => router.push('/notifications')} /> : null}
       </ListGroup>
     </>
   );
