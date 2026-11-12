@@ -1,7 +1,7 @@
 name: winglet
 label: Winglet
 kind: platform
-version: 0.12.0
+version: 0.12.1
 # Checked against Hermes 0.22.7 and 0.23.0. Hermes refuses to load (and auto-update refuses to
 # install) a plugin whose range does not cover the running version.
 requires_hermes: ">=0.22.7"
