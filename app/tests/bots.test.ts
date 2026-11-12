@@ -39,7 +39,9 @@ test('the main bot leads, the others keep their order', () => {
 
 test('the bot picker uses activity labels and a distinct accessible working dot', () => {
   const screen = readFileSync(new URL('../src/components/BotSwitcher.tsx', import.meta.url), 'utf8');
-  assert.match(screen, /botActivityLabel\(rt\?\.botActivity\?\.\[x\.profile \?\? 'default'\]\)/);
+  // The row reads its profile's activity from the narrowed selection and labels that (behaviour: tests/botSwitcherRenders.test.ts).
+  assert.match(screen, /rt\?\.botActivity\?\.\[x\.profile \?\? 'default'\]/);
+  assert.match(screen, /botActivityLabel\(activity\)/);
   assert.match(screen, /accessibilityLabel="Working"/);
 });
 
