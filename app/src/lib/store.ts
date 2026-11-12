@@ -11,6 +11,7 @@ import { mergeSnapshot } from '../features/event-replay/merge';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages } from './messages';
+import { canCoalesce, createStreamBuffer } from './streamBuffer';
 import { PERF_ON, perfMessageSent, perfMessageUpdate } from './perf';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
@@ -187,6 +188,11 @@ export function clearNotifications(serverId: string, tags: string[]) {
 }
 
 export const useApp = create<AppState>((set, get) => {
+  // Streamed updates wait here for the end of the frame (see streamBuffer.ts). Every place that changes the messages some
+  // other way calls streamed.flush() first, once, where it happens: handleEvent (finish, error, new message, delete, any
+  // other event), a dropped connection, background, a chat switch, a reload, a resync snapshot,
+  // deleting a chat. Nothing is flushed twice. hydrateChat also writes messages without a flush; the updated_at guard in
+  // upsertMessage keeps an older copy from overwriting a newer one.
   const patch = (serverId: string, fn: (s: ServerState) => Partial<ServerState>) =>
     set((state) => {
       if (!state.servers.some((server) => server.id === serverId)) return state;
@@ -212,6 +218,8 @@ export const useApp = create<AppState>((set, get) => {
       const next = idx >= 0 ? list.map((m, i) => (i === idx ? message : m)) : [...list, message];
       return { messages: { ...s.messages, [chatId]: mergeMessages(next, []) } };
     });
+
+  const streamed = createStreamBuffer((serverId, chatId, message) => upsertMessage(serverId, chatId, message), { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) });
 
   const setLocalStatus = (serverId: string, chatId: string, clientId: string, status: Message['status']) =>
     patch(serverId, (s) => ({
@@ -364,6 +372,14 @@ export const useApp = create<AppState>((set, get) => {
   const handleEvent = (serverId: string, ev: any, replayed = false) => {
     const server = get().servers.find((s) => s.id === serverId);
     if (!server) return;
+    if (canCoalesce(ev)) {
+      // Only the bookkeeping that must see every update runs here; the store write waits for the end of the frame.
+      const m = ev.message as Message;
+      if (PERF_ON) perfMessageUpdate(`${serverId}:${ev.chat_id}`, { id: m.id, streaming: true, hasText: !isActivity(m) && m.text.trim() !== '' }, replayed);
+      streamed.add(serverId, ev.chat_id, m);
+      return;
+    }
+    streamed.flush();
     if (typeof ev.type === 'string' && ev.type.startsWith('phone_tool.')) { phoneEvent(serverId, ev); return; }
     switch (ev.type) {
       case 'hello': {
@@ -524,6 +540,7 @@ export const useApp = create<AppState>((set, get) => {
       sync: {
         read: () => replayCursors.get(server.id),
         write: async (cursor) => {
+          streamed.flush(); // the saved state must not trail the cursor it is saved with
           const rt = get().runtime[server.id];
           if (!rt || connections.get(server.id) !== conn) throw Error('Connection replaced');
           const { chats, messages, deleted, loaded, inbox, pending, paused, me, projects, tasks } = rt;
@@ -549,6 +566,7 @@ export const useApp = create<AppState>((set, get) => {
           if (connections.get(server.id) !== conn) throw Error('Connection replaced');
           const previous = get().runtime[server.id];
           if (!previous) throw Error('Bot removed');
+          streamed.flush(); // a resync never lands under an older copy of a reply that is still waiting
           patch(server.id, (rt) => ({ ...mergeSnapshot(rt, snapshot), loaded: {}, tasks: {},
             projects: snapshot.projects ? readSnapshot(snapshot.projects) : rt.projects }));
           for (const id of Object.keys(previous.chats)) if (!snapshot.chats.some((c) => c.id === id)) {
@@ -569,6 +587,7 @@ export const useApp = create<AppState>((set, get) => {
         },
       },
       onStatus: (status, why) => {
+        streamed.flush(); // dropped, reconnecting or signed out: what arrived before that is shown and saved first
         patch(server.id, () => ({ status }));
         note(server.id, status, why);
         if (status !== 'online') { sendPaused.add(server.id); phoneDisconnect(server.id); }
@@ -739,6 +758,7 @@ export const useApp = create<AppState>((set, get) => {
       // A server's other bots go with it; removing one of them never unpairs the phone from the server.
       for (const child of get().servers.filter((s) => s.parent === serverId)) await get().removeServer(child.id, false);
       if (server?.parent) unpair = false;
+      streamed.flush();
       connections.get(serverId)?.close();
       connections.delete(serverId);
       replayCursors.delete(serverId);
@@ -770,11 +790,13 @@ export const useApp = create<AppState>((set, get) => {
     },
 
     setVisibleChat: (v) => {
+      streamed.flush();
       set({ visibleChat: v });
       if (v && get().foreground) clearNotifications(v.serverId, [chatNoteTag(v.chatId)]);
     },
 
     setForeground: (fg) => {
+      streamed.flush();
       set({ foreground: fg, ...(!fg ? { toasts: [] } : {}) });
       // The chat on screen has been read: coming back to the app takes down its reply alert.
       const open = get().visibleChat;
@@ -823,6 +845,7 @@ export const useApp = create<AppState>((set, get) => {
       try {
         const data = await api<{ messages: Message[]; deleted_ids?: string[] }>(server, `/api/chats/${encodeURIComponent(chatId)}/messages?limit=60${before}`);
         if (get().servers.find((s) => s.id === serverId) !== server) return false;
+        streamed.flush(); // a reload never lands on top of an older copy of a reply that is still waiting
         patch(serverId, (s) => {
           if (s.status === 'online' && !s.chats[chatId]) return {};
           // A live delete may have arrived after this snapshot was taken. Keep both sets so a stale
@@ -1038,6 +1061,7 @@ export const useApp = create<AppState>((set, get) => {
       const server = get().servers.find((s) => s.id === serverId);
       if (!server) return;
       await api(server, `/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+      streamed.flush();
       forgetChat(serverId, chatId);
     },
 
