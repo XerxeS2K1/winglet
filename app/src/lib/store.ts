@@ -190,7 +190,9 @@ export function clearNotifications(serverId: string, tags: string[]) {
 export const useApp = create<AppState>((set, get) => {
   // Streamed updates wait here for the end of the frame (see streamBuffer.ts). Every place that changes the messages some
   // other way calls streamed.flush() first, once, where it happens: handleEvent (finish, error, new message, delete, any
-  // other event), a dropped connection, background, a chat switch, a reload, deleting a chat. Nothing is flushed twice.
+  // other event), a dropped connection, background, a chat switch, a reload, a resync snapshot,
+  // deleting a chat. Nothing is flushed twice. hydrateChat also writes messages without a flush; the updated_at guard in
+  // upsertMessage keeps an older copy from overwriting a newer one.
   const patch = (serverId: string, fn: (s: ServerState) => Partial<ServerState>) =>
     set((state) => {
       if (!state.servers.some((server) => server.id === serverId)) return state;
@@ -564,6 +566,7 @@ export const useApp = create<AppState>((set, get) => {
           if (connections.get(server.id) !== conn) throw Error('Connection replaced');
           const previous = get().runtime[server.id];
           if (!previous) throw Error('Bot removed');
+          streamed.flush(); // a resync never lands under an older copy of a reply that is still waiting
           patch(server.id, (rt) => ({ ...mergeSnapshot(rt, snapshot), loaded: {}, tasks: {},
             projects: snapshot.projects ? readSnapshot(snapshot.projects) : rt.projects }));
           for (const id of Object.keys(previous.chats)) if (!snapshot.chats.some((c) => c.id === id)) {
