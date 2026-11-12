@@ -56,6 +56,9 @@ def test_queue_updates_from_canonical_rows_not_receipts(activity):
             (1, 'bot:first', 'started'), (2, 'bot:second', 'queued'),
             (3, 'bot:third', 'queued'), (4, 'human', 'queued'),
             (5, 'bot:finished', 'terminal')])
+    # The count comes from the queue rows; a healthy gateway saying nothing runs outranks a started row (it may be orphaned).
+    assert hermes_api.bot_activity(home) == {'state': 'idle', 'queued': 2}
+    response['active_agents'] = 1
     assert hermes_api.bot_activity(home) == {'state': 'working', 'queued': 2}
     with sqlite3.connect(home / 'state.db') as db:
         db.execute("UPDATE session_admissions SET status='terminal' WHERE seq=1")

@@ -2850,17 +2850,30 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
 
 DISPATCH_MAX_FILES = 50          # newest job records read
 DISPATCH_MAX_BYTES = 64 * 1024   # a larger record is skipped
-DISPATCH_MAX_AGE = 24 * 3600     # a record nobody has touched for a day is a dead dispatcher's, not live work
+DISPATCH_MAX_STAGES = 20         # displayable stages taken from one job; a record of thousands of tiny stages stays cheap
+DISPATCH_MAX_AGE = 2 * 3600      # a record, or a job whose newest stage started, longer ago than this is a dead dispatcher's
+DISPATCH_CACHE_SECONDS = 3.0     # the folder read is reused for one hub poll interval (hub polls every 3 s)
 QUEUE_MAX_ROWS = 50
+_dispatch_clock = time.monotonic
+_dispatch_memo: dict = {}        # {(folder, directory mtime, entry count): (when, rows)}; one entry, so it cannot grow
+
+
+def _newest_stage_start(stages) -> Optional[float]:
+    """The latest numeric ``started_at`` among a job's stages, or None when no stage carries a usable one."""
+    stamps = [stage["started_at"] for stage in stages if isinstance(stage, dict)
+              and type(stage.get("started_at")) in (int, float) and 0 < stage["started_at"] < 2**40]
+    return max(stamps) if stamps else None
 
 
 def dispatch_job_rows() -> list:
     """Optional, read-only: what an external dispatcher says its running jobs are doing, as (bot, queue row) pairs.
 
     The directory is $BOT_DISPATCH_HOME, else <hermes home>/jobs. A job-*.json file with status "running" gives one row
-    per stage that is "running" (shown as started) or "pending" (queued) and not yet accepted. Missing, oversize,
-    stale or malformed files and unknown fields or states are ignored; this never raises and never writes.
-    Only the stage's bot, title and attempt leave this function: never a brief, a reply or a path.
+    per stage that is "running" (shown as started) or "pending" (queued) and not yet accepted, at most
+    DISPATCH_MAX_STAGES per job. Missing, oversize, symlinked, stale or malformed files and unknown fields or states are
+    ignored; a job is stale when its file, or its newest stage start, is older than DISPATCH_MAX_AGE. The result is
+    reused while the folder's mtime and entry count are unchanged for DISPATCH_CACHE_SECONDS. This never raises and
+    never writes. Only the stage's bot, title and attempt leave this function: never a brief, a reply or a path.
     """
     import os
     from .handoffs import _plain
@@ -2872,17 +2885,27 @@ def dispatch_job_rows() -> list:
             from hermes_cli.profiles import _get_default_hermes_home
             folder = Path(_get_default_hermes_home()) / "jobs"
         now = time.time()
-        found = []
+        candidates = []
         with os.scandir(folder) as entries:
             for entry in entries:
                 try:
-                    if not (entry.name.startswith("job-") and entry.name.endswith(".json")) or not entry.is_file():
-                        continue
-                    info = entry.stat()
-                    if info.st_size <= DISPATCH_MAX_BYTES and now - info.st_mtime <= DISPATCH_MAX_AGE:
-                        found.append((info.st_mtime, entry.name, entry.path))
+                    # a symlink could point outside the folder: never follow one
+                    if entry.name.startswith("job-") and entry.name.endswith(".json") and entry.is_file(follow_symlinks=False):
+                        candidates.append(entry)
                 except OSError:
                     continue
+        key = (str(folder), os.stat(folder).st_mtime_ns, len(candidates))
+        cached = _dispatch_memo.get("entry")
+        if cached and cached[0] == key and 0 <= _dispatch_clock() - cached[1] < DISPATCH_CACHE_SECONDS:
+            return [(bot, dict(row)) for bot, row in cached[2]]
+        found = []
+        for entry in candidates:
+            try:
+                info = entry.stat(follow_symlinks=False)
+                if info.st_size <= DISPATCH_MAX_BYTES and now - info.st_mtime <= DISPATCH_MAX_AGE:
+                    found.append((info.st_mtime, entry.name, entry.path))
+            except OSError:
+                continue
         rows = []
         for _, name, path in sorted(found, reverse=True)[:DISPATCH_MAX_FILES]:
             try:
@@ -2891,23 +2914,31 @@ def dispatch_job_rows() -> list:
                 stages = job.get("stages") if isinstance(job, dict) and job.get("status") == "running" else None
                 if not isinstance(stages, list):
                     continue
+                newest = _newest_stage_start(stages)
+                if newest is not None and now - newest > DISPATCH_MAX_AGE:
+                    continue   # the dispatcher's own timestamps say nothing has started for hours
                 job_id = _plain(job.get("job_id")) if isinstance(job.get("job_id"), str) else name[:-5]
+                taken = 0
                 for number, stage in enumerate(stages):
+                    if taken >= DISPATCH_MAX_STAGES:
+                        break
                     if not isinstance(stage, dict) or stage.get("accepted") is True or stage.get("state") not in ("running", "pending"):
                         continue
                     bot = _plain(stage.get("bot"))[:40] if isinstance(stage.get("bot"), str) else ""
                     if not bot:
                         continue
-                    label = next((_plain(stage[key])[:60] for key in ("title", "id") if isinstance(stage.get(key), str)
-                                  and _plain(stage[key])), "Stage")
+                    label = next((_plain(stage[key_])[:60] for key_ in ("title", "id") if isinstance(stage.get(key_), str)
+                                  and _plain(stage[key_])), "Stage")
                     attempt = stage.get("attempt")
                     attempt = attempt if type(attempt) is int and 0 < attempt < 1000 else 1
                     title = f"Job: {label} - {bot} - attempt {attempt}"
+                    taken += 1
                     rows.append((bot, {"id": f"job:{job_id[:60]}:{number}", "sequence": 10**12 + len(rows), "from": "Dispatcher",
                                      "title": title, "preview": title,
                                      "status": "started" if stage["state"] == "running" else "queued"}))
             except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
                 continue
+        _dispatch_memo["entry"] = (key, _dispatch_clock(), [(bot, dict(row)) for bot, row in rows])
         return rows
     except Exception:
         return []
@@ -3068,30 +3099,37 @@ def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = 
     except Exception:
         delegation_known = False
     background = _background_count(home, profile)
-    # A started admission is Hermes's own record that the bot is on a hand-off, so it needs no gateway answer.
-    state = ("working" if background or started or known and (count or delegating) else
+    # A started admission is Hermes's own record that the bot is on a hand-off, so it stands in when the gateway does not
+    # answer. When the gateway does answer, it wins: a ledger row orphaned inside a long-lived gateway must not read as Working.
+    state = ("working" if background or (started and not known) or known and (count or delegating) else
              "idle" if known and queued is not None and delegation_known else "unknown")
     if include_queue:
-        queue, truncated, dispatched = _with_dispatch_rows(profile, queue, truncated, job_rows)
+        queue, truncated, dispatched = _with_dispatch_rows(profile, queue, truncated, job_rows, bool(started))
         if dispatched:
             state = "working"
     extra = {"background": background, "reason": "Running a background task" if background == 1 else f"Running {background} background tasks"} if background else {}
     return {"state": state, "queued": queued, **({"queue": queue, "queue_truncated": truncated} if include_queue else {}), **extra}
 
 
-def _with_dispatch_rows(profile: str, queue, truncated: bool, job_rows: Optional[list]):
-    """Add this bot's dispatcher rows to its queue. Returns (queue, truncated, dispatcher_says_working). Never raises."""
+def _with_dispatch_rows(profile: str, queue, truncated: bool, job_rows: Optional[list], native_started: bool = False):
+    """Add this bot's dispatcher rows to its queue. Returns (queue, truncated, dispatcher_says_working). Never raises.
+
+    A job row is a detail line only when the bot already has a started admission of its own (that row is the work, the
+    job says which job it belongs to). Otherwise the job row is the work itself, and a running stage makes the bot
+    working whether or not the row fits under the queue's row limit.
+    """
     try:
         mine = [row for bot, row in (dispatch_job_rows() if job_rows is None else job_rows) if bot == profile]
         if not mine:
             return queue, truncated, False
+        dispatched = any(row["status"] == "started" for row in mine)   # all of them, before detail marking and the row cap
         queue = list(queue or [])
-        native = bool(queue)
-        mine = [({**row, "detail": True} if native else row) for row in mine]
+        native_started = native_started or any(row.get("status") == "started" for row in queue)
+        mine = [({**row, "detail": True} if native_started else row) for row in mine]
         room = QUEUE_MAX_ROWS - len(queue)
         truncated = truncated or len(mine) > room
         queue = queue + mine[:max(room, 0)]
-        return queue, truncated, any(not row.get("detail") and row["status"] == "started" for row in mine[:max(room, 0)])
+        return queue, truncated, dispatched
     except Exception:
         return queue, truncated, False
 

@@ -228,7 +228,10 @@ def test_admission_based_work_still_counts_and_background_work_is_added_to_it(ac
     import sqlite3
     with sqlite3.connect(home / "state.db") as db:
         db.executemany("INSERT INTO session_admissions VALUES (?, ?, ?)", [(1, "bot:a", "started"), (2, "bot:b", "queued")])
+    assert hermes_api.bot_activity(home, "chef") == {"state": "idle", "queued": 1}                 # a healthy gateway answering 0 outranks a started row
+    response["active_agents"] = 1
     assert hermes_api.bot_activity(home, "chef") == {"state": "working", "queued": 1}              # unchanged without a background process
+    response["active_agents"] = 0
     write(home, [entry(child.pid)])
     result = hermes_api.bot_activity(home, "chef")
     assert result["state"] == "working" and result["queued"] == 1 and result["background"] == 1
