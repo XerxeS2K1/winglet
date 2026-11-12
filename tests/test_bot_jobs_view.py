@@ -198,7 +198,7 @@ def test_a_job_row_for_a_bot_with_a_native_row_is_detail_not_a_second_working(ac
     _rows(home, (1, 'bot:aaaa', 'started', _payload('TITLE: Read the code')))
     _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Read the code', 'running')])
     result = hermes_api.bot_activity(home, 'research', include_queue=True)
-    assert result['queued'] == 0 or result['queued'] is not None
+    assert result['queued'] == 0
     native, job = result['queue']
     assert native['status'] == 'started' and not native.get('detail')
     assert job['detail'] is True and job['title'] == 'Job: Read the code - research - attempt 1'

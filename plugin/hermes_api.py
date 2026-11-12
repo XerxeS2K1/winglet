@@ -2848,6 +2848,71 @@ def _bot_queue_entry(sequence, identity, status, raw) -> dict:
     return {"id": identity, "sequence": sequence, "from": sender, "title": title, "preview": preview, "status": status}
 
 
+DISPATCH_MAX_FILES = 50          # newest job records read
+DISPATCH_MAX_BYTES = 64 * 1024   # a larger record is skipped
+DISPATCH_MAX_AGE = 24 * 3600     # a record nobody has touched for a day is a dead dispatcher's, not live work
+QUEUE_MAX_ROWS = 50
+
+
+def dispatch_job_rows() -> list:
+    """Optional, read-only: what an external dispatcher says its running jobs are doing, as (bot, queue row) pairs.
+
+    The directory is $BOT_DISPATCH_HOME, else <hermes home>/jobs. A job-*.json file with status "running" gives one row
+    per stage that is "running" (shown as started) or "pending" (queued) and not yet accepted. Missing, oversize,
+    stale or malformed files and unknown fields or states are ignored; this never raises and never writes.
+    Only the stage's bot, title and attempt leave this function: never a brief, a reply or a path.
+    """
+    import os
+    from .handoffs import _plain
+    try:
+        folder = os.environ.get("BOT_DISPATCH_HOME")
+        if folder:
+            folder = Path(folder)
+        else:
+            from hermes_cli.profiles import _get_default_hermes_home
+            folder = Path(_get_default_hermes_home()) / "jobs"
+        now = time.time()
+        found = []
+        with os.scandir(folder) as entries:
+            for entry in entries:
+                try:
+                    if not (entry.name.startswith("job-") and entry.name.endswith(".json")) or not entry.is_file():
+                        continue
+                    info = entry.stat()
+                    if info.st_size <= DISPATCH_MAX_BYTES and now - info.st_mtime <= DISPATCH_MAX_AGE:
+                        found.append((info.st_mtime, entry.name, entry.path))
+                except OSError:
+                    continue
+        rows = []
+        for _, name, path in sorted(found, reverse=True)[:DISPATCH_MAX_FILES]:
+            try:
+                with open(path, "rb") as handle:
+                    job = json.loads(handle.read(DISPATCH_MAX_BYTES + 1).decode("utf-8"))
+                stages = job.get("stages") if isinstance(job, dict) and job.get("status") == "running" else None
+                if not isinstance(stages, list):
+                    continue
+                job_id = _plain(job.get("job_id")) if isinstance(job.get("job_id"), str) else name[:-5]
+                for number, stage in enumerate(stages):
+                    if not isinstance(stage, dict) or stage.get("accepted") is True or stage.get("state") not in ("running", "pending"):
+                        continue
+                    bot = _plain(stage.get("bot"))[:40] if isinstance(stage.get("bot"), str) else ""
+                    if not bot:
+                        continue
+                    label = next((_plain(stage[key])[:60] for key in ("title", "id") if isinstance(stage.get(key), str)
+                                  and _plain(stage[key])), "Stage")
+                    attempt = stage.get("attempt")
+                    attempt = attempt if type(attempt) is int and 0 < attempt < 1000 else 1
+                    title = f"Job: {label} - {bot} - attempt {attempt}"
+                    rows.append((bot, {"id": f"job:{job_id[:60]}:{number}", "sequence": 10**12 + len(rows), "from": "Dispatcher",
+                                     "title": title, "preview": title,
+                                     "status": "started" if stage["state"] == "running" else "queued"}))
+            except (OSError, ValueError, TypeError, AttributeError, UnicodeError):
+                continue
+        return rows
+    except Exception:
+        return []
+
+
 BACKGROUND_FILE = "processes.json"  # Hermes's crash-recovery checkpoint, written atomically
 BACKGROUND_FILE_MAX_BYTES = 2 * 1024 * 1024
 BACKGROUND_MAX_ENTRIES = 500
@@ -2935,12 +3000,16 @@ def _background_count(home: Path, profile: str) -> int:
     return len(seen)
 
 
-def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = False) -> dict:
+def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = False, job_rows: Optional[list] = None) -> dict:
     """Read-only activity: live gateway work plus the canonical hand-off FIFO, never receipt mtimes.
 
     Run off the gateway loop: the control verb schedules its own loop callback. Missing Hermes
     APIs/schema mean unknown, not idle. Queue previews are optional, bounded, owner-only display
     data; raw admission envelopes, replies and credentials are never returned to the app.
+
+    Two sources of work, neither needing the other: the bot's own started or queued admissions (these count even when the
+    gateway query fails, because Hermes itself recorded them), and an optional dispatcher's job records (``job_rows``, or read
+    here), whose rows are detail when the bot already has an admission of its own.
     """
     import sqlite3
     queued = None
@@ -2999,15 +3068,38 @@ def bot_activity(home: Path, profile: str = "default", *, include_queue: bool = 
     except Exception:
         delegation_known = False
     background = _background_count(home, profile)
-    state = ("working" if background or known and (count or started or delegating) else
+    # A started admission is Hermes's own record that the bot is on a hand-off, so it needs no gateway answer.
+    state = ("working" if background or started or known and (count or delegating) else
              "idle" if known and queued is not None and delegation_known else "unknown")
+    if include_queue:
+        queue, truncated, dispatched = _with_dispatch_rows(profile, queue, truncated, job_rows)
+        if dispatched:
+            state = "working"
     extra = {"background": background, "reason": "Running a background task" if background == 1 else f"Running {background} background tasks"} if background else {}
     return {"state": state, "queued": queued, **({"queue": queue, "queue_truncated": truncated} if include_queue else {}), **extra}
 
 
+def _with_dispatch_rows(profile: str, queue, truncated: bool, job_rows: Optional[list]):
+    """Add this bot's dispatcher rows to its queue. Returns (queue, truncated, dispatcher_says_working). Never raises."""
+    try:
+        mine = [row for bot, row in (dispatch_job_rows() if job_rows is None else job_rows) if bot == profile]
+        if not mine:
+            return queue, truncated, False
+        queue = list(queue or [])
+        native = bool(queue)
+        mine = [({**row, "detail": True} if native else row) for row in mine]
+        room = QUEUE_MAX_ROWS - len(queue)
+        truncated = truncated or len(mine) > room
+        queue = queue + mine[:max(room, 0)]
+        return queue, truncated, any(not row.get("detail") and row["status"] == "started" for row in mine[:max(room, 0)])
+    except Exception:
+        return queue, truncated, False
+
+
 def bot_activities() -> dict:
     from hermes_cli.profiles import profiles_to_serve
-    return {name: bot_activity(home, name, include_queue=True) for name, home in profiles_to_serve(multiplex=True)}
+    rows = dispatch_job_rows()   # one read of the job folder for every bot
+    return {name: bot_activity(home, name, include_queue=True, job_rows=rows) for name, home in profiles_to_serve(multiplex=True)}
 
 
 def list_bots() -> List[dict]:

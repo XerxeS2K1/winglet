@@ -70,6 +70,23 @@ test('queue rows put the title on top, sender and position underneath, in canoni
   assert.equal(rows({ state: 'unknown', queued: 1, queue })[0].value, 'Started (unconfirmed)');
 });
 
+test('a dispatcher job row that explains work the bot already shows is detail: no position, not a second Running', () => {
+  const rows = exports.botQueueRows;
+  const queue = [
+    { id: 'job:1:0', sequence: 1e12, from: 'Dispatcher', title: 'Job: Read the code - research - attempt 1', status: 'started', detail: true },
+    { id: 'bot:a', sequence: 5, from: 'Hermes', title: 'Read the code', status: 'started' },
+    { id: 'bot:b', sequence: 6, from: 'Hermes', title: 'Next', status: 'queued' },
+  ];
+  const result = rows({ state: 'working', queued: 1, queue });
+  assert.equal(JSON.stringify(result.map((r: any) => [r.title, r.subtitle, r.value])), JSON.stringify([
+    ['Read the code', '1. Hermes', 'Running'],
+    ['Next', '2. Hermes', 'Queued'],
+    ['Job: Read the code - research - attempt 1', 'Dispatcher', 'Job'],
+  ]));
+  const own = rows({ state: 'working', queued: 0, queue: [{ id: 'job:1:0', sequence: 1e12, from: 'Dispatcher', title: 'Job: Build - coder - attempt 2', status: 'started' }] });
+  assert.equal(`${own[0].subtitle}|${own[0].value}`, '1. Dispatcher|Running');   // no native row: the job row is the work
+});
+
 test('a server that sends no title still gets a short readable line from the preview', () => {
   const rows = exports.botQueueRows;
   const row = (extra: any) => rows({ state: 'idle', queued: 1, queue: [{ id: 'a', sequence: 1, from: 'Hermes', status: 'queued', ...extra }] })[0];

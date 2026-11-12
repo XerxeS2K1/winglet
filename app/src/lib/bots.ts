@@ -37,13 +37,20 @@ function queueRowTitle(item: { title?: unknown; preview?: unknown }): string {
 }
 
 /** Rows for the owner's queue sheet: the title on top, "position. sender" underneath. Unknown details are not an empty
- *  queue; sort a copy so socket snapshots stay immutable. */
+ *  queue; sort a copy so socket snapshots stay immutable. A detail row (a dispatcher job the bot already shows work for)
+ *  takes no position and is not a second "Running". */
 export function botQueueRows(activity?: BotActivity): { id: string; title: string; subtitle: string; value: string }[] | undefined {
   if (!Array.isArray(activity?.queue)) return undefined;
-  return [...activity.queue].sort((a, b) => a.sequence - b.sequence).map((item, i) => ({
-    id: item.id, title: queueRowTitle(item), subtitle: `${i + 1}. ${plainLine(item.from).slice(0, 60) || 'Unknown sender'}`,
-    value: item.status === 'started' ? activity.state === 'working' ? 'Running' : 'Started (unconfirmed)' : 'Queued',
-  }));
+  let position = 0;
+  return [...activity.queue].sort((a, b) => a.sequence - b.sequence).map((item) => {
+    const from = plainLine(item.from).slice(0, 60) || 'Unknown sender';
+    if (item.detail === true) return { id: item.id, title: queueRowTitle(item), subtitle: from, value: 'Job' };
+    position += 1;
+    return {
+      id: item.id, title: queueRowTitle(item), subtitle: `${position}. ${from}`,
+      value: item.status === 'started' ? activity.state === 'working' ? 'Running' : 'Started (unconfirmed)' : 'Queued',
+    };
+  });
 }
 
 /** A bot's short name (its Hermes profile name) from what it's called: "Meal Planner!" reads "meal-planner". */

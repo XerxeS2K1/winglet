@@ -40,6 +40,15 @@ or unreadable process records leave the usual activity rule unchanged. Dead or r
 not count. This reads Hermes 0.23's persisted process checkpoint, scoped to the bot's session namespace;
 processes inside a sandbox cannot be verified on the host and are not counted.
 
+A bot also shows as "Working" whenever Hermes has a started hand-off for it, even if the gateway's live-work check
+does not answer. That hand-off, and any queued ones, appear in the queue sheet.
+
+Optionally, if you run a job dispatcher that keeps one `job-*.json` record per job in a folder (the folder named by
+`BOT_DISPATCH_HOME`, else `<hermes home>/jobs`), the queue sheet also lists its running and pending stages as
+"Job: <stage> - <bot> - attempt N". When the bot already shows a hand-off of its own, the job row is a detail line,
+not a second task. Only the newest 50 records (64 KB each, touched in the last day) are read, read-only; a missing
+folder or a bad file changes nothing.
+
 ### The hand-off queue and its titles
 
 When a bot is busy, the hand-offs waiting for it are listed (owner only) in the queue sheet opened from the bot
