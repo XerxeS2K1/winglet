@@ -36,25 +36,37 @@ export function useBotSheet(server: Server | undefined, onSwitch?: (serverId: st
   return { open: () => setOpen(true), sheet };
 }
 
+/**
+ * What one bot's row reads from the store, as plain values (so a shallow comparison can tell nothing changed). The selector
+ * flattens these to one array and `rowOf` reads them back, both from this one definition: add a field to the type and the
+ * two functions, and the compiler rejects a stride that no longer matches.
+ */
+type PickerFields = [id: string, status: ConnInput['status'], compat: ConnInput['compat'], recovering: boolean | undefined, pending: number | undefined, activity: BotActivity | undefined];
+const PICKER_STRIDE: PickerFields['length'] = 6;
+type PickerRow = { rt: ConnInput; pending?: number; activity?: BotActivity };
+
+function fieldsOf(x: Server, rt: ReturnType<typeof useApp.getState>['runtime'][string] | undefined): PickerFields {
+  return [x.id, rt?.status, rt?.compat, rt?.conn.recovering, rt?.pending, rt?.botActivity?.[x.profile ?? 'default']];
+}
+
+function rowOf(flat: unknown[], i: number): PickerRow {
+  const [, status, compat, recovering, pending, activity] = flat.slice(i, i + PICKER_STRIDE) as PickerFields;
+  return { rt: { status, compat, conn: { recovering } }, pending, activity };
+}
+
 function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => void; onSwitch?: (serverId: string) => void }) {
   const t = useTheme();
   const servers = useApp((st) => st.servers);
   // Only what a row shows. `st.runtime` changes on every streamed token of every chat, and an open picker redrawing for each
   // one is wasted work. Plain values per bot, so the shallow comparison can tell that nothing here changed. The row shows the
   // connection's title and kind only, never its retry countdown, so `conn.nextRetryAt` is left out (add it back if a row ever shows it).
-  const flat = useApp(useShallow((st) => st.servers.flatMap((x) => {
-    const rt = st.runtime[x.id];
-    return [x.id, rt?.status, rt?.compat, rt?.conn.recovering, rt?.pending, rt?.botActivity?.[x.profile ?? 'default']];
-  })));
+  const flat = useApp(useShallow((st) => st.servers.flatMap((x) => fieldsOf(x, st.runtime[x.id]))));
   const network = useApp((st) => st.network);
   const select = useApp((st) => st.select);
   const chosen = usePrefs((st) => st.prefs.mainBot);
   const [queueBot, setQueueBot] = useState<Server>();
-  const rows = new Map<string, { rt: ConnInput; pending?: number; activity?: BotActivity }>();
-  for (let i = 0; i < flat.length; i += 6) {
-    const [id, status, compat, recovering, pending, activity] = flat.slice(i, i + 6) as [string, ConnInput['status'], ConnInput['compat'], boolean | undefined, number | undefined, BotActivity | undefined];
-    rows.set(id, { rt: { status, compat, conn: { recovering } }, pending, activity });
-  }
+  const rows = new Map<string, PickerRow>();
+  for (let i = 0; i < flat.length; i += PICKER_STRIDE) rows.set(flat[i] as string, rowOf(flat, i));
   return <><ListGroup>
     {mainFirst(servers, chosen).map((x, i) => {
       const { rt, pending, activity } = rows.get(x.id) ?? { rt: { conn: {} } };
