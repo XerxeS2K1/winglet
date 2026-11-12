@@ -40,6 +40,21 @@ or unreadable process records leave the usual activity rule unchanged. Dead or r
 not count. This reads Hermes 0.23's persisted process checkpoint, scoped to the bot's session namespace;
 processes inside a sandbox cannot be verified on the host and are not counted.
 
+A bot also shows as "Working" when Hermes has a started hand-off for it and the gateway's live-work check does not
+answer. When the gateway does answer, its answer wins, so a started record left behind inside a long-running gateway
+cannot keep a bot on "Working". That hand-off, and any queued ones, appear in the queue sheet.
+
+Optionally, if you run a job dispatcher that keeps one `job-*.json` record per job in a folder (the folder named by
+`BOT_DISPATCH_HOME`, else `<hermes home>/jobs`), the queue sheet also lists its running and pending stages as
+"Job: <stage> - <bot> - attempt N". A running stage makes its bot "Working", even when the bot has queued hand-offs
+or a full queue. When the bot already has a started hand-off of its own, the job row is only a detail line (shown as
+"Job"), not a second task. A pending stage is listed as a waiting row but is not added to the waiting count and does
+not make the bot "Working"; this is deliberate, because the count is Hermes's own queue, not the dispatcher's plan.
+Only the newest 50 records (64 KB each, at most 20 stages per job) are read, read-only, and symlinks are not
+followed. A record not touched for two hours, or whose newest stage started more than two hours ago, is treated as a
+dead dispatcher's and ignored. The folder is read at most once every three seconds while it is unchanged. A missing
+folder or a bad file changes nothing.
+
 ### The hand-off queue and its titles
 
 When a bot is busy, the hand-offs waiting for it are listed (owner only) in the queue sheet opened from the bot
