@@ -5,15 +5,13 @@ import type { InboxItem, Message } from './types';
 const CACHED_MESSAGES = 200;
 const CACHED_INBOX = 100;
 /**
- * A chat that is streaming a reply changes ~30 times a second, and writing it means sealing up to 200 messages on the JS
- * thread for text that is replaced a moment later. While a reply is still streaming, and nothing else in the chat has
- * changed, it is written at most this often: a killed app loses at most this much of a reply still being written, never
- * anything finished. Anything else (an earlier message edited or deleted, a new message) is written at the next one-second
- * tick. So is the finished, failed or removed reply. Backgrounding, pagehide and detaching write at once. So does a chat
- * switch (the selected chat or the visible chat changes), but only while a reply is being held back: with nothing held, a switch
- * writes nothing extra and edits wait for the tick as usual.
+ * A chat that is streaming a reply changes ~30 times a second. Writing it every second means sealing up to 200 messages on
+ * the JS thread each time, for text that is replaced a moment later. While a reply is still streaming, and nothing else in
+ * the chat has changed, it is written at most this often. Anything else (an earlier message edited or deleted, a new message)
+ * is written at the next one-second tick. So is the finished reply, so nothing final is lost; backgrounding, pagehide and
+ * detaching write at once.
  */
-export const STREAMING_WRITE_MS = 30_000;
+export const STREAMING_WRITE_MS = 1000;
 
 /**
  * Write chats, recent messages, the inbox and drafts to the on-device cache as they change, batched
@@ -27,8 +25,6 @@ export function attachPersistence(): () => void {
 
   /** The last write of each chat: when, and the messages written (to see what changed since). Pruned when the chat goes. */
   const lastWrite = new Map<string, { at: number; list: Message[] }>();
-  /** Chats whose latest streamed text is not on disk yet (held back by the rule above). */
-  let holding = 0;
 
   /** `onlyDue`: the once-a-second timer, which may hold back a chat that is still streaming. Everything else writes it all. */
   const flushNow = (onlyDue: boolean) => {
@@ -75,7 +71,6 @@ export function attachPersistence(): () => void {
     }
     dirty.clear();
     for (const key of held) dirty.add(key);
-    holding = held.size;
     if (held.size) timer = setTimeout(timerFlush, 1000); // look again; they are written once due or once the reply ends
   };
   const flush = () => flushNow(false);
@@ -97,10 +92,8 @@ export function attachPersistence(): () => void {
       }
     }
     const backgrounding = prev.foreground && !state.foreground;
-    // Leaving or opening a chat: what is held for a reply still streaming is written now, not up to 30 s later.
-    const switching = holding > 0 && (state.selection !== prev.selection || state.visibleChat !== prev.visibleChat);
     prev = state;
-    if (backgrounding || switching || (!state.foreground && dirty.size)) flush();
+    if (backgrounding || (!state.foreground && dirty.size)) flush();
     else if (dirty.size && !timer) timer = setTimeout(timerFlush, 1000);
   });
   // pagehide also covers closing a browser tab before visibilitychange has reached the store.
