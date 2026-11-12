@@ -11,7 +11,7 @@ const CACHED_INBOX = 100;
  * is written at the next one-second tick. So is the finished reply, so nothing final is lost; backgrounding, pagehide and
  * detaching write at once.
  */
-export const STREAMING_WRITE_MS = 5000;
+export const STREAMING_WRITE_MS = 1000;
 
 /**
  * Write chats, recent messages, the inbox and drafts to the on-device cache as they change, batched

@@ -13,8 +13,15 @@ export type ConnView = {
   tone: 'ok' | 'info' | 'warn' | 'error';
 };
 
+/** The part of a bot's runtime state that decides what its connection looks like (so a caller can select just these). */
+export type ConnInput = {
+  status?: ServerState['status'];
+  compat?: ServerState['compat'];
+  conn: { recovering?: boolean; nextRetryAt?: number };
+};
+
 /** One clear sentence about why a bot is or isn't reachable, and the one thing to do about it. */
-export function connectionView(network: boolean, rt: ServerState | undefined, bot: string, now = Date.now()): ConnView {
+export function connectionView(network: boolean, rt: ConnInput | undefined, bot: string, now = Date.now()): ConnView {
   const status = rt?.status ?? 'connecting';
   if (status === 'unauthorized') {
     return { kind: 'signed-out', tone: 'error', action: 'pair', title: 'Signed out',
