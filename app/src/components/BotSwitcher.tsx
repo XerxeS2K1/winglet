@@ -3,11 +3,11 @@ import { useState } from 'react';
 import { ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useShallow } from 'zustand/react/shallow';
 import { botActivityLabel, mainFirst, notRunning } from '../lib/bots';
-import { connectionView } from '../lib/connection';
+import { connectionView, type ConnInput } from '../lib/connection';
 import { usePrefs } from '../lib/prefs';
 import { homeChat, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
-import type { Server } from '../lib/types';
+import type { BotActivity, Server } from '../lib/types';
 import { useAddBot } from './AddBot';
 import { AgentFace } from './AgentFace';
 import { Check, ChevronsUpDown, Plus, Settings } from './icons';
@@ -39,25 +39,35 @@ export function useBotSheet(server: Server | undefined, onSwitch?: (serverId: st
 function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => void; onSwitch?: (serverId: string) => void }) {
   const t = useTheme();
   const servers = useApp((st) => st.servers);
-  const runtime = useApp((st) => st.runtime);
+  // Only what a row shows. `st.runtime` changes on every streamed token of every chat, and an open picker redrawing for each
+  // one is wasted work. Plain values per bot, so the shallow comparison can tell that nothing here changed.
+  const flat = useApp(useShallow((st) => st.servers.flatMap((x) => {
+    const rt = st.runtime[x.id];
+    return [x.id, rt?.status, rt?.compat, rt?.conn.recovering, rt?.conn.nextRetryAt, rt?.pending, rt?.botActivity?.[x.profile ?? 'default']];
+  })));
   const network = useApp((st) => st.network);
   const select = useApp((st) => st.select);
   const chosen = usePrefs((st) => st.prefs.mainBot);
   const [queueBot, setQueueBot] = useState<Server>();
+  const rows = new Map<string, { rt: ConnInput; pending?: number; activity?: BotActivity }>();
+  for (let i = 0; i < flat.length; i += 7) {
+    const [id, status, compat, recovering, nextRetryAt, pending, activity] = flat.slice(i, i + 7) as [string, ConnInput['status'], ConnInput['compat'], boolean | undefined, number | undefined, number | undefined, BotActivity | undefined];
+    rows.set(id, { rt: { status, compat, conn: { recovering, nextRetryAt } }, pending, activity });
+  }
   return <><ListGroup>
     {mainFirst(servers, chosen).map((x, i) => {
-      const rt = runtime[x.id];
+      const { rt, pending, activity } = rows.get(x.id) ?? { rt: { conn: {} } };
       const view = connectionView(network, rt, x.bot.title);
       const on = x.id === server.id;
       return <ListRow key={x.id} title={x.bot.title} value={i === 0 ? 'Main' : undefined}
         icon={<View><AgentFace server={x} size={28} still /></View>}
-        subtitle={view.kind === 'online' ? notRunning(x.bot) ?? botActivityLabel(rt?.botActivity?.[x.profile ?? 'default']) : view.title} chevron={false}
+        subtitle={view.kind === 'online' ? notRunning(x.bot) ?? botActivityLabel(activity) : view.title} chevron={false}
         right={<View style={{ flexDirection: 'row', alignItems: 'center', gap: t.space.sm }}>
-          {view.kind === 'online' && rt?.botActivity?.[x.profile ?? 'default'] ? <Tap
+          {view.kind === 'online' && activity ? <Tap
             accessibilityLabel={`View ${x.bot.title}'s queue`} onPress={(event) => { event.stopPropagation(); setQueueBot(x); }}>
             <Text style={{ ...t.type.caption, color: t.colors.accent }}>Queue</Text>
           </Tap> : null}
-          {rt?.pending ? <Badge count={rt.pending} /> : null}
+          {pending ? <Badge count={pending} /> : null}
           {on ? <Check size={20} color={t.colors.accent} accessibilityLabel="Current bot" /> : null}
         </View>}
         onPress={() => { if (!on) { select(x.id, homeChat(useApp.getState().runtime[x.id])); onSwitch?.(x.id); } onDone(); }} />;
@@ -69,12 +79,12 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
 export function BotSwitcher() {
   const t = useTheme();
   const servers = useApp((st) => st.servers);
-  const runtime = useApp((st) => st.runtime);
   const selection = useApp((st) => st.selection);
   const server = servers.find((x) => x.id === selection.serverId) ?? servers[0];
   const picker = useBotSheet(server);
+  // One number, not the whole runtime: `st.runtime` changes on every streamed token of every chat.
+  const others = useApp((st) => st.servers.filter((x) => x.id !== server?.id).reduce((n, x) => n + (st.runtime[x.id]?.pending ?? 0), 0));
   if (!server) return null;
-  const others = servers.filter((x) => x.id !== server.id).reduce((n, x) => n + (runtime[x.id]?.pending ?? 0), 0);
 
   return (
     <>
