@@ -50,7 +50,7 @@ from .store import ROLES, Store, new_id
 
 logger = logging.getLogger(__name__)
 
-VERSION = "0.12.0"
+VERSION = "0.12.1"
 # Wire protocol: bumped only for breaking changes. The app compares these to its own and asks for
 # whichever side is out of date to be updated.
 PROTOCOL = 2

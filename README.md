@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.12.0](docs/releases/v0.12.0.md):** the menus and their words are reworked (one Server screen, Settings regrouped, 15 wording fixes), the routine-results feed is called Reports, usage is in pounds, and fourteen plugin fixes from the full review land.
+> **New in [v0.12.1](docs/releases/v0.12.1.md):** the app stays smoother while several chats stream at once (measured on the server, not yet on a phone), and a script on the server can post into a chat (off unless you turn it on).
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
