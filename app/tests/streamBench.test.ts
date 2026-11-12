@@ -133,31 +133,10 @@ const history = (chat: string, n: number) => Array.from({ length: n }, (_, i) =>
 }));
 
 /** The row builder from ChatView's MessageList, as it was (one copy for the "before" numbers). */
-function buildRows(helpers: any, messages: any[], typing: boolean, seen: Set<string> | null) {
-  const GROUP_WINDOW_S = 7 * 60;
-  const notice = (m: any) => (m.role === 'bot' && m.status === 'final' && m.text.length < 200 && /^(?:⏳|⚡|⏱|⚠)/u.test(m.text.trim()) ? m.text : null);
-  const dayKey = (ts: number) => { const d = new Date(ts * 1000); return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate(); };
-  const sameGroup = (a: any, b: any) => !(!a || !b || a.role !== b.role || a.role === 'system' || b.role === 'system' || notice(a) || notice(b))
-    && Math.abs(b.created_at - a.created_at) < GROUP_WINDOW_S;
-  const out: any[] = [];
-  const entries = helpers.groupActivity(messages, typing);
-  const idOf = (e: any) => (e.kind === 'msg' ? e.m.id : e.id);
-  const timeOf = (e: any) => (e.kind === 'msg' ? e.m.created_at : e.items[0].created_at);
-  const days = entries.map((e: any) => dayKey(timeOf(e)));
-  let lastSeen = -1;
-  if (seen) entries.forEach((e: any, i: number) => { if (seen.has(idOf(e))) lastSeen = i; });
-  const grouped = (a: any, b: any) => a?.kind === 'msg' && b?.kind === 'msg' && sameGroup(a.m, b.m);
-  entries.forEach((e: any, i: number) => {
-    if (days[i] !== days[i - 1]) out.push({ kind: 'day', key: `day-${days[i]}-${idOf(e)}` });
-    if (e.kind === 'activity') { out.push({ kind: 'activity', key: `activity-${e.id}`, items: e.items }); return; }
-    out.push({ kind: 'msg', key: e.m.id, m: e.m, first: !grouped(entries[i - 1], e), last: !grouped(e, entries[i + 1]),
-      live: typing && i === entries.length - 1, fresh: !!seen && i > lastSeen });
-  });
-  return out.reverse();
-}
+const chatRows = compile('../src/lib/chatRows.ts', { './messages': compile('../src/lib/messages.ts', {}), './statusNotice': compile('../src/lib/statusNotice.ts', {}) });
 
 /** `turn`: updates per reply. 60 = a reply streams for two seconds then the next starts; 600 = one long reply for the whole run. */
-async function run(options: { persist: boolean; rows: boolean; turn: number; rate?: number; coalesce?: boolean }) {
+async function run(options: { persist: boolean; rows: boolean; turn: number; rate?: number; coalesce?: boolean; stable?: boolean }) {
   const TURN_UPDATES = options.turn;
   const RATE = options.rate ?? PER_SECOND;
   const h = build({ persist: options.persist, coalesce: options.coalesce });
@@ -189,16 +168,21 @@ async function run(options: { persist: boolean; rows: boolean; turn: number; rat
   let eventMs = 0, rowMs = 0, flushMs = 0, events = 0, writes = 0, renders = 0;
   const seen = new Set((cs().c1 ?? []).map((m: any) => m.id));
   let shownList: any[] | undefined = cs().c1;
+  let shownRows: any[] = [];
+  let rowsChanged = 0;
   h.store.subscribe(() => { writes++; });
   /** What React does: the list is rebuilt when the visible chat's messages changed. */
   const render = () => {
     if (!options.rows || cs().c1 === shownList) return;
     shownList = cs().c1;
     const b = performance.now();
-    const rows = buildRows(h.helpers, shownList, true, seen);
+    // `stable: false` is the list as it was: every row a new object each build. `stable: true` hands back unchanged rows.
+    const rows = chatRows.buildRows(shownList, true, seen, h.sim.now + 1_700_200_000_000, options.stable ? shownRows : undefined);
     rowMs += performance.now() - b;
     renders++;
     h.counters.rowsBuilt += rows.length;
+    for (let i = 0; i < rows.length; i++) if (!options.stable || rows[i] !== shownRows[i]) rowsChanged++;
+    if (options.stable) shownRows = rows;
   };
   /** Let the simulated time reach `t`: every streaming frame that falls due on the way ends, in order. */
   const advance = (t: number) => {
@@ -249,7 +233,7 @@ async function run(options: { persist: boolean; rows: boolean; turn: number; rat
     assert.equal(mine.text, lastSent[chat].text, `${chat}: the final text is what the server sent`);
     assert.equal(mine.status, lastSent[chat].status);
   }
-  return { events, total, eventMs, rowMs, flushMs, gc, counters: h.counters, finalLength: cs().c1.length, h, writes, renders };
+  return { events, total, eventMs, rowMs, flushMs, gc, counters: h.counters, finalLength: cs().c1.length, h, writes, renders, rowsChanged };
 }
 
 for (const turn of [60, 600]) {
@@ -288,3 +272,14 @@ for (const rate of [30, 90]) {
     if (rate === 90) assert.ok(after.renders < before.renders / 2, 'a fast stream is written about once a frame');
   });
 }
+
+// Stable rows (chatRows.ts): the same run, counting the rows the list has to look at again after each build.
+test('stable rows, before and after: 4 chats x 300 messages, 30 updates a second into each, 2 s replies', async () => {
+  const before = await run({ persist: true, rows: true, turn: 60, stable: false });
+  const after = await run({ persist: true, rows: true, turn: 60, stable: true });
+  const per = (ms: number, n: number) => (n ? `${((ms * 1000) / n).toFixed(1)}` : '-');
+  const line = (name: string, r: typeof before) => `  ${name.padEnd(7)}| list rebuilds ${String(r.renders).padStart(5)} | rows handed to the list ${String(r.counters.rowsBuilt).padStart(7)} | new row objects ${String(r.rowsChanged).padStart(6)} (${(r.rowsChanged / r.renders).toFixed(1)} per build) | build ${per(r.rowMs, r.renders).padStart(6)} us`;
+  console.log(['', 'streamBench stable rows [visible chat of 4 x 300, 30 updates/s]', line('before', before), line('after', after)].join('\n'));
+  assert.equal(after.renders, before.renders);
+  assert.ok(after.rowsChanged < before.rowsChanged / 20, 'a token changes about one row, not all of them');
+});

@@ -22,7 +22,8 @@ import { chatKey } from '../lib/chatOrganization';
 import { clearFocus, requestFocus, useFocusRequest } from '../lib/focus';
 import { haptic } from '../lib/haptics';
 import { afterOlderPage, atStart, canLoadOlder, newPaging } from '../lib/history';
-import { chatMessages, groupActivity, isActivity, sentByScript, type Entry } from '../lib/messages';
+import { buildRows, dayKey, type Row } from '../lib/chatRows';
+import { chatMessages, isActivity, sentByScript } from '../lib/messages';
 import { useModelSheet } from '../lib/modelSheet';
 import { easeOut, spring, useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
@@ -64,7 +65,6 @@ import { Badge, Button, IconButton, Tap } from './ui';
 import { QuoteSheet } from '../features/transcript-tools/QuoteSheet';
 import { canQuote } from '../features/transcript-tools/model';
 
-const GROUP_WINDOW_S = 7 * 60;
 /** Scrolled further up than this, the jump-to-latest button appears. */
 const AWAY_PX = 480;
 
@@ -74,11 +74,6 @@ const AWAY_PX = 480;
  * and a small toolbar on hover.
  */
 const TOUCH = Platform.OS !== 'web' || !!globalThis.matchMedia?.('(hover: none)').matches;
-
-type Row =
-  | { kind: 'msg'; key: string; m: Message; first: boolean; last: boolean; live: boolean; fresh: boolean; latestReply: boolean }
-  | { kind: 'activity'; key: string; items: Message[]; working: boolean }
-  | { kind: 'day'; key: string; label: string };
 
 type Actions = {
   open: (m: Message) => void;
@@ -391,43 +386,12 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
 
   useEffect(() => { if (loaded && messages.length) perfFirstContent('message list'); }, [loaded, messages.length]);
 
+  // The rows are built in lib/chatRows.ts. A row equal to the one the last build had at that key is the same object, so a
+  // streamed token changes one row and the list leaves the others alone.
+  const lastRows = useRef<Row[]>([]);
   const rows = useMemo<Row[]>(() => {
-    const out: Row[] = [];
-    // Hermes's backend activity (tool calls, status notes) folds into one "…" entry between the replies.
-    const entries = groupActivity(messages, typing);
-    const latestReply = latestReplyId(entries);
-    const idOf = (e: Entry) => (e.kind === 'msg' ? e.m.id : e.id);
-    const timeOf = (e: Entry) => (e.kind === 'msg' ? e.m.created_at : e.items[0].created_at);
-    const days = entries.map((e) => dayKey(timeOf(e)));
-    const labels = new Map<number, string>();
-    const dayKeys = new Set<string>();
-    let lastSeen = -1;
-    if (seen.current) entries.forEach((e, i) => { if (seen.current!.has(idOf(e))) lastSeen = i; });
-    const grouped = (a: Entry | undefined, b: Entry | undefined) => a?.kind === 'msg' && b?.kind === 'msg' && sameGroup(a.m, b.m);
-    entries.forEach((e, i) => {
-      const day = days[i];
-      if (day !== days[i - 1]) {
-        let label = labels.get(day);
-        if (label === undefined) labels.set(day, (label = dayLabel(timeOf(e))));
-        // Keyed by the day, so loading older history doesn't remount every separator.
-        const key = dayKeys.has(`day-${day}`) ? `day-${day}-${idOf(e)}` : `day-${day}`;
-        dayKeys.add(key);
-        out.push({ kind: 'day', key, label });
-      }
-      if (e.kind === 'activity') {
-        out.push({ kind: 'activity', key: `activity-${e.id}`, items: e.items, working: typing && i === entries.length - 1 });
-        return;
-      }
-      out.push({
-        kind: 'msg', key: e.m.id, m: e.m,
-        first: !grouped(entries[i - 1], e) || days[i - 1] !== day,
-        last: !grouped(e, entries[i + 1]) || days[i + 1] !== day,
-        live: typing && i === entries.length - 1,
-        fresh: !!seen.current && i > lastSeen,
-        latestReply: e.m.id === latestReply,
-      });
-    });
-    return out.reverse(); // inverted: newest at the bottom without manual scrolling
+    lastRows.current = buildRows(messages, typing, seen.current, Date.now(), lastRows.current);
+    return lastRows.current;
   }, [messages, typing, today]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const rowsRef = useRef(rows);
@@ -456,6 +420,16 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
     older.current = newPaging();
     setOlderBusy(false);
   }, [server.id, chatId]);
+  // One function for as long as what it draws from is the same. The list hands renderItem to every cell, and a cell skips its
+  // redraw only when its props are equal, so a new function on every streamed token would redraw every row.
+  const renderItem = useCallback(({ item }: { item: Row }) => item.kind === 'day' ? <DayChip label={item.label} /> : item.kind === 'activity' ? (
+    <ActivityRow items={item.items} working={item.working} flash={flash !== null && item.items.some((m) => m.id === flash)} />
+  ) : (
+    <MessageRow server={server} message={item.m} first={item.first} last={item.last} live={item.live} fresh={item.fresh}
+      layout={layout} flash={flash === item.m.id} actions={actions} latestReply={item.latestReply}
+      inboxItem={item.m.meta?.inbox_id ? inbox?.[item.m.meta.inbox_id] : undefined} />
+  ), [server, layout, flash, actions, inbox]);
+
   const loadOlder = useCallback(() => {
     const o = older.current;
     const current = () => useApp.getState().runtime[server.id]?.messages[chatId];
@@ -552,13 +526,7 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
         contentContainerStyle={{ paddingTop: bottom + 10, paddingBottom: top + 10 }}
         data={rows}
         keyExtractor={(r) => r.key}
-        renderItem={({ item }) => item.kind === 'day' ? <DayChip label={item.label} /> : item.kind === 'activity' ? (
-          <ActivityRow items={item.items} working={item.working} flash={flash !== null && item.items.some((m) => m.id === flash)} />
-        ) : (
-          <MessageRow server={server} message={item.m} first={item.first} last={item.last} live={item.live} fresh={item.fresh}
-            layout={layout} flash={flash === item.m.id} actions={actions} latestReply={item.latestReply}
-            inboxItem={item.m.meta?.inbox_id ? inbox?.[item.m.meta.inbox_id] : undefined} />
-        )}
+        renderItem={renderItem}
         onScroll={(e) => {
           const far = e.nativeEvent.contentOffset.y > AWAY_PX;
           if (far && away === null) setAway(messages[messages.length - 1]?.id ?? '');
@@ -595,35 +563,6 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
 });
 
 /** Displayed replies only: folded activity and gateway notices cannot steal response actions. */
-function latestReplyId(entries: readonly Entry[]): string | undefined {
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const entry = entries[i];
-    if (entry.kind === 'msg' && entry.m.role === 'bot' && !entry.m.meta?.picker && !statusNoticeText(entry.m)) return entry.m.id;
-  }
-  return undefined;
-}
-
-/** A local calendar day as a number (20261013), cheap to compare across a whole chat. */
-function dayKey(ts: number) {
-  const d = new Date(ts * 1000);
-  return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
-}
-
-function sameGroup(a: Message | undefined, b: Message | undefined) {
-  if (!a || !b || a.role !== b.role || a.role === 'system' || b.role === 'system' || statusNoticeText(a) || statusNoticeText(b)) return false;
-  return Math.abs(b.created_at - a.created_at) < GROUP_WINDOW_S;
-}
-
-function dayLabel(ts: number) {
-  const d = new Date(ts * 1000);
-  const now = new Date();
-  if (d.toDateString() === now.toDateString()) return 'Today';
-  const y = new Date(now);
-  y.setDate(now.getDate() - 1);
-  if (d.toDateString() === y.toDateString()) return 'Yesterday';
-  return d.toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric', ...(d.getFullYear() !== now.getFullYear() ? { year: 'numeric' } : {}) });
-}
-
 function timeOf(ts: number) {
   return new Date(ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
