@@ -263,3 +263,136 @@ def test_bot_activities_reads_the_directory_once_for_all_bots(activity, jobs, mo
     result = hermes_api.bot_activities()
     assert len(calls) == 1
     assert len(result['coder']['queue']) == 1 and result['research']['queue'] == []
+
+
+# ---- review fixes: each test below failed before its fix ----
+
+def _queued(home, n):
+    _rows(home, *[(i, f'bot:q{i:03}', 'queued', _payload(f'Queued {i}')) for i in range(1, n + 1)])
+
+
+def test_finding1_a_running_job_makes_a_bot_with_only_queued_rows_working(activity, jobs):
+    home, gw = activity          # the gateway answers active_agents 0
+    _queued(home, 1)
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Build', 'running')])
+    result = hermes_api.bot_activity(home, 'research', include_queue=True)
+    assert result['state'] == 'working'
+    job = result['queue'][-1]
+    assert job['title'].startswith('Job: Build') and not job.get('detail')   # the job is the work, not a detail of a queued row
+
+
+@pytest.mark.parametrize('count', [49, 50, 60])
+def test_finding1_a_running_job_wins_even_when_the_native_queue_is_full(activity, jobs, count):
+    home, gw = activity
+    _queued(home, count)
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Build', 'running')])
+    result = hermes_api.bot_activity(home, 'research', include_queue=True)
+    assert result['state'] == 'working'
+    assert result['queue_truncated'] is (count >= 50)
+
+
+def test_finding1_with_a_started_native_row_the_job_row_stays_detail(activity, jobs):
+    home, gw = activity
+    _rows(home, (1, 'bot:aaaa', 'started', _payload('Do it')), (2, 'bot:bbbb', 'queued', _payload('Later')))
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Build', 'running')])
+    result = hermes_api.bot_activity(home, 'research', include_queue=True)
+    assert [bool(row.get('detail')) for row in result['queue']] == [False, False, True]
+
+
+def test_finding1_a_pending_job_stage_with_a_full_queue_is_still_not_working(activity, jobs):
+    home, gw = activity
+    _queued(home, 50)
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Later', 'pending')])
+    assert hermes_api.bot_activity(home, 'research', include_queue=True)['state'] == 'idle'
+
+
+def test_finding2_a_started_admission_does_not_beat_a_healthy_gateway_saying_nothing_runs(activity):
+    home, gw = activity
+    gw.reply = {'active_agents': 0}
+    _rows(home, (1, 'bot:aaaa', 'started', _payload('Orphaned claim')))
+    assert hermes_api.bot_activity(home, 'research')['state'] == 'idle'
+
+
+def test_finding2_a_started_admission_still_counts_when_the_gateway_is_silent_and_a_busy_gateway_wins(activity):
+    home, gw = activity
+    _rows(home, (1, 'bot:aaaa', 'started', _payload('Do it')))
+    gw.reply = None
+    assert hermes_api.bot_activity(home, 'research')['state'] == 'working'
+    gw.reply = {'active_agents': 1}
+    assert hermes_api.bot_activity(home, 'research')['state'] == 'working'
+
+
+def test_finding3_a_job_file_untouched_for_three_hours_is_not_live(jobs):
+    _job(jobs, 'job-old.json', age=3 * 3600, stages=[_stage('s', 'coder', 'Stale', 'running')])
+    assert hermes_api.dispatch_job_rows() == []
+    _job(jobs, 'job-new.json', age=3600, stages=[_stage('s', 'coder', 'Fresh', 'running')])
+    assert [row['title'] for _, row in hermes_api.dispatch_job_rows()] == ['Job: Fresh - coder - attempt 1']
+
+
+def test_finding3_a_job_whose_newest_stage_started_long_ago_is_not_live_even_if_the_file_is_fresh(jobs):
+    now = time.time()
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'coder', 'Old', 'running', started_at=now - 3 * 3600),
+                                     _stage('s2', 'coder', 'Older', 'running', started_at=now - 5 * 3600)])
+    _job(jobs, 'job-2.json', stages=[_stage('s1', 'coder', 'Done', 'passed', started_at=now - 5 * 3600),
+                                     _stage('s2', 'coder', 'Live', 'running', started_at=now - 60)])
+    _job(jobs, 'job-3.json', stages=[_stage('s1', 'coder', 'NoStamp', 'running'),
+                                     _stage('s2', 'coder', 'Junk', 'pending', started_at='yesterday')])
+    titles = sorted(row['title'] for _, row in hermes_api.dispatch_job_rows())
+    assert titles == ['Job: Junk - coder - attempt 1', 'Job: Live - coder - attempt 1', 'Job: NoStamp - coder - attempt 1']
+
+
+def test_finding4_a_job_gives_at_most_20_rows(jobs):
+    _job(jobs, 'job-1.json', stages=[_stage(f's{i}', 'coder', f'T{i:03}', 'running') for i in range(500)])
+    rows = hermes_api.dispatch_job_rows()
+    assert len(rows) == 20 and rows[0][1]['title'] == 'Job: T000 - coder - attempt 1'
+    assert rows[-1][1]['title'] == 'Job: T019 - coder - attempt 1'
+
+
+def test_finding4_the_stage_cap_counts_only_displayable_stages(jobs):
+    _job(jobs, 'job-1.json', stages=[_stage(f'd{i}', 'coder', 'Done', 'passed') for i in range(100)]
+         + [_stage(f's{i}', 'coder', f'T{i:03}', 'running') for i in range(30)])
+    assert len(hermes_api.dispatch_job_rows()) == 20
+
+
+def test_finding4_an_unchanged_folder_is_read_once_per_interval_and_a_change_is_seen(jobs, monkeypatch):
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'coder', 'One', 'running')])
+    opened = []
+    real_open = open
+    monkeypatch.setattr('builtins.open', lambda path, *a, **k: opened.append(str(path)) or real_open(path, *a, **k))
+    first = hermes_api.dispatch_job_rows()
+    second = hermes_api.dispatch_job_rows()
+    assert first == second and len([p for p in opened if p.endswith('job-1.json')]) == 1
+    second[0][1]['title'] = 'mutated'                      # a caller's edit must not poison the memo
+    assert hermes_api.dispatch_job_rows()[0][1]['title'] == 'Job: One - coder - attempt 1'
+    _job(jobs, 'job-2.json', stages=[_stage('s1', 'coder', 'Two', 'running')])     # entry count changes
+    assert len(hermes_api.dispatch_job_rows()) == 2
+
+
+def test_finding4_the_memo_expires_after_one_interval(jobs, monkeypatch):
+    path = _job(jobs, 'job-1.json', stages=[_stage('s1', 'coder', 'One', 'running')])
+    assert len(hermes_api.dispatch_job_rows()) == 1
+    path.write_text(json.dumps({'status': 'finished', 'stages': []}))                # in-place edit: dir mtime unchanged
+    clock = [time.monotonic()]
+    monkeypatch.setattr(hermes_api, '_dispatch_clock', lambda: clock[0] + hermes_api.DISPATCH_CACHE_SECONDS + 1)
+    assert hermes_api.dispatch_job_rows() == []
+
+
+def test_finding5_a_symlinked_job_file_is_not_followed(jobs, tmp_path):
+    outside = tmp_path / 'outside.json'
+    outside.write_text(json.dumps({'status': 'running', 'stages': [_stage('s', 'coder', 'STOLEN', 'running')]}))
+    (jobs / 'job-link.json').symlink_to(outside)
+    assert hermes_api.dispatch_job_rows() == []
+
+
+def test_finding6_a_pending_stage_shows_as_a_queued_row_but_adds_nothing_to_the_count(activity, jobs):
+    home, gw = activity
+    _rows(home)
+    _job(jobs, 'job-1.json', stages=[_stage('s1', 'research', 'Later', 'pending')])
+    result = hermes_api.bot_activity(home, 'research', include_queue=True)
+    assert result['queued'] == 0 and [row['status'] for row in result['queue']] == ['queued']
+
+
+def test_docs_describe_the_corrected_rules():
+    text = (__import__('pathlib').Path(__file__).resolve().parent.parent / 'docs' / 'BOTS.md').read_text()
+    assert 'started hand-off of its own' in text and 'touched in the last day' not in text
+    assert 'two hours' in text and 'at most 20' in text and 'waiting count' in text
