@@ -9,7 +9,9 @@ const CACHED_INBOX = 100;
  * thread for text that is replaced a moment later. While a reply is still streaming, and nothing else in the chat has
  * changed, it is written at most this often: a killed app loses at most this much of a reply still being written, never
  * anything finished. Anything else (an earlier message edited or deleted, a new message) is written at the next one-second
- * tick. So is the finished, failed or removed reply. Backgrounding, pagehide, detaching and switching chat write at once.
+ * tick. So is the finished, failed or removed reply. Backgrounding, pagehide and detaching write at once. So does a chat
+ * switch (the selected chat or the visible chat changes), but only while a reply is being held back: with nothing held, a switch
+ * writes nothing extra and edits wait for the tick as usual.
  */
 export const STREAMING_WRITE_MS = 30_000;
 
