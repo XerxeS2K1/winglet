@@ -20,7 +20,7 @@ Current behaviour is documented in [FEATURES.md](FEATURES.md), [DESIGN.md](DESIG
 - App progress/recovery: `17ce9a1`, consent `d1aa215`, recovery-edge follow-up `0e2e869`.
 - Device linking: existing `feat/device-link-server` at `d5f6e99`, merged onto this newer main
   rather than releasing its older base. Source branches are retained; nothing is merged into main here.
-- Existing phone app: **0.10.6** (owner-reported). Live server plugin: **0.10.5** (source inspected).
+- Existing phone app and live server plugin: **0.12.1** (0.12.2 is this release).
   Hermes: **0.23.0**. None has been changed by this local integration. Versions are not bumped yet.
 
 | Work | Local implementation | Remaining gate |
