@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { activityKind, chatMessages, currentTaskActivity, groupActivity, inSheet, isActivity, markFailed, mergeMessages } from '../src/lib/messages.ts';
+import { activityKind, chatMessages, currentTaskActivity, groupActivity, inSheet, isActivity, markFailed, mergeMessages, restoredFromCache } from '../src/lib/messages.ts';
 import type { Message } from '../src/lib/types.ts';
 
 const msg = (id: string, over: Partial<Message> = {}): Message => ({
@@ -191,4 +191,20 @@ test('a message is classified once: the rows are rebuilt on every streamed updat
   assert.equal(activityKind(next), null);
   assert.equal(activityKind(old), 'sure');
   assert.equal(activityKind({ ...old, text: 'Changed.' } as Message), null);
+});
+
+test('restoredFromCache finishes a streaming message, marks it incomplete and keeps the rest', () => {
+  const list = [msg('a'), msg('b', { status: 'streaming', text: 'half', meta: { notify: false } })];
+  const out = restoredFromCache(list);
+  assert.equal(out[1].status, 'final');
+  assert.deepEqual(out[1].meta, { notify: false, incomplete: true });
+  assert.equal(out[1].text, 'half');
+  assert.equal(list[1].status, 'streaming'); // the input is not changed
+});
+
+test('restoredFromCache returns final messages as the very same objects', () => {
+  const list = [msg('a'), msg('b', { meta: { picker: undefined } })];
+  const out = restoredFromCache(list);
+  assert.equal(out[0], list[0]);
+  assert.equal(out[1], list[1]);
 });

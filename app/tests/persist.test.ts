@@ -140,3 +140,15 @@ test('the streaming hold is one second (Kraig, 2026-11-12): a streaming chat is 
   }
   h.detach();
 });
+
+// Issue 48: the cache keeps a streaming reply as it is; the app finishes it and marks it when it is restored (restoredFromCache).
+test('a reply that is streaming is written to the cache as streaming, unchanged', () => {
+  const h = seeded();
+  h.store.setState(chatState('half an answ', 'streaming'));
+  h.tick();
+  const last = h.saved.get('msgs:s:c').at(-1);
+  assert.equal(last.status, 'streaming');
+  assert.equal(last.text, 'half an answ');
+  assert.equal('incomplete' in last.meta, false);
+  h.detach();
+});

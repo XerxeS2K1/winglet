@@ -175,6 +175,8 @@ export type Message = {
     /** Another bot this chat's bot asked for help, with what was asked and answered; the chat shows it as one tappable line. */
     asked?: { bot: string; question: string; answer: string; failed?: boolean;
       state?: 'queued' | 'answered' | 'failed'; delivery_id?: string };
+    /** Set on a reply that was still streaming when the app was last closed: restored from the cache as finished, its text may stop short. The server copy replaces it. */
+    incomplete?: boolean;
     /** A local delivery error; never sent to Hermes as part of the prompt. */
     delivery_error?: string;
   };

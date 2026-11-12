@@ -400,6 +400,65 @@ test('after a restart, cached messages show at once and the queued outbox is sti
   assert.equal(h.outbox().length, 1);
 });
 
+// Issue 48: the app was killed mid-reply, and the cache (which holds a streaming reply on purpose) served it back with a
+// cursor that never ends. A restored reply is finished, with a plain marker that its text may stop short.
+const cachedStreaming = { id: 'r1', position: 3, chat_id: 'general', role: 'bot', text: 'The answer begins', status: 'streaming', meta: {}, created_at: 1, updated_at: 5 };
+
+test('a reply cached while streaming comes back finished, marked as possibly incomplete', async () => {
+  const h = harness();
+  await h.connect();
+  h.cache.set('msgs:s:general', [msg(1), msg(2), cachedStreaming]);
+  await h.store.getState().init();
+  await h.store.getState().hydrateChat('s', 'general');
+  const restored = h.messages().find((m: any) => m.id === 'r1');
+  assert.equal(restored.status, 'final');
+  assert.equal(restored.meta.incomplete, true);
+  assert.equal(restored.text, 'The answer begins');
+  assert.equal(h.messages().some((m: any) => m.status === 'streaming'), false);
+  // What is on disk is untouched: only the copy handed to the app changes.
+  assert.equal(h.cache.get('msgs:s:general')[2].status, 'streaming');
+});
+
+test('a message restored from the cache that was already final is left exactly as it was', async () => {
+  const h = harness();
+  await h.connect();
+  h.cache.set('msgs:s:general', [msg(1), msg(2), cachedStreaming]);
+  await h.store.getState().init();
+  await h.store.getState().hydrateChat('s', 'general');
+  assert.equal(JSON.stringify(h.messages().filter((m: any) => m.id !== 'r1')), JSON.stringify([msg(1), msg(2)])); // JSON: the store's arrays come from another realm
+  assert.equal('incomplete' in h.messages()[0].meta, false);
+});
+
+test('the server copy replaces a restored incomplete reply on the next sync', async () => {
+  const h = harness();
+  await h.connect();
+  h.cache.set('msgs:s:general', [msg(1), cachedStreaming]);
+  await h.store.getState().init();
+  await h.store.getState().hydrateChat('s', 'general');
+  assert.equal(h.messages()[1].meta.incomplete, true);
+  const full = { ...cachedStreaming, text: 'The answer begins and ends.', status: 'final', updated_at: 9 };
+  h.setRequest(async () => ({ messages: [msg(1), full], deleted_ids: [] }));
+  await h.store.getState().loadMessages('s', 'general');
+  const now = h.messages().find((m: any) => m.id === 'r1');
+  assert.equal(now.text, 'The answer begins and ends.');
+  assert.equal(now.status, 'final');
+  assert.equal(now.meta.incomplete, undefined);
+});
+
+test('a reply the server still has streaming resumes as a live reply, not a finished one', async () => {
+  const h = harness();
+  await h.connect();
+  h.cache.set('msgs:s:general', [cachedStreaming]);
+  await h.store.getState().init();
+  await h.store.getState().hydrateChat('s', 'general');
+  const live = { ...cachedStreaming, text: 'The answer begins and goes on', updated_at: 8 };
+  h.setRequest(async () => ({ messages: [live], deleted_ids: [] }));
+  await h.store.getState().loadMessages('s', 'general');
+  const now = h.messages()[0];
+  assert.equal(now.status, 'streaming');
+  assert.equal(now.meta.incomplete, undefined);
+});
+
 test('the protocol check flags an app that is too old for its server', async () => {
   const h = harness();
   await h.connect();

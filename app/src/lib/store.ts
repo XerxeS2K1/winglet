@@ -10,7 +10,7 @@ import { cacheGet, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
-import { isActivity, isNotifiable, markFailed, mergeMessages } from './messages';
+import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
 import { canCoalesce, createStreamBuffer } from './streamBuffer';
 import { PERF_ON, perfMessageSent, perfMessageUpdate } from './perf';
 import { getJSON, setJSON } from './storage';
@@ -825,7 +825,7 @@ export const useApp = create<AppState>((set, get) => {
 
     hydrateChat: async (serverId, chatId) => {
       if (get().runtime[serverId]?.loaded[chatId]) return;
-      const cached = await cacheGet<Message[]>(`msgs:${serverId}:${chatId}`, []);
+      const cached = restoredFromCache(await cacheGet<Message[]>(`msgs:${serverId}:${chatId}`, []));
       if (!cached.length) return;
       patch(serverId, (s) => {
         // Fresh server data already arrived: it supersedes the cache.
