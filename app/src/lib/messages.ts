@@ -72,6 +72,9 @@ function isPlainBot(m: Message): boolean {
   return m.role === 'bot' && !(meta.inbox_id || meta.picker || meta.kind || meta.attachments?.length || meta.reply_to || meta.routine) && m.text.length <= 1200;
 }
 
+/** The answer of `activityKind` for each message object already looked at (see there). */
+const kinds = new WeakMap<Message, 'sure' | 'maybe' | null>();
+
 /**
  * How sure we are that a message is Hermes narrating its own work, not answering. "sure": the server says so
  * (`meta.activity`), it's a status note Hermes updates in place, or every line is a tool-progress line with
@@ -87,8 +90,6 @@ export function activityKind(m: Message): 'sure' | 'maybe' | null {
   kinds.set(m, kind);
   return kind;
 }
-
-const kinds = new WeakMap<Message, 'sure' | 'maybe' | null>();
 
 function classify(m: Message): 'sure' | 'maybe' | null {
   const meta = m.meta ?? {};

@@ -143,3 +143,74 @@ test('holding a streaming chat back does not hold back drafts or other chats', (
   assert.equal(savedText(h), 'one');
   h.detach();
 });
+
+const earlier = (id: string, text: string) => ({ id, chat_id: 'c', role: 'user', status: 'final', text, meta: {}, created_at: 1, updated_at: 1 });
+const savedList = (h: ReturnType<typeof harness>) => (h.saved.get('msgs:s:c') ?? []).map((m: any) => `${m.id}:${m.text}`);
+
+test('a change to an earlier message is not held back just because the last one is streaming', () => {
+  const a = earlier('a', 'first'), b = earlier('b', 'second'), edited = earlier('b', 'second, edited');
+  const h = seeded();
+  h.store.setState(chatState('one', 'streaming', [a, b]));
+  h.tick();
+  h.store.setState(chatState('two', 'streaming', [a, b]));
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'b:second', 'm:one'], 'only the streaming reply changed: held');
+  h.store.setState(chatState('two', 'streaming', [a, edited]));
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'b:second, edited', 'm:two'], 'an earlier message was edited: written at the next tick');
+  h.store.setState(chatState('three', 'streaming', [a, edited]));
+  h.tick();
+  assert.equal(savedText(h), 'two', 'back to held (the earlier messages are the same objects as at the last write)');
+  h.store.setState(chatState('three', 'streaming', [a]));
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'm:three'], 'an earlier message was deleted: written at the next tick');
+  h.detach();
+});
+
+test('a new message, or a different last message, is written at the next tick while the reply streams', () => {
+  const a = earlier('a', 'first');
+  const h = seeded();
+  h.store.setState(chatState('one', 'streaming', [a]));
+  h.tick();
+  h.store.setState(chatState('two', 'streaming', [a, earlier('b', 'a question')]));
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'b:a question', 'm:two'], 'a message was added');
+  h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, messages: { c: [a, { ...earlier('n', 'other reply'), role: 'bot', status: 'streaming' }] } } } });
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'n:other reply'], 'the last message is another message');
+  h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, messages: { c: [a, { ...earlier('x', 'swapped in'), role: 'bot', status: 'streaming' }] } } } });
+  h.tick();
+  assert.deepEqual(savedList(h), ['a:first', 'x:swapped in'], 'a different last message of the same count is written too');
+  h.detach();
+});
+
+test('a new reply that starts streaming right after a finished one is held like any streaming reply (one write per finished reply, not per second)', () => {
+  const done = { ...earlier('d', 'Done.'), role: 'bot' };
+  const h = seeded();
+  h.store.setState(chatState('one', 'streaming', [done]));
+  h.tick();
+  h.store.setState(chatState('The whole reply.', 'final', [done]));
+  h.tick();
+  assert.equal(savedText(h), 'The whole reply.');
+  const finished = h.store.getState().runtime.s.messages.c.slice();
+  const next = { ...earlier('n', 'next'), role: 'bot', status: 'streaming' };
+  h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, messages: { c: [...finished, next] } } } });
+  h.tick();
+  assert.equal(savedText(h), 'The whole reply.', 'a new streaming reply, nothing earlier changed: held');
+  h.tick(5000);
+  assert.equal(savedText(h), 'next', 'and written once the five seconds are up');
+  h.detach();
+});
+
+test('what is remembered about a streaming chat goes when the chat does', () => {
+  const h = seeded();
+  h.store.setState(chatState('one', 'streaming'));
+  h.tick();
+  h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, chats: {}, messages: {} } } });   // the chat is deleted (its list of chats changes, so a flush runs)
+  h.tick();
+  h.saved.clear();
+  h.store.setState(chatState('one', 'streaming'));      // the same chat comes back, inside the five seconds
+  h.tick();
+  assert.equal(savedText(h), 'one', 'an old entry would have held this back as "unchanged"');
+  h.detach();
+});

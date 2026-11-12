@@ -6,8 +6,10 @@ const CACHED_MESSAGES = 200;
 const CACHED_INBOX = 100;
 /**
  * A chat that is streaming a reply changes ~30 times a second. Writing it every second means sealing up to 200 messages on
- * the JS thread each time, for text that is replaced a moment later. While a reply is still streaming its chat is written at
- * most this often. The finished reply, backgrounding, pagehide and detaching write at once, so nothing final is lost.
+ * the JS thread each time, for text that is replaced a moment later. While a reply is still streaming, and nothing else in
+ * the chat has changed, it is written at most this often. Anything else (an earlier message edited or deleted, a new message)
+ * is written at the next one-second tick. So is the finished reply, so nothing final is lost; backgrounding, pagehide and
+ * detaching write at once.
  */
 export const STREAMING_WRITE_MS = 5000;
 
@@ -21,7 +23,8 @@ export function attachPersistence(): () => void {
   const dirty = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
 
-  const lastWrite = new Map<string, number>();
+  /** The last write of each chat: when, and the messages written (to see what changed since). Pruned when the chat goes. */
+  const lastWrite = new Map<string, { at: number; list: Message[] }>();
 
   /** `onlyDue`: the once-a-second timer, which may hold back a chat that is still streaming. Everything else writes it all. */
   const flushNow = (onlyDue: boolean) => {
@@ -53,13 +56,18 @@ export function attachPersistence(): () => void {
       else if (kind === 'inbox') cacheSet(`inbox:${serverId}`, recentInbox(Object.values(rt.inbox)));
       else if (kind === 'msgs' && rt.messages[chatId] && (rt.chats[chatId] || !Object.keys(rt.chats).length)) {
         const list = rt.messages[chatId];
-        if (onlyDue && list[list.length - 1]?.status === 'streaming' && now - (lastWrite.get(key) ?? 0) < STREAMING_WRITE_MS) {
+        const written = lastWrite.get(key);
+        if (onlyDue && written && now - written.at < STREAMING_WRITE_MS && onlyTheStreamingReplyChanged(written.list, list)) {
           held.add(key);
           continue;
         }
         cacheSet(`msgs:${serverId}:${chatId}`, cacheable(list));
-        lastWrite.set(key, now);
+        lastWrite.set(key, { at: now, list: list.slice() });
       }
+    }
+    for (const key of lastWrite.keys()) { // chats that are gone (deleted, or their server removed) leave nothing behind
+      const [, serverId, chatId] = key.split('|');
+      if (!state.runtime[serverId]?.messages[chatId]) lastWrite.delete(key);
     }
     dirty.clear();
     for (const key of held) dirty.add(key);
@@ -95,6 +103,20 @@ export function attachPersistence(): () => void {
     globalThis.removeEventListener?.('pagehide', flush);
     flush();
   };
+}
+
+/**
+ * True when `now` differs from `written` only by the streaming reply at the end: the same last message, updated, or one new
+ * last message. Every earlier message must be the very same object, and nothing may have been removed.
+ */
+function onlyTheStreamingReplyChanged(written: Message[], now: Message[]): boolean {
+  const last = now.length - 1;
+  if (last < 0 || now[last].status !== 'streaming') return false;
+  if (written.length === now.length) {
+    if (written[last].id !== now[last].id) return false;
+  } else if (written.length !== last) return false;
+  for (let i = 0; i < written.length && i < last; i++) if (written[i] !== now[i]) return false;
+  return true;
 }
 
 export function cacheable(list: Message[]): Message[] {
