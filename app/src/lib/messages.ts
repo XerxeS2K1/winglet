@@ -38,6 +38,16 @@ export function mergeMessages(current: Message[], incoming: Message[], deletedId
   return [...history, ...local];
 }
 
+/**
+ * Messages read back from the on-device cache. A reply cached mid-stream will never get its next word from this run, so it
+ * comes back finished and marked `incomplete`; the server's copy replaces it at the next sync. Anything else is returned as is.
+ */
+export function restoredFromCache(list: Message[]): Message[] {
+  return list.some((m) => m.status === 'streaming')
+    ? list.map((m) => (m.status === 'streaming' ? { ...m, status: 'final', meta: { ...m.meta, incomplete: true } } : m))
+    : list;
+}
+
 /** Mark an optimistic send as failed, unless the server already confirmed it (e.g. over the socket). */
 export function markFailed(list: Message[], clientId: string, error?: string): Message[] {
   return list.map((m) => (m.id === clientId && m.status === 'pending' ? { ...m, status: 'failed',

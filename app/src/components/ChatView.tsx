@@ -651,6 +651,7 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
         </View>
       ) : null}
       {message.status === 'failed' ? <FailedActions server={server} message={message} right={mine} /> : null}
+      {message.meta?.incomplete ? <View style={s.state}><Text style={s.stateText}>May be incomplete</Text></View> : null}
     </>
   );
   const responseActions = isBot && latestReply && sendable && !message.meta?.picker ? <HoverBar message={message} actions={actions} serverId={server.id} inline /> : null;
