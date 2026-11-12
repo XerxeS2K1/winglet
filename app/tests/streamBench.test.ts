@@ -48,15 +48,27 @@ class Gc {
 
 type Counters = { listCopied: number; rowsBuilt: number; flushedMessages: number; flushedBytes: number; flushes: number; flushedChats: number };
 
-function build(options: { persist: boolean }) {
+function build(options: { persist: boolean; coalesce?: boolean }) {
   const counters: Counters = { listCopied: 0, rowsBuilt: 0, flushedMessages: 0, flushedBytes: 0, flushes: 0, flushedChats: 0 };
   let request: (...args: any[]) => Promise<any> = async () => ({ messages: [], deleted_ids: [] });
   let socket: any;
   const timers = new Map<number, () => void>();
   let nextTimer = 0;
   const clock = { now: 1_700_200_000_000 }; // the simulated wall clock: persist.ts decides by Date.now()
-  const vmTimers = { setTimeout: (fn: () => void) => { timers.set(++nextTimer, fn); return nextTimer; }, clearTimeout: (id: number) => timers.delete(id),
-    setInterval: () => 0, clearInterval: () => {} };
+  // The simulated time of the run, in ms. The 33 ms timers are the streaming frame (streamBuffer.ts); the rest is persistence.
+  const sim = { now: 0 };
+  const frames = new Map<number, { fn: () => void; due: number }>();
+  const vmTimers = {
+    setTimeout: (fn: () => void, ms?: number) => {
+      const id = ++nextTimer;
+      if (ms === 33) frames.set(id, { fn, due: sim.now + 33 }); else timers.set(id, fn);
+      return id;
+    },
+    clearTimeout: (id: number) => { timers.delete(id); frames.delete(id); },
+    setInterval: () => 0, clearInterval: () => {},
+  };
+  // `coalesce: false` is the store as it was before streamBuffer.ts: every update is written at once.
+  const passThrough = { canCoalesce: () => false, FRAME_MS: 33, createStreamBuffer: () => ({ add() {}, flush() {}, pending: () => 0 }) };
   class FakeSocket {
     readyState = 1;
     onmessage?: (event: any) => void;
@@ -88,6 +100,7 @@ function build(options: { persist: boolean }) {
     './recovery': { RecoveryCoordinator: FakeCoordinator },
     '../features/phone-tools/runtime': { phoneHello() {}, phoneEvent() {}, phoneDisconnect() {}, phoneVisibility() {} },
     './messages': helpers,
+    './streamBuffer': options.coalesce === false ? passThrough : compile('../src/lib/streamBuffer.ts', {}, vmTimers),
     './commands': { needsSignature: () => false },
     '../features/projects/logic': compile('../src/features/projects/logic.ts', {}),
     '../features/event-replay/session': compile('../src/features/event-replay/session.ts', { './protocol': compile('../src/features/event-replay/protocol.ts', {}) }),
@@ -107,7 +120,7 @@ function build(options: { persist: boolean }) {
   const persist = options.persist
     ? compile('../src/lib/persist.ts', { './cache': cache, './store': { useApp: store } }, { ...vmTimers, Date: { now: () => clock.now } }).attachPersistence()
     : () => {};
-  return { store, helpers, counters, timers, clock, setRequest: (fn: typeof request) => { request = fn; }, socket: () => socket, persist,
+  return { store, helpers, counters, timers, clock, sim, frames, setRequest: (fn: typeof request) => { request = fn; }, socket: () => socket, persist,
     event: (data: any) => socket.onmessage?.({ data: JSON.stringify(data) }) };
 }
 
@@ -143,12 +156,11 @@ function buildRows(helpers: any, messages: any[], typing: boolean, seen: Set<str
   return out.reverse();
 }
 
-type Row = { phase: string; total: number; updates: number; gcCount: number; gcMs: number; note?: string };
-
 /** `turn`: updates per reply. 60 = a reply streams for two seconds then the next starts; 600 = one long reply for the whole run. */
-async function run(options: { persist: boolean; rows: boolean; turn: number }) {
+async function run(options: { persist: boolean; rows: boolean; turn: number; rate?: number; coalesce?: boolean }) {
   const TURN_UPDATES = options.turn;
-  const h = build({ persist: options.persist });
+  const RATE = options.rate ?? PER_SECOND;
+  const h = build({ persist: options.persist, coalesce: options.coalesce });
   await h.store.getState().addServer({ id: 's', url: 'http://test', token: 't', deviceId: 'd', bot: { title: 'Test' } });
   h.store.getState().setVisibleChat({ serverId: 's', chatId: 'c1' });
   h.event({ type: 'hello', chats: CHATS.map((id) => ({ id, kind: 'chat', title: id })), pending: 0 });
@@ -161,6 +173,7 @@ async function run(options: { persist: boolean; rows: boolean; turn: number }) {
   assert.equal(cs().c1.length, HISTORY);
 
   let created = 1_700_100_000;
+  const lastSent: Record<string, any> = {};
   const stream = (chat: string, turn: number, step: number) => {
     const id = `${chat}-live${turn}`;
     const text = para(10 + step * 3, turn);
@@ -172,40 +185,71 @@ async function run(options: { persist: boolean; rows: boolean; turn: number }) {
   };
 
   const gc = new Gc();
-  const total = SECONDS * PER_SECOND;
-  let eventMs = 0, rowMs = 0, flushMs = 0, events = 0;
+  const total = SECONDS * RATE;
+  let eventMs = 0, rowMs = 0, flushMs = 0, events = 0, writes = 0, renders = 0;
   const seen = new Set((cs().c1 ?? []).map((m: any) => m.id));
+  let shownList: any[] | undefined = cs().c1;
+  h.store.subscribe(() => { writes++; });
+  /** What React does: the list is rebuilt when the visible chat's messages changed. */
+  const render = () => {
+    if (!options.rows || cs().c1 === shownList) return;
+    shownList = cs().c1;
+    const b = performance.now();
+    const rows = buildRows(h.helpers, shownList, true, seen);
+    rowMs += performance.now() - b;
+    renders++;
+    h.counters.rowsBuilt += rows.length;
+  };
+  /** Let the simulated time reach `t`: every streaming frame that falls due on the way ends, in order. */
+  const advance = (t: number) => {
+    for (;;) {
+      const next = [...h.frames.entries()].filter(([, f]) => f.due <= t).sort((x, y) => x[1].due - y[1].due)[0];
+      if (!next) break;
+      h.frames.delete(next[0]);
+      h.sim.now = next[1].due;
+      const a = performance.now();
+      next[1].fn();
+      eventMs += performance.now() - a;
+      render();
+    }
+    h.sim.now = t;
+  };
   gc.start();
   for (let sec = 0; sec < SECONDS; sec++) {
-    for (let k = 0; k < PER_SECOND; k++) {
-      const n = sec * PER_SECOND + k;
+    for (let k = 0; k < RATE; k++) {
+      advance(sec * 1000 + (k * 1000) / RATE);
+      const n = sec * RATE + k;
       const turn = Math.floor(n / TURN_UPDATES);
       const step = n % TURN_UPDATES;
       for (const chat of CHATS) {
         const ev = stream(chat, turn, step);
+        lastSent[chat] = ev.message;
         h.counters.listCopied += cs()[chat].length;
         const a = performance.now();
         h.event(ev);
         eventMs += performance.now() - a;
         events++;
-        if (options.rows && chat === 'c1') {
-          const b = performance.now();
-          const rows = buildRows(h.helpers, cs().c1, true, seen);
-          rowMs += performance.now() - b;
-          h.counters.rowsBuilt += rows.length;
-        }
+        if (chat === 'c1') render();
       }
     }
     // One second has passed: the one-second persistence timer fires.
+    advance((sec + 1) * 1000);
     h.clock.now += 1000;
     const f = performance.now();
     for (const [id, fn] of [...h.timers]) { h.timers.delete(id); fn(); }
     flushMs += performance.now() - f;
     h.counters.flushes++;
   }
+  advance(SECONDS * 1000 + 1000);
   await gc.stop();
   h.persist();
-  return { events, total, eventMs, rowMs, flushMs, gc, counters: h.counters, finalLength: cs().c1.length, h };
+  // Nothing lost, nothing out of order: each chat ends with exactly the last text the server sent.
+  for (const chat of CHATS) {
+    const mine = cs()[chat].find((m: any) => m.id === lastSent[chat].id);
+    assert.equal(mine.text, lastSent[chat].text, `${chat}: the final text is what the server sent`);
+    assert.equal(mine.status, lastSent[chat].status);
+  }
+  return { events, total, eventMs, rowMs, flushMs, gc, counters: h.counters, finalLength: cs().c1.length, h, writes, renders };
 }
 
 for (const turn of [60, 600]) {
@@ -219,11 +263,28 @@ for (const turn of [60, 600]) {
       `streamBench [${turn === 60 ? '2 s replies' : 'one 20 s reply'}]: ${CHATS.length} chats x ${HISTORY} messages, ${PER_SECOND} updates/s into each for ${SECONDS}s = ${withPersist.events} updates`,
       `  upsert via handleEvent, no persistence : ${bare.eventMs.toFixed(0)} ms total, ${per(bare.eventMs, bare.events)} per update, gc ${bare.gc.count} runs / ${bare.gc.pauseMs.toFixed(0)} ms`,
       `  upsert via handleEvent + persist listener: ${withPersist.eventMs.toFixed(0)} ms total, ${per(withPersist.eventMs, withPersist.events)} per update`,
-      `  row building (visible chat only)         : ${withPersist.rowMs.toFixed(0)} ms total, ${per(withPersist.rowMs, withPersist.events / CHATS.length)} per build, ${(c.rowsBuilt / (withPersist.events / CHATS.length)).toFixed(0)} rows per build`,
+      `  row building (visible chat only)         : ${withPersist.rowMs.toFixed(0)} ms total, ${per(withPersist.rowMs, withPersist.renders)} per build, ${withPersist.renders ? (c.rowsBuilt / withPersist.renders).toFixed(0) : 0} rows per build`,
       `  persist flush (stringify + AES-GCM)      : ${withPersist.flushMs.toFixed(0)} ms total, ${(withPersist.flushMs / SECONDS).toFixed(1)} ms per flush (once a second), ${(c.flushedChats / c.flushes).toFixed(1)} chats / ${(c.flushedMessages / c.flushes).toFixed(0)} messages / ${(c.flushedBytes / c.flushes / 1024).toFixed(0)} KiB per flush`,
       `  list entries copied per update (upsert)  : ${(c.listCopied / withPersist.events).toFixed(0)}`,
       `  chat length at the end                   : ${withPersist.finalLength} (started at ${HISTORY})`,
     ].join('\n'));
     assert.equal(withPersist.finalLength, HISTORY + Math.ceil(SECONDS * PER_SECOND / turn));
+  });
+}
+
+// Coalescing streamed updates (streamBuffer.ts): the same run, store writes and list rebuilds counted, with and without it.
+// 30 updates a second is one update per 33 ms frame, so it can only save the jitter; a model that streams faster shows the effect.
+for (const rate of [30, 90]) {
+  test(`coalescing, before and after: 4 chats x 300 messages, ${rate} updates a second into each, 2 s replies`, async () => {
+    const turn = rate * 2;
+    const before = await run({ persist: true, rows: true, turn, rate, coalesce: false });
+    const after = await run({ persist: true, rows: true, turn, rate, coalesce: true });
+    const per = (ms: number, n: number) => (n ? `${((ms * 1000) / n).toFixed(1)}` : '-');
+    const sec = (r: typeof before) => (r.eventMs + r.rowMs).toFixed(0);
+    const line = (name: string, r: typeof before) => `  ${name.padEnd(7)}| store writes ${String(r.writes).padStart(5)} | list rebuilds ${String(r.renders).padStart(5)} | handle ${per(r.eventMs, r.events).padStart(6)} us/update | rows ${per(r.rowMs, r.renders).padStart(6)} us/build | handle+rows ${sec(r).padStart(5)} ms | gc ${r.gc.count} runs / ${r.gc.pauseMs.toFixed(0)} ms`;
+    console.log(['', `streamBench coalescing [${rate} updates/s per chat, ${before.events} updates in ${SECONDS} s]`, line('before', before), line('after', after)].join('\n'));
+    // Counted, so deterministic: never more writes or rebuilds than before, and at 90/s far fewer.
+    assert.ok(after.writes <= before.writes && after.renders <= before.renders);
+    if (rate === 90) assert.ok(after.renders < before.renders / 2, 'a fast stream is written about once a frame');
   });
 }

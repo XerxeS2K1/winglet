@@ -66,6 +66,13 @@ function harness(os = 'web') {
     return exports;
   }
   const helpers = compile('../src/lib/messages.ts', {});
+  // The frame timer of streamed updates is driven by hand (`frame()`), apart from the reconnect timers in `timers`.
+  const frames: Array<{ fn: () => void; ms: number; live: boolean }> = [];
+  const streamModule = compile('../src/lib/streamBuffer.ts', {});
+  const streamBuffer = { ...streamModule, createStreamBuffer: (apply: any) => streamModule.createStreamBuffer(apply, {
+    set: (fn: () => void, ms: number) => { frames.push({ fn, ms, live: true }); return frames.length - 1; },
+    clear: (id: number) => { if (frames[id]) frames[id].live = false; },
+  }) };
   const handled = compile('../src/lib/handledNotifications.ts', {});
   const cleared: any[] = [];
   const perfCalls: any[] = [];
@@ -83,6 +90,7 @@ function harness(os = 'web') {
     './recovery': { RecoveryCoordinator: FakeCoordinator },
     '../features/phone-tools/runtime': { phoneHello: () => phoneCalls.push('hello'), phoneEvent: () => phoneCalls.push('event'), phoneDisconnect: () => phoneCalls.push('disconnect'), phoneVisibility: () => phoneCalls.push('visibility') },
     './messages': helpers,
+    './streamBuffer': streamBuffer,
     './commands': { needsSignature: (text: string) => /^\/(?:approve|yolo|approvals)(?:@[^\s]+)?(?:\s|$)/i.test(text.trim()) },
     '../features/projects/logic': projectHelpers,
     '../features/event-replay/session': replaySession,
@@ -113,6 +121,8 @@ function harness(os = 'web') {
     store, cache, played, phoneCalls, cleared, perfCalls, perfState, taskModel, setRequest: (fn: typeof request) => { request = fn; },
     setRecovery: (fn: typeof recoveryRequest) => { recoveryRequest = fn; },
     disconnect: () => { socket.readyState = 3; socket.onclose?.({ code: 1006 }); },
+    /** The end of the streaming frame: whatever waited is applied. */
+    frame: () => { const f = frames.find((x) => x.live); if (f) { f.live = false; f.fn(); } return !!f; }, frames,
     retry: () => timers.shift()?.(), timers, sockets, persisted: () => persisted, socket: () => socket, tick,
     event: (data: any) => socket.event(data),
     hello: async () => { socket.event({ type: 'hello', chats: [{ id: 'general', kind: 'chat', title: 'General' }], pending: 0 }); await tick(); },
@@ -1201,4 +1211,147 @@ test('with the timing switch off the store does no timing work at all on a send 
   h.event({ type: 'message.update', chat_id: 'general', message: { ...bot('r', 'Hi', 'final'), updated_at: 2 } });
   assert.deepEqual(h.perfCalls, [], 'perf must not be called, so its observation is never built');
   assert.equal(h.store.getState().runtime.s.messages.general.find((m: any) => m.id === 'r').text, 'Hi', 'the reply is still stored');
+});
+
+// ---- streamed updates are applied at most once a frame (src/lib/streamBuffer.ts) ----
+
+const live = (text: string, status = 'streaming', extra: Record<string, unknown> = {}) =>
+  ({ ...msg(1), id: 'r', position: 5, text, status, created_at: 10, updated_at: 10, ...extra });
+const textOf = (h: ReturnType<typeof harness>, id = 'r') => h.messages().find((m: any) => m.id === id)?.text;
+const writes = (h: ReturnType<typeof harness>) => { let n = 0; h.store.subscribe(() => { n++; }); return () => n; };
+
+test('streamed updates of a bot reply are applied once per frame, the first at once, the newest text wins', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H', 'streaming') });
+  const count = writes(h);
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });        // first of a frame: at once
+  assert.equal(textOf(h), 'He');
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hel') });       // these wait for the frame
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hell') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello') });
+  assert.equal(textOf(h), 'He', 'not written yet');
+  assert.equal(count(), 1);
+  h.frame();
+  assert.equal(textOf(h), 'Hello', 'the newest text, as the server sent it');
+  assert.equal(count(), 2, 'four updates, two store writes');
+});
+
+test('a finished reply applies what waited first, so the final text is what the server sent (same-second updates too)', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hel') });       // waiting
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello there.', 'final') }); // same updated_at as 'Hel'
+  assert.equal(textOf(h), 'Hello there.');
+  assert.equal(h.messages().find((m: any) => m.id === 'r').status, 'final');
+  while (h.frame()) { /* whatever frame is still open ends */ }
+  assert.equal(textOf(h), 'Hello there.', 'a late frame must not write the old text over the final one');
+  assert.equal(h.messages().find((m: any) => m.id === 'r').status, 'final');
+});
+
+test('a finished reply still ends the turn exactly once after waiting updates (typing, reply sound)', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'typing', chat_id: 'general', on: true });
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hel') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello.', 'final', { updated_at: 11 }) });
+  assert.deepEqual([...h.played], ['reply']);
+  assert.equal(h.store.getState().runtime.s.typing.general, undefined);
+});
+
+test('a new message, a delete and other events apply what waited first, in the order they came', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hey') });       // waiting
+  h.event({ type: 'message.new', chat_id: 'general', message: { ...msg(9), id: 'next', position: 6, role: 'user', text: 'and?' } });
+  assert.equal(textOf(h), 'Hey', 'the waiting text was applied before the new message');
+  assert.deepEqual([...h.messages().map((m: any) => m.id)], ['r', 'next']);
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hey!', 'streaming', { updated_at: 12 }) });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hey!!', 'streaming', { updated_at: 13 }) });   // waiting
+  h.event({ type: 'message.delete', chat_id: 'general', message_id: 'r' });
+  while (h.frame()) { /* nothing is left to bring it back */ }
+  assert.deepEqual([...h.messages().map((m: any) => m.id)], ['next'], 'a deleted reply does not come back');
+});
+
+test('only a bot reply that is still streaming waits: a user message, a finished or failed message is applied at once', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });       // opens the frame
+  h.event({ type: 'message.update', chat_id: 'general', message: { ...msg(8), id: 'u', position: 7, role: 'user', text: 'one', status: 'streaming' } });
+  assert.equal(textOf(h, 'u'), 'one', 'not from the bot');
+  h.event({ type: 'message.update', chat_id: 'general', message: { ...live('Hey', 'failed'), updated_at: 11 } });
+  assert.equal(textOf(h), 'Hey', 'a failed reply is not held back');
+});
+
+test('streams in two chats are held apart: a frame applies the newest text of each', async () => {
+  const h = harness();
+  await h.connect();
+  h.event({ type: 'hello', chats: [{ id: 'general', kind: 'chat', title: 'G' }, { id: 'other', kind: 'chat', title: 'O' }], pending: 0 });
+  await h.tick();
+  const inOther = (text: string) => ({ type: 'message.update', chat_id: 'other', message: { ...live(text), chat_id: 'other', id: 'o' } });
+  h.event({ type: 'message.new', chat_id: 'general', message: live('a') });
+  h.event({ type: 'message.new', chat_id: 'other', message: { ...live('x'), chat_id: 'other', id: 'o' } });
+  for (const t of ['b', 'c', 'd']) h.event({ type: 'message.update', chat_id: 'general', message: live(t) });
+  for (const t of ['y', 'z', 'w']) h.event(inOther(t));
+  h.frame();
+  assert.equal(textOf(h), 'd');
+  assert.equal(h.store.getState().runtime.s.messages.other.find((m: any) => m.id === 'o').text, 'w');
+});
+
+test('a dropped connection applies what waited at once, without waiting for a frame', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello, wor') });   // waiting
+  assert.equal(textOf(h), 'He');
+  h.disconnect();
+  assert.equal(textOf(h), 'Hello, wor');
+});
+
+test('going to the background applies what waited at once', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello, wor') });
+  h.store.getState().setForeground(false);
+  assert.equal(textOf(h), 'Hello, wor');
+});
+
+test('leaving the chat (the screen closing) applies what waited at once', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello, wor') });
+  h.store.getState().setVisibleChat(undefined);
+  assert.equal(textOf(h), 'Hello, wor');
+});
+
+test('a reload of the chat sees the waiting text, and saved replay state does not trail it', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello, wor') });
+  h.setRequest(async () => ({ messages: [], deleted_ids: [] }));
+  await h.store.getState().loadMessages('s', 'general');
+  assert.equal(textOf(h), 'Hello, wor', 'the reload kept the newest streamed text');
 });
