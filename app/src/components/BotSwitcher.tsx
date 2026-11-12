@@ -40,19 +40,20 @@ function BotList({ server, onDone, onSwitch }: { server: Server; onDone: () => v
   const t = useTheme();
   const servers = useApp((st) => st.servers);
   // Only what a row shows. `st.runtime` changes on every streamed token of every chat, and an open picker redrawing for each
-  // one is wasted work. Plain values per bot, so the shallow comparison can tell that nothing here changed.
+  // one is wasted work. Plain values per bot, so the shallow comparison can tell that nothing here changed. The row shows the
+  // connection's title and kind only, never its retry countdown, so `conn.nextRetryAt` is left out (add it back if a row ever shows it).
   const flat = useApp(useShallow((st) => st.servers.flatMap((x) => {
     const rt = st.runtime[x.id];
-    return [x.id, rt?.status, rt?.compat, rt?.conn.recovering, rt?.conn.nextRetryAt, rt?.pending, rt?.botActivity?.[x.profile ?? 'default']];
+    return [x.id, rt?.status, rt?.compat, rt?.conn.recovering, rt?.pending, rt?.botActivity?.[x.profile ?? 'default']];
   })));
   const network = useApp((st) => st.network);
   const select = useApp((st) => st.select);
   const chosen = usePrefs((st) => st.prefs.mainBot);
   const [queueBot, setQueueBot] = useState<Server>();
   const rows = new Map<string, { rt: ConnInput; pending?: number; activity?: BotActivity }>();
-  for (let i = 0; i < flat.length; i += 7) {
-    const [id, status, compat, recovering, nextRetryAt, pending, activity] = flat.slice(i, i + 7) as [string, ConnInput['status'], ConnInput['compat'], boolean | undefined, number | undefined, number | undefined, BotActivity | undefined];
-    rows.set(id, { rt: { status, compat, conn: { recovering, nextRetryAt } }, pending, activity });
+  for (let i = 0; i < flat.length; i += 6) {
+    const [id, status, compat, recovering, pending, activity] = flat.slice(i, i + 6) as [string, ConnInput['status'], ConnInput['compat'], boolean | undefined, number | undefined, BotActivity | undefined];
+    rows.set(id, { rt: { status, compat, conn: { recovering } }, pending, activity });
   }
   return <><ListGroup>
     {mainFirst(servers, chosen).map((x, i) => {

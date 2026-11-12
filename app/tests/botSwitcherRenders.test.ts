@@ -145,6 +145,19 @@ test('an open picker still follows what it shows: connection, activity, waiting 
   assert.deepEqual(describeRows(list.tree).map((r) => r.title), ['Alpha', 'Beta', 'Gamma'], 'a bot added while open appears');
 });
 
+test('the retry time of an offline bot is not on the row, so a new one does not redraw the open picker', () => {
+  const s = setup();
+  const { list } = openPicker(s);
+  const set = (over: any) => s.store.setState((st: any) => ({ runtime: { ...st.runtime, b: { ...st.runtime.b, ...over } } }));
+  set({ status: 'offline', conn: { nextRetryAt: 1 } });
+  const rows = JSON.stringify(describeRows(list.tree));
+  const before = list.renders;
+  for (let i = 2; i < 12; i++) set({ conn: { nextRetryAt: i } });     // the retry countdown moving on
+  assert.equal(list.renders - before, 0, 'the row shows the title only, not the countdown');
+  assert.equal(JSON.stringify(describeRows(list.tree)), rows, 'and the row reads the same');
+  assert.equal(describeRows(list.tree)[1].subtitle, "Can't reach Beta");
+});
+
 test('picking another bot from the list selects it', () => {
   const s = setup();
   const { list } = openPicker(s);
