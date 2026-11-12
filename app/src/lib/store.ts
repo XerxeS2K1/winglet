@@ -188,17 +188,15 @@ export function clearNotifications(serverId: string, tags: string[]) {
 }
 
 export const useApp = create<AppState>((set, get) => {
-  // Streamed updates wait here for the end of the frame (see streamBuffer.ts). Any other change to the store applies them
-  // first, so a finished reply, a delete, a reload or a cache write never sees an older copy or overtakes a waiting update.
-  let applyingStreamed = false;
-  const patch = (serverId: string, fn: (s: ServerState) => Partial<ServerState>) => {
-    if (!applyingStreamed) streamed.flush();
-    return set((state) => {
+  // Streamed updates wait here for the end of the frame (see streamBuffer.ts). Every place that changes the messages some
+  // other way calls streamed.flush() first, once, where it happens: handleEvent (finish, error, new message, delete, any
+  // other event), a dropped connection, background, a chat switch, a reload, deleting a chat. Nothing is flushed twice.
+  const patch = (serverId: string, fn: (s: ServerState) => Partial<ServerState>) =>
+    set((state) => {
       if (!state.servers.some((server) => server.id === serverId)) return state;
       const current = state.runtime[serverId] ?? emptyRuntime();
       return { runtime: { ...state.runtime, [serverId]: { ...current, ...fn(current) } } };
     });
-  };
 
   const upsertMessage = (serverId: string, chatId: string, message: Message) =>
     patch(serverId, (s) => {
@@ -219,10 +217,7 @@ export const useApp = create<AppState>((set, get) => {
       return { messages: { ...s.messages, [chatId]: mergeMessages(next, []) } };
     });
 
-  const streamed = createStreamBuffer((serverId, chatId, message) => {
-    applyingStreamed = true;
-    try { upsertMessage(serverId, chatId, message); } finally { applyingStreamed = false; }
-  }, { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) });
+  const streamed = createStreamBuffer((serverId, chatId, message) => upsertMessage(serverId, chatId, message), { set: (fn, ms) => setTimeout(fn, ms), clear: (id) => clearTimeout(id as ReturnType<typeof setTimeout>) });
 
   const setLocalStatus = (serverId: string, chatId: string, clientId: string, status: Message['status']) =>
     patch(serverId, (s) => ({
@@ -847,6 +842,7 @@ export const useApp = create<AppState>((set, get) => {
       try {
         const data = await api<{ messages: Message[]; deleted_ids?: string[] }>(server, `/api/chats/${encodeURIComponent(chatId)}/messages?limit=60${before}`);
         if (get().servers.find((s) => s.id === serverId) !== server) return false;
+        streamed.flush(); // a reload never lands on top of an older copy of a reply that is still waiting
         patch(serverId, (s) => {
           if (s.status === 'online' && !s.chats[chatId]) return {};
           // A live delete may have arrived after this snapshot was taken. Keep both sets so a stale
@@ -1062,6 +1058,7 @@ export const useApp = create<AppState>((set, get) => {
       const server = get().servers.find((s) => s.id === serverId);
       if (!server) return;
       await api(server, `/api/chats/${encodeURIComponent(chatId)}`, { method: 'DELETE' });
+      streamed.flush();
       forgetChat(serverId, chatId);
     },
 

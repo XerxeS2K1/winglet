@@ -1355,3 +1355,22 @@ test('a reload of the chat sees the waiting text, and saved replay state does no
   await h.store.getState().loadMessages('s', 'general');
   assert.equal(textOf(h), 'Hello, wor', 'the reload kept the newest streamed text');
 });
+
+test('deleting a chat or removing a server while a streamed update waits: the late frame does not bring the chat back', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.event({ type: 'message.new', chat_id: 'general', message: live('H') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('He') });
+  h.event({ type: 'message.update', chat_id: 'general', message: live('Hello') });   // waiting
+  h.setRequest(async () => ({}));
+  await h.store.getState().deleteChat('s', 'general');
+  while (h.frame()) { /* a frame that is still open */ }
+  assert.equal(h.store.getState().runtime.s.messages.general, undefined, 'the deleted chat stays deleted');
+  h.event({ type: 'message.new', chat_id: 'other', message: { ...live('x'), chat_id: 'other', id: 'o' } });
+  h.event({ type: 'message.update', chat_id: 'other', message: { ...live('y'), chat_id: 'other', id: 'o' } });
+  h.event({ type: 'message.update', chat_id: 'other', message: { ...live('z'), chat_id: 'other', id: 'o' } });   // waiting
+  await h.store.getState().removeServer('s', false);
+  while (h.frame()) { /* nothing is left to write */ }
+  assert.equal(h.store.getState().runtime.s, undefined, 'a removed server stays removed');
+});
