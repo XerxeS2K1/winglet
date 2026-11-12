@@ -150,6 +150,34 @@ test('a streamed edit while backgrounded is written immediately, not held', () =
   h.detach();
 });
 
+test('a chat switch writes at once only while something is held: with nothing held, pending edits still wait for the tick', () => {
+  for (const how of ['selection', 'visibleChat'] as const) {
+    const switchChat = (h: ReturnType<typeof harness>) =>
+      h.store.setState(how === 'selection' ? { selection: { serverId: 's', chatId: 'other' } } : { visibleChat: { serverId: 's', chatId: 'other' } });
+    // Nothing held: a draft is waiting for the one-second tick, and a switch must not cut that short.
+    const idle = seeded();
+    idle.store.setState({ drafts: { 'bot:chat': 'typed' } });
+    switchChat(idle);
+    assert.equal(idle.saved.get('drafts'), undefined, `${how}: not written by a switch while nothing is held`);
+    assert.equal(idle.timers.size, 1, `${how}: still waiting for its tick`);
+    idle.tick();
+    assert.equal(idle.saved.get('drafts')['bot:chat'], 'typed', `${how}: written at the tick`);
+    idle.detach();
+    // Something held: the same switch writes everything pending at once.
+    const busy = seeded();
+    busy.store.setState(chatState('one', 'streaming'));
+    busy.tick();
+    busy.store.setState({ ...chatState('two', 'streaming'), drafts: { 'bot:chat': 'typed' } });
+    busy.tick();
+    assert.equal(savedText(busy), 'one', `${how}: held`);
+    busy.store.setState({ drafts: { 'bot:chat': 'typed more' } });
+    switchChat(busy);
+    assert.equal(busy.saved.get('drafts')['bot:chat'], 'typed more', `${how}: written at once while a reply is held`);
+    assert.equal(savedText(busy), 'two', `${how}: and so is the held reply`);
+    busy.detach();
+  }
+});
+
 test('holding a streaming chat back does not hold back drafts or other chats', () => {
   const h = seeded();
   h.store.setState(chatState('one', 'streaming'));
