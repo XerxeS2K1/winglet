@@ -176,3 +176,19 @@ test('a reply still streaming in is not taken for friendly progress, even if its
   // Tool lines with the tool's own name are progress however they arrive.
   assert.equal(activityKind(say('p', '🔍 web_search: "cats"', { status: 'streaming' })), 'sure');
 });
+
+test('a message is classified once: the rows are rebuilt on every streamed update and must not re-read every old message', () => {
+  let reads = 0;
+  const old = { id: 'o', chat_id: 'c', role: 'bot', status: 'final', meta: {}, created_at: 1, updated_at: 1,
+    get text() { reads++; return '🔍 web_search: "cats"'; } } as unknown as Message;
+  assert.equal(activityKind(old), 'sure');
+  const after = reads;
+  assert.ok(after > 0);
+  for (let i = 0; i < 5; i++) assert.equal(activityKind(old), 'sure');
+  groupActivity([old], true);
+  assert.equal(reads, after, 'the answer is remembered for the same message object');
+  const next = { ...old, text: 'A plain answer.', status: 'streaming' } as Message;           // an update is a new object
+  assert.equal(activityKind(next), null);
+  assert.equal(activityKind(old), 'sure');
+  assert.equal(activityKind({ ...old, text: 'Changed.' } as Message), null);
+});
