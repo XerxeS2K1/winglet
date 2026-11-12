@@ -95,7 +95,7 @@ test('a chat that is still streaming is written at most every STREAMING_WRITE_MS
     assert.equal(savedText(h), 'one', `held back at second ${i}`);   // no write while the reply streams
     assert.equal(h.timers.size, 1, 'and it is looked at again, not forgotten');
   }
-  h.tick(h.hold - 3000);                                 // the hold is up (three ticks have passed since the write): due
+  h.tick(h.hold - 3000);                                 // the hold is up (3 s of it passed in the three ticks above, this is the rest): due
   assert.equal(savedText(h), 'word 4');
   h.store.setState(chatState('word 5', 'streaming'));
   h.tick();
@@ -104,6 +104,23 @@ test('a chat that is still streaming is written at most every STREAMING_WRITE_MS
   h.tick();                                              // the reply ended: written without waiting out the hold
   assert.equal(savedText(h), 'The whole reply.');
   assert.equal(h.timers.size, 0);
+  h.detach();
+});
+
+test('the hold is 30 seconds, not the 5 it used to be: pinned by value and by behaviour, so reverting it fails', () => {
+  const h = seeded();
+  assert.equal(h.hold, 30_000, 'a decided figure (Kraig, 30 s): change this test only with that decision');
+  h.store.setState(chatState('first', 'streaming'));
+  h.tick();                                              // the first write is never held
+  assert.equal(savedText(h), 'first');
+  for (let s = 1; s < 30; s++) {                         // a new word every second for 29 s, far past the old 5 s
+    h.store.setState(chatState(`second ${s}`, 'streaming'));
+    h.tick();
+    assert.equal(savedText(h), 'first', `still held ${s} s after the write`);
+  }
+  h.store.setState(chatState('second 30', 'streaming'));
+  h.tick();                                              // 30 s after the write: due
+  assert.equal(savedText(h), 'second 30');
   h.detach();
 });
 
