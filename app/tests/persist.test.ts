@@ -28,7 +28,7 @@ function harness() {
   });
   const writes: string[] = [];
   const tick = (ms = 1000) => { clock.now += ms; for (const [id, fn] of [...timers]) { timers.delete(id); fn(); } };
-  return { store, saved, timers, events, clock, tick, detach: exports.attachPersistence() };
+  return { store, saved, timers, events, clock, tick, hold: exports.STREAMING_WRITE_MS as number, detach: exports.attachPersistence() };
 }
 
 test('backgrounding immediately saves the latest text, ready files and reply before the debounce', () => {
@@ -84,7 +84,7 @@ function seeded() {
 }
 const savedText = (h: ReturnType<typeof harness>) => h.saved.get('msgs:s:c')?.at(-1)?.text;
 
-test('a chat that is still streaming is written at most every few seconds, and a finished reply at the next tick', () => {
+test('a chat that is still streaming is written at most every STREAMING_WRITE_MS, and a finished reply at the next tick', () => {
   const h = seeded();
   h.store.setState(chatState('one', 'streaming'));
   h.tick();                                              // first write is never held
@@ -95,13 +95,13 @@ test('a chat that is still streaming is written at most every few seconds, and a
     assert.equal(savedText(h), 'one', `held back at second ${i}`);   // no write while the reply streams
     assert.equal(h.timers.size, 1, 'and it is looked at again, not forgotten');
   }
-  h.tick(2000);                                          // five seconds since the write: due
+  h.tick(h.hold - 3000);                                 // the hold is up (three ticks have passed since the write): due
   assert.equal(savedText(h), 'word 4');
   h.store.setState(chatState('word 5', 'streaming'));
   h.tick();
   assert.equal(savedText(h), 'word 4');
   h.store.setState(chatState('The whole reply.', 'final'));
-  h.tick();                                              // the reply ended: written without waiting out the five seconds
+  h.tick();                                              // the reply ended: written without waiting out the hold
   assert.equal(savedText(h), 'The whole reply.');
   assert.equal(h.timers.size, 0);
   h.detach();
@@ -197,8 +197,8 @@ test('a new reply that starts streaming right after a finished one is held like 
   h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, messages: { c: [...finished, next] } } } });
   h.tick();
   assert.equal(savedText(h), 'The whole reply.', 'a new streaming reply, nothing earlier changed: held');
-  h.tick(5000);
-  assert.equal(savedText(h), 'next', 'and written once the five seconds are up');
+  h.tick(h.hold);
+  assert.equal(savedText(h), 'next', 'and written once the hold is up');
   h.detach();
 });
 
@@ -209,7 +209,7 @@ test('what is remembered about a streaming chat goes when the chat does', () => 
   h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, chats: {}, messages: {} } } });   // the chat is deleted (its list of chats changes, so a flush runs)
   h.tick();
   h.saved.clear();
-  h.store.setState(chatState('one', 'streaming'));      // the same chat comes back, inside the five seconds
+  h.store.setState(chatState('one', 'streaming'));      // the same chat comes back, inside the hold
   h.tick();
   assert.equal(savedText(h), 'one', 'an old entry would have held this back as "unchanged"');
   h.detach();
