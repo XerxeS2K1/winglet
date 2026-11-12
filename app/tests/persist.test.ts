@@ -121,7 +121,7 @@ test('what is remembered about a streaming chat goes when the chat does', () => 
   h.store.setState({ runtime: { s: { ...h.store.getState().runtime.s, chats: {}, messages: {} } } });   // the chat is deleted (its list of chats changes, so a flush runs)
   h.tick();
   h.saved.clear();
-  h.store.setState(chatState('one', 'streaming'));      // the same chat comes back, inside the five seconds
+  h.store.setState(chatState('one', 'streaming'));      // the same chat comes back, inside the hold
   h.tick();
   assert.equal(savedText(h), 'one', 'an old entry would have held this back as "unchanged"');
   h.detach();
