@@ -143,27 +143,37 @@ function RecordedRun() {
   const [error, setError] = useState('');
   const [stale, setStale] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [refresh, setRefresh] = useState(0);
+  // Which run is known to be finished. It outlives the effect, so a re-run (say the bot reconnecting) does not start
+  // polling a finished run again, and a different run is never taken for finished. A manual refresh calls the current
+  // load through `reload` rather than restarting the effect and its clock.
+  const finished = useRef('');
+  const runKey = `${routineId}/${runId}`;
+  const reload = useRef<() => void>(() => undefined);
   useEffect(() => {
-    let active = true, pending = false, terminal = false;
-    const load = async () => {
-      if (!server || !owner || !supported || !runId || pending) return;
+    let active = true, pending = false, queued = false;
+    const load = async (manual = false) => {
+      if (!active || !server || !owner || !supported || !runId) return;
+      if (pending) { if (manual) queued = true; return; }
       pending = true;
       try {
         const d = await api<{ run: RoutineRun; stale?: boolean }>(server,
           `/api/routine-history/${encodeURIComponent(routineId)}/run/${encodeURIComponent(runId)}`);
-        if (active) { setRun(d.run); setStale(!!d.stale); setError(''); terminal = !['running','pending'].includes(d.run.status); }
+        if (active) { setRun(d.run); setStale(!!d.stale); setError(''); finished.current = ['running','pending'].includes(d.run.status) ? '' : runKey; }
       } catch (e) { if (active) setError((e as Error).message); }
-      finally { pending = false; }
+      finally {
+        pending = false;
+        if (active && queued) { queued = false; void load(); }
+      }
     };
+    reload.current = () => void load(true);
     void load();
-    const timer = setInterval(() => { if (online && !terminal) void load(); }, 5000);
-    return () => { active = false; clearInterval(timer); };
-  }, [server, routineId, runId, owner, supported, online, refresh]);
-  return <Screen title={run?.title || 'Run'} onRefresh={() => setRefresh(x => x + 1)}>
+    const timer = setInterval(() => { if (online && finished.current !== runKey) void load(); }, 5000);
+    return () => { active = false; queued = false; clearInterval(timer); };
+  }, [server, routineId, runId, owner, supported, online]);
+  return <Screen title={run?.title || 'Run'} onRefresh={() => reload.current()}>
     {!server ? <Text style={s.note}>This bot is no longer paired.</Text> : !owner ? <Text style={s.note}>Only an owner can read scheduled-run output.</Text>
       : !supported && rt?.info ? <Text style={s.note}>Update Winglet on this server to view run details.</Text>
-      : error && !run ? <LoadError message={error} onRetry={() => setRefresh(x => x + 1)} />
+      : error && !run ? <LoadError message={error} onRetry={() => reload.current()} />
       : !run ? <View style={s.stack}>{[80, 140].map(h => <Skeleton key={h} height={h} radius={16} />)}</View> : <>
         <View style={[s.stack, { marginTop: 18 }]}>
           {error ? <Text style={s.notice}>{error}</Text> : null}

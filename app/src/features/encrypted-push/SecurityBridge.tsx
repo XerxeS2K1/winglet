@@ -6,6 +6,7 @@ import {usePrefs} from '../../lib/prefs';
 import {useApp} from '../../lib/store';
 import {pushNative} from './native';
 import {syncEncryptedPush} from './api';
+import {repairEncryptedPush} from './repair';
 export function PushSecurityBridge(){
   const locked=useLock(st=>st.locked),hiddenAt=useLock(st=>st.hiddenAt);
   const loaded=usePrefs(st=>st.loaded),appLock=usePrefs(st=>st.prefs.appLock);
@@ -29,18 +30,11 @@ export function PushSecurityBridge(){
     if(!pushNative || !ready || !loaded || locked || !foreground)return;
     const native=pushNative,controller=new AbortController();
     // Endpoint migrations repair only previously activated enrollments; no new opt-in.
-    let running=false;
-    const repair=async()=>{
-      if(running || controller.signal.aborted)return;running=true;
-      try{for(const server of servers.filter(s=>!s.parent && online.split('|').includes(s.id))){
-        if(controller.signal.aborted)break;
-        try{const local=await native.status(server.id,server.deviceId);
-          if(local.active && local.needsSync && !controller.signal.aborted)await syncEncryptedPush(server,controller.signal);
-        }catch{/* Repair remains visible in notification settings. */}
-      }}finally{running=false;}
-    };
+    // Keyed on the online server ids, not the `servers` array: a store write that leaves the ids alone must not restart this.
+    const repair=()=>repairEncryptedPush({signal:controller.signal,servers:useApp.getState().servers,online,
+      status:(id,device)=>native.status(id,device),sync:syncEncryptedPush});
     void repair();const timer=setInterval(()=>void repair(),30000);
     return ()=>{controller.abort();clearInterval(timer);};
-  },[ready,loaded,locked,foreground,online,servers]);
+  },[ready,loaded,locked,foreground,online]);
   return null;
 }

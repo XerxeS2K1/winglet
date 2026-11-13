@@ -65,13 +65,17 @@ function ServerScreen() {
   const focusGeneration = useRef(0);
   useEffect(() => { active.current = true; return () => { active.current = false; }; }, []);
 
+  // The poll below must not restart on every store write: keep the latest server object in a ref and key `load` on the
+  // scope (id, address, device) instead, so only a different server or address restarts it.
+  const latestServer = useRef(server); latestServer.current = server;
   const load = useCallback(() => {
+    const server = latestServer.current;
     if (!server) return;
     const requestedScope = serverScope(server);
     api<SystemInfo>(server, '/api/system').then((d) => {
       if (active.current && currentScope.current === requestedScope) { setInfo({ scope: requestedScope, value: d }); setError(''); }
     }).catch((e) => { if (active.current && currentScope.current === requestedScope) setError((e as Error).message); });
-  }, [server]);
+  }, [scope]);
   const check = useCallback((force = false) => {
     if (!server) return;
     setChecking(true);

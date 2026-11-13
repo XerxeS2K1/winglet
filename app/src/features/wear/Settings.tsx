@@ -12,6 +12,7 @@ import type {Chat,Server} from '../../lib/types';
 import {wearNative as defaultWearNative,type WearNative,type WatchPending,type WatchLink} from './native';
 import {linkWatch,revokeWatch,watchGrants,type RemoteWatch} from './api';
 import {watchScope,type WatchScope} from './model';
+import {startWearPolling} from './polling';
 
 export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:WearNative|null}){
   const wearNative=nativeClient;
@@ -24,17 +25,20 @@ export function WearSettings({nativeClient=defaultWearNative}:{nativeClient?:Wea
   const [details,setDetails]=useState(false);
   const alive=useRef(false),action=useRef<AbortController|null>(null);
   const frozen=useRef<{server:Server;scope:WatchScope;background:boolean}|null>(null);
-  const refresh=useCallback(async()=>{
-    if(!wearNative)return;
+  // Resolves false only when the watch setup is known to be unsupported, so the poll below never starts for it.
+  const refresh=useCallback(async():Promise<boolean>=>{
+    if(!wearNative)return false;
     try{
-      const cap=await wearNative.capabilities();if(!alive.current)return;setSupported(cap.supported);
-      if(!cap.supported)return;
-      const local=await wearNative.status();if(!alive.current)return;setPending(local.pending);setLinks(local.links);
+      const cap=await wearNative.capabilities();if(!alive.current)return true;setSupported(cap.supported);
+      if(!cap.supported)return false;
+      const local=await wearNative.status();if(!alive.current)return true;setPending(local.pending);setLinks(local.links);
     }catch(e){if(alive.current)setError((e as Error).message);}
+    return true;
   },[wearNative]);
   useFocusEffect(useCallback(()=>{
-    alive.current=true;void refresh();const timer=setInterval(()=>void refresh(),3000);
-    return()=>{alive.current=false;action.current?.abort();clearInterval(timer);};
+    alive.current=true;
+    const stop=startWearPolling({refresh,busy:()=>!!action.current});
+    return()=>{alive.current=false;action.current?.abort();stop();};
   },[refresh]));
   useEffect(()=>{
     const controller=new AbortController();setSelected([]);setChats([]);setRemote([]);frozen.current=null;
