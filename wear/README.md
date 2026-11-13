@@ -18,6 +18,22 @@ or expiry refuses later gateway operations. An offline local unlink also needs
 server revocation when the phone reconnects. No approval shortcut is provided:
 Open on phone posts a generic notification for the user to tap.
 
+## Phone settings refresh (unreleased)
+
+The phone's Wear OS settings screen has its own refresh clock, separate from the
+watch app. These changes are [unreleased work in PR #86](https://github.com/XerxeS2K1/winglet/pull/86),
+not part of v0.12.2.
+
+Opening the screen checks whether watch setup is supported on this phone. If it
+is supported, the screen refreshes every three seconds while focused. Periodic
+refreshes are skipped while a watch action is running; the action refreshes when
+it finishes. If setup is known to be unsupported, polling does not start, or stops
+if a later check reports unsupported. Leave and reopen the settings screen to
+check again if support becomes available after polling stopped.
+
+This does not change the watch app's ten-second active-screen polling described
+below, or its privacy and permission rules.
+
 ## Build
 
 JDK 17+ (local validation uses JDK 25), SDK 36, AGP 8.12.0, Kotlin 2.1.20,

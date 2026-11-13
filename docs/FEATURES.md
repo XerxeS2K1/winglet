@@ -113,6 +113,10 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   the APK. The server keeps its signed authorization, backup, idle-chat restart and rollback checks. Publication and
   physical-phone verification are recorded separately in [the app plan](APP_PLAN.md). See [server update safety](SERVER_PLUGIN_UPDATE.md).
 - **Schedule.** Routines in plain words ("weekdays at 9am", "every 2h"), with their results in the Updates chat.
+  Recorded-run details automatically request updates until a terminal result is known; manual refresh remains
+  available afterwards. Refresh or Retry during an in-flight request queues one follow-up rather than
+  overlapping or dropping it. This refresh change is [unreleased work in PR #86](https://github.com/XerxeS2K1/winglet/pull/86),
+  not part of v0.12.2.
 - **Logs** from Hermes, with keys and tokens hidden.
 - **Sessions:** every conversation your agent has had, in any app or routine. Search what was said and read
   any of them back, with the tools it used.

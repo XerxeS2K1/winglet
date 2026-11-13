@@ -6,6 +6,7 @@ import { Button, Card, Footnote, Segmented, Toggle } from '../components/ui';
 import { decideDeviceLink, previewDeviceLink, type LinkPreview } from '../lib/deviceLinks';
 import { useApp } from '../lib/store';
 import { makeStyles } from '../lib/themeContext';
+import { useExpired } from '../lib/useNow';
 import type { Role } from '../lib/types';
 
 export default function LinkDeviceScreen() {
@@ -20,7 +21,6 @@ function Approval({ link }: { link: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [done, setDone] = useState('');
-  const [now, setNow] = useState(Date.now());
   const running = useRef(false), active = useRef(true);
   useEffect(() => {
     active.current = true;
@@ -29,11 +29,8 @@ function Approval({ link }: { link: string }) {
       .catch((e) => { if (active.current) setError(e.status === 404 ? 'This request expired. Choose New QR in the browser.' : e.message); });
     return () => { active.current = false; };
   }, [link]);
-  useEffect(() => {
-    if (!preview || done) return;
-    const timer = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [preview, done]);
+  // Checks the clock every second but re-renders the screen only once, when the request expires.
+  const expired = useExpired(preview ? preview.expires_at * 1000 : null, !!preview && !done);
   const decide = async (action: 'approve' | 'deny') => {
     if (!preview || running.current) return;
     running.current = true; setBusy(true); setError('');
@@ -44,7 +41,6 @@ function Approval({ link }: { link: string }) {
     } catch (e) { if (active.current) setError((e as Error).message); }
     finally { running.current = false; if (active.current) setBusy(false); }
   };
-  const expired = !!preview && now >= preview.expires_at * 1000;
   return <Screen title="Browser sign-in">
     {preview && !done ? <Card style={{ gap: 16 }}>
       <Text style={s.address} selectable>{preview.server.url}</Text>

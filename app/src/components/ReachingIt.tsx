@@ -13,8 +13,9 @@ import { api, moveServer } from '../lib/api';
 import { checkAddress, connectionView, deliverySummary, diagnosticReport, modeSummary, span, tunnelSummary } from '../lib/connection';
 import { haptic } from '../lib/haptics';
 import { describeTestPush, sendTestPush } from '../lib/push';
-import { APP_PROTOCOL, isOwner, useApp, useServerState } from '../lib/store';
+import { APP_PROTOCOL, isOwner, useApp, useServerState, type ServerState } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
+import { useNow } from '../lib/useNow';
 import type { ConnectionStatus, Server } from '../lib/types';
 
 /**
@@ -33,7 +34,6 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
   const [copied, setCopied] = useState(false);
   const [testing, setTesting] = useState(false);
   const [details, setDetails] = useState(false);
-  const [now, setNow] = useState(Date.now());
   const supported = !!rt?.info?.features?.connection_status;
   const online = rt?.status === 'online';
 
@@ -48,12 +48,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
     const id = setInterval(load, 10_000);
     return () => clearInterval(id);
   }, [online, load]);
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
 
-  const view = connectionView(network, rt, server.bot.title, now);
   const owner = isOwner(rt);
   const native = Platform.OS !== 'web';
   const appVersion = Constants.expoConfig?.version ?? '';
@@ -67,7 +62,6 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
   // Polling stops while the server is unreachable: what's shown is then only the last known state.
   const stale = !!status && !online;
   const offered = status?.url && status.url !== server.url && native ? status.url : null;
-  const statusColor = view.kind === 'online' ? t.colors.success : view.tone === 'error' ? t.colors.danger : t.colors.warning;
 
   const rows: [string, string, boolean][] = [
     ['Phone network', network ? 'Online' : 'Offline', false],
@@ -78,10 +72,6 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
       ['Hermes', rt?.info?.hermes_version || 'Unknown', false] as [string, string, boolean],
     ] : []),
   ];
-  const since = status?.mode === 'quick' && status.address_since && !stale
-    ? `This address has worked for ${span(now - status.address_since * 1000)}${status.address_changes
-      ? `. It has changed ${status.address_changes === 1 ? 'once' : `${status.address_changes} times`}` : ''}.`
-    : null;
 
   return (
     <>
@@ -89,9 +79,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
       <ConnectionBanner server={server} hideDetails />
       <SyncStatus serverId={server.id} details />
       <ListGroup style={{ marginTop: t.space.md }}>
-        <ListRow icon={<View style={[s.dot, { backgroundColor: statusColor }]} />}
-          title={view.kind === 'online' ? 'Online' : view.title}
-          value={status ? modeSummary(status.mode).title : undefined} />
+        <StatusRow network={network} rt={rt} bot={server.bot.title} mode={status ? modeSummary(status.mode).title : undefined} />
       </ListGroup>
 
       {supported && online && !status ? (
@@ -102,7 +90,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
           <SectionHeader title={`How phones reach ${server.bot.title}`} />
           {stale ? <Footnote>Last known, from before this phone lost {server.bot.title}. Updates when the connection is back.</Footnote> : null}
           <ListGroup>
-            {status.tunnel ? <TunnelRow tunnel={status.tunnel} now={now} checkedAt={stale ? checkedAt : null} /> : null}
+            {status.tunnel ? <TunnelRow tunnel={status.tunnel} checkedAt={stale ? checkedAt : null} /> : null}
             <ListRow icon={<Globe size={18} color={t.colors.textSecondary} />} title="Address it gives out"
               subtitle={status.url ?? undefined}
               value={status.url ? undefined : status.mode === 'quick' ? 'None right now' : 'Not set'}
@@ -111,7 +99,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
           {status.mode === 'quick' ? (
             <Footnote>Automatic HTTPS is a free Cloudflare tunnel. Cloudflare can see what passes through it, and the address changes when the tunnel restarts.</Footnote>
           ) : null}
-          {since ? <Footnote>{since}</Footnote> : null}
+          {status.mode === 'quick' && !stale ? <AddressAge status={status} /> : null}
           {offered ? (
             <Card style={{ gap: t.space.sm, marginTop: t.space.md }}>
               <Text style={s.body}>This phone uses a different address. Switch if the one above works here.</Text>
@@ -126,10 +114,10 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
         <ListRow icon={<Smartphone size={18} color={t.colors.textSecondary} />} title="Address" subtitle={server.url}
           right={<CopyButton label="Copy this phone's address" onPress={() => copy(server.url)} />} />
         {native ? <ListRow icon={<Pencil size={18} color={t.colors.textSecondary} />} title="Change address" onPress={() => setMoving('')} /> : null}
-        <RecoveryRow server={server} status={status} now={now} />
+        <RecoveryRow server={server} status={status} />
       </ListGroup>
 
-      {status ? <Notifications server={server} status={status} now={now} testing={testing} onTest={async () => {
+      {status ? <Notifications server={server} status={status} testing={testing} onTest={async () => {
         setTesting(true);
         try {
           const result = await sendTestPush(server);
@@ -180,12 +168,7 @@ export function ReachingIt({ server, showVersions = false }: { server: Server; s
             {rows.map(([k, v, long]) => <ListRow key={k} title={k} value={long ? undefined : v} subtitle={long ? v : undefined} />)}
           </ListGroup>
           <SectionHeader title="Recent events" />
-          <ListGroup>
-            {(rt?.conn.history ?? []).slice().reverse().map((h, i) => (
-              <ListRow key={`${h.t}-${i}`} title={`${h.status}${h.note ? ` · ${h.note}` : ''}`} value={ago(now - h.t)} />
-            ))}
-            {!rt?.conn.history.length ? <ListRow title="Nothing yet." /> : null}
-          </ListGroup>
+          <RecentEvents history={rt?.conn.history ?? []} />
         </>
       ) : null}
       <Footnote>Contains no passwords, tokens, addresses or messages. Paste it when asking for help.</Footnote>
@@ -208,14 +191,46 @@ function recoveryState(server: Server, status: ConnectionStatus | null, now: num
   return { value: 'On', detail: ['Finds the new address by itself.', last?.replace('Last one', 'Last update')].filter(Boolean).join(' ') };
 }
 
-function RecoveryRow({ server, status, now }: { server: Server; status: ConnectionStatus | null; now: number }) {
+// The one-second clock lives in these small leaf components, so a tick re-renders only the line that prints a time, not
+// the whole section.
+function StatusRow({ network, rt, bot, mode }: { network: boolean; rt: ServerState | undefined; bot: string; mode?: string }) {
   const t = useTheme();
+  const s = useStyles();
+  const view = connectionView(network, rt, bot, useNow());
+  const statusColor = view.kind === 'online' ? t.colors.success : view.tone === 'error' ? t.colors.danger : t.colors.warning;
+  return <ListRow icon={<View style={[s.dot, { backgroundColor: statusColor }]} />}
+    title={view.kind === 'online' ? 'Online' : view.title} value={mode} />;
+}
+
+function AddressAge({ status }: { status: ConnectionStatus }) {
+  const now = useNow();
+  if (!status.address_since) return null;
+  return <Footnote>{`This address has worked for ${span(now - status.address_since * 1000)}${status.address_changes
+    ? `. It has changed ${status.address_changes === 1 ? 'once' : `${status.address_changes} times`}` : ''}.`}</Footnote>;
+}
+
+function RecentEvents({ history }: { history: ServerState['conn']['history'] }) {
+  const now = useNow();
+  return (
+    <ListGroup>
+      {history.slice().reverse().map((h, i) => (
+        <ListRow key={`${h.t}-${i}`} title={`${h.status}${h.note ? ` · ${h.note}` : ''}`} value={ago(now - h.t)} />
+      ))}
+      {!history.length ? <ListRow title="Nothing yet." /> : null}
+    </ListGroup>
+  );
+}
+
+function RecoveryRow({ server, status }: { server: Server; status: ConnectionStatus | null }) {
+  const t = useTheme();
+  const now = useNow();
   const { value, detail } = recoveryState(server, status, now);
   return <ListRow icon={<ShieldCheck size={18} color={t.colors.textSecondary} />} title="Address recovery" value={value} subtitle={detail} />;
 }
 
-function TunnelRow({ tunnel, now, checkedAt }: { tunnel: NonNullable<ConnectionStatus['tunnel']>; now: number; checkedAt: number | null }) {
+function TunnelRow({ tunnel, checkedAt }: { tunnel: NonNullable<ConnectionStatus['tunnel']>; checkedAt: number | null }) {
   const t = useTheme();
+  const now = useNow();
   const s = useStyles();
   const line = tunnelSummary(tunnel, now, checkedAt);
   const color = { ok: t.colors.success, warn: t.colors.warning, info: t.colors.accent, unknown: t.colors.textTertiary }[line.tone];
@@ -230,10 +245,11 @@ function TunnelRow({ tunnel, now, checkedAt }: { tunnel: NonNullable<ConnectionS
   );
 }
 
-function Notifications({ server, status, now, testing, onTest }: {
-  server: Server; status: ConnectionStatus; now: number; testing: boolean; onTest: () => void;
+function Notifications({ server, status, testing, onTest }: {
+  server: Server; status: ConnectionStatus; testing: boolean; onTest: () => void;
 }) {
   const t = useTheme();
+  const now = useNow();
   const channel = status.push.encrypted ? 'Encrypted Winglet notifications' : status.push.ntfy ? `ntfy app (${status.push.ntfy_server})` : status.push.webpush ? 'Browser notifications' : null;
   const last = deliverySummary(status.push.last, now);
   return (
