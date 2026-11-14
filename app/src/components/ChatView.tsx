@@ -1,7 +1,7 @@
 import { BlurTargetView } from 'expo-blur';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ActivityIndicator, FlatList, Keyboard, Platform, Pressable, Share as SystemShare, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Animated, {
@@ -548,6 +548,7 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
         maxToRenderPerBatch={12}
         windowSize={11}
         removeClippedSubviews={Platform.OS === 'android'}
+        CellRendererComponent={TOUCH ? undefined : RaisedCell}
       />
       {away !== null ? (
         <Animated.View entering={ZoomIn.duration(220).easing(easeOut)} exiting={FadeOut.duration(140)} style={[s.jump, { bottom: bottom + 12 }]}>
@@ -710,11 +711,10 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
     <Animated.View entering={entering} style={s.lane}>
       <Flash on={flash} />
       <SwipeToReply enabled={TOUCH && Platform.OS !== 'web' && sendable && !/```|\|\s*-{3}/.test(message.text)} onReply={() => actions.reply(message)}>
+        <HoverArea on={!TOUCH} onChange={setHover}>
         <Pressable
           onLongPress={TOUCH && sendable ? () => { haptic.light(); actions.open(message); } : undefined}
           delayLongPress={320}
-          onHoverIn={() => setHover(true)}
-          onHoverOut={() => setHover(false)}
           accessibilityLabel={describe(message, isBot ? server.bot.title : 'You', attachments.length)}
           accessibilityActions={sendable ? [{ name: 'longpress', label: 'Message options' }, { name: 'reply', label: 'Reply' }] : undefined}
           onAccessibilityAction={(e) => (e.nativeEvent.actionName === 'reply' ? actions.reply(message) : actions.open(message))}
@@ -723,6 +723,7 @@ const MessageRow = memo(function MessageRow({ server, message, first, last, live
           {content}
           {toolbar}
         </Pressable>
+        </HoverArea>
       </SwipeToReply>
     </Animated.View>
   );
@@ -790,6 +791,24 @@ function ReplyQuote({ server, reply, onAccent, onPress }: { server: Server; repl
       </View>
     </Pressable>
   );
+}
+
+/**
+ * Mouse only. A row's hover toolbar overhangs the row above it, and each later (older) cell paints over the one before, so
+ * that row covered the toolbar's top edge and took the pointer there, which hid the toolbar. Newer rows go on top instead.
+ */
+function RaisedCell({ index, style, children, onLayout, onFocusCapture }: ComponentProps<NonNullable<ComponentProps<typeof FlatList<Row>>['CellRendererComponent']>>) {
+  return <View style={[style, { zIndex: 1e6 - index }]} onLayout={onLayout} {...({ onFocusCapture } as object)}>{children}</View>;
+}
+
+/**
+ * Tracks the pointer over a message and its toolbar. It must be a plain View, not the message Pressable's
+ * onHoverIn/onHoverOut: react-native-web's Pressable "contains" hover, so a Pressable inside it (the toolbar's
+ * buttons) ends the outer hover the moment the pointer enters it, and the toolbar vanished as you reached it.
+ * pointerenter/pointerleave cover descendants, so the toolbar counts as part of the message. Touch renders no wrapper.
+ */
+function HoverArea({ on, onChange, children }: { on: boolean; onChange: (hover: boolean) => void; children: ReactNode }) {
+  return on ? <View onPointerEnter={() => onChange(true)} onPointerLeave={() => onChange(false)}>{children}</View> : <>{children}</>;
 }
 
 /** Visible below the latest completed reply; available on hover for older messages on desktop. */
