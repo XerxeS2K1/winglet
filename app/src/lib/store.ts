@@ -49,7 +49,9 @@ export type OutboxEntry = {
   attachments?: Attachment[]; reply_to?: ReplyRef;
 };
 
-export type SendOptions = { clientId?: string; liveOnly?: boolean; retryClientId?: string; attachments?: Attachment[]; replyTo?: ReplyRef };
+export type SendOptions = { clientId?: string; liveOnly?: boolean; retryClientId?: string; attachments?: Attachment[]; replyTo?: ReplyRef;
+  /** Internal composer boundary: content is now owned by the outbox, not necessarily delivered or persisted. */
+  onAdmitted?: () => void };
 
 export type ServerState = {
   status: ConnStatus;
@@ -973,6 +975,7 @@ export const useApp = create<AppState>((set, get) => {
       upsertMessage(serverId, chatId, { ...localMessage(entry), status: get().runtime[serverId]?.status === 'online' ? 'pending' : 'queued' });
       if (PERF_ON && !retryClientId) perfMessageSent(`${serverId}:${chatId}`);
       if (retryClientId) sendPaused.delete(serverId);
+      o.onAdmitted?.();
       await enqueue(serverId, entry);
     },
 

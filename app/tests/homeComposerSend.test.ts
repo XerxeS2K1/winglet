@@ -6,7 +6,9 @@ import ts from 'typescript';
 
 // The real Composer, with device services replaced: sending from a landing
 // must ask prepareChat for the destination and hand that chat to sendDraft.
-function harness() {
+function harness(submit?: (...args: any[]) => Promise<boolean>) {
+  let sounds = 0;
+  let callbacks = 0;
   const prepared: string[] = [];
   const sent: any[] = [];
   const state: any = {
@@ -21,7 +23,7 @@ function harness() {
   const memory: any[] = [];
   const hooks = {
     useState(value: any) { const i = cursor++; if (!(i in memory)) memory[i] = value; return [memory[i], (next: any) => { memory[i] = typeof next === 'function' ? next(memory[i]) : next; }]; },
-    useRef(value: any) { return { current: value }; },
+    useRef(value: any) { const i = cursor++; return memory[i] ??= { current: value }; },
     useEffect() {},
   };
   const fallback: any = new Proxy(function () {}, { get: (_t, key) => key === 'then' ? undefined : fallback, apply: () => fallback });
@@ -36,7 +38,7 @@ function harness() {
     'expo-image': { Image: 'Image' },
     '../lib/store': store,
     '../lib/attach': { attachFiles() {}, canSend: () => true, removeFile() {}, retryFile() {},
-      sendDraft: (server: string, chat: string, text: string) => { sent.push({ server, chat, text }); } },
+      sendDraft: (server: string, chat: string, text: string) => { sent.push({ server, chat, text }); return submit ? submit(server, chat, text) : Promise.resolve(true); } },
     '../lib/actions': { stopTask: async () => false },
     '../lib/commands': { loadCommands: async () => [], matchCommands: () => [] },
     '../lib/composerFocus': { focusRegisteredComposer() {}, registerComposer: () => () => {} },
@@ -44,7 +46,7 @@ function harness() {
     '../lib/media': { pickFiles: async () => [], pickMedia: async () => [], takePhoto: async () => [], formatDuration: () => '' },
     '../lib/motion': { easeOut: (x: any) => x, useReducedMotion: () => true },
     '../lib/prefs': { usePrefs: (select: any) => select({ prefs: { busyMode: 'queue' }, update() {} }) },
-    '../lib/sounds': { sound: { sent() {} } },
+    '../lib/sounds': { sound: { sent() { sounds++; } } },
     '../lib/themeContext': { makeStyles: () => () => new Proxy({}, { get: () => undefined }), useTheme: () => ({ colors: new Proxy({}, { get: () => '#123456' }) }) },
     '../lib/text': { plainText: (s: string) => s },
     '../lib/voiceNote': { useVoiceNote: () => ({ recording: false, durationMs: 0, start() {}, finish() {} }) },
@@ -64,10 +66,10 @@ function harness() {
   const render = () => {
     cursor = 0;
     return exports.Composer({ server: { id: 'bot', bot: { title: 'Atlas' } }, chatId: 'local:new-chat', busy: false,
-      bottomInset: 0, target: null, onHeight() {}, placeholder: 'Message',
+      bottomInset: 0, target: null, onHeight() {}, placeholder: 'Message', onSent() { callbacks++; },
       prepareChat: async () => { prepared.push('prepare'); return 'fixture-chat'; } });
   };
-  return { render, prepared, sent, state };
+  return { render, prepared, sent, state, sounds: () => sounds, callbacks: () => callbacks };
 }
 
 function find(tree: any, match: (node: any) => boolean): any {
@@ -90,3 +92,27 @@ test('the landing composer sends through prepareChat and posts to the new chat',
   assert.equal(h.sent[0].text, 'Hello there');
   assert.equal(h.sent.some((m: any) => m.chat === 'general'), false);
 });
+
+for (const accepted of [false, true]) {
+  test(`mounted Composer reports sent only on admission: ${accepted}`, async () => {
+    let release!: (value: boolean) => void;
+    const wait = new Promise<boolean>(resolve => { release = resolve; });
+    const h = harness(() => wait);
+    const button = find(h.render(), node => node.props?.accessibilityLabel === 'Send');
+    const first = button.props.onPress();
+    let duplicate: Promise<any> | undefined;
+    try {
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(h.sounds(), 0, 'pending submission must not sound sent');
+      assert.equal(h.callbacks(), 0);
+      const pending = find(h.render(), node => node.props?.accessibilityState?.disabled === true && node.props?.onPress);
+      assert.ok(pending, 'pending submission disables the mounted send control');
+      duplicate = button.props.onPress();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      assert.equal(h.sent.length, 1, 'double tap before admission is blocked');
+    } finally { release(accepted); await Promise.allSettled([first, duplicate]); }
+    assert.equal(h.sounds(), accepted ? 1 : 0);
+    assert.equal(h.callbacks(), accepted ? 1 : 0);
+    assert.equal(find(h.render(), node => node.props?.accessibilityLabel === 'Send').props.disabled, false);
+  });
+}
