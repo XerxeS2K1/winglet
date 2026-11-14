@@ -88,17 +88,61 @@ export function canSend(text: string, files: DraftFile[]): boolean {
   return !!text.trim() || files.some((f) => f.status === 'ready');
 }
 
-/** Send the composer's text, ready files and reply, then clear them. */
+/** One submission per composer until outbox admission (or signed-command acceptance). */
+const sendingDrafts = new Set<string>();
+
+/** Keep the live draft until accepted/queued; never roll an old snapshot over newer edits. */
 export async function sendDraft(serverId: string, chatId: string, text: string, prefix = '') {
   const state = useApp.getState();
   const key = `${serverId}:${chatId}`;
+  if (sendingDrafts.has(key)) return false;
+  const server = state.servers.find((s) => s.id === serverId);
+  if (!server) return false;
   const files = (state.draftFiles[key] ?? []).filter((f) => f.status === 'ready' && f.upload);
   const replyTo = state.replyTo[key];
   const body = prefix && text.trim() ? `${prefix} ${text.trim()}` : text.trim();
-  if (!body && !files.length) return;
-  state.setDraft(serverId, chatId, '');
-  state.setReplyTo(serverId, chatId, undefined);
-  state.updateDraftFiles(serverId, chatId, (list) => list.filter((f) => f.status !== 'ready'));
-  files.forEach((f) => originals.delete(f.localId));
-  await state.sendMessage(serverId, chatId, body, { attachments: files.map((f) => f.upload!), replyTo });
+  if (!body && !files.length) return false;
+  let textChanged = (state.drafts[key] ?? '') !== text;
+  let replyChanged = false;
+  let serverChanged = false;
+  // Latch changes, including editing away and back, rather than comparing only at resolution.
+  const unsubscribe = useApp.subscribe((next, previous) => {
+    textChanged ||= next.drafts[key] !== previous.drafts[key];
+    replyChanged ||= next.replyTo[key] !== previous.replyTo[key];
+    const target = next.servers.find((s) => s.id === serverId);
+    // wsAuth and bot descriptions are refreshed routinely; pairing/address/routing are not.
+    serverChanged ||= !target || target.url !== server.url || target.token !== server.token
+      || target.deviceId !== server.deviceId || target.profile !== server.profile
+      || target.parent !== server.parent || target.addedAt !== server.addedAt;
+  });
+  sendingDrafts.add(key);
+  try {
+    let admitted!: () => void;
+    const admission = new Promise<void>((resolve) => { admitted = resolve; });
+    const delivery = state.sendMessage(serverId, chatId, body, {
+      attachments: files.map((f) => f.upload!), replyTo, onAdmitted: admitted,
+    });
+    // Signed commands resolve only after acceptance; ordinary messages belong to the
+    // outbox immediately. race observes later delivery rejections without resending.
+    await Promise.race([admission, delivery]);
+    if (serverChanged) return false;
+    const current = useApp.getState();
+    if (!textChanged) current.setDraft(serverId, chatId, '');
+    if (!replyChanged) current.setReplyTo(serverId, chatId, undefined);
+    // A ready file may be immutably refreshed without becoming a different upload.
+    // A retry/new upload (or one still uploading) keeps its tray entry and original pick.
+    current.updateDraftFiles(serverId, chatId, (list) => list.filter((f) =>
+      !files.some((sent) => f.status === 'ready' && f.localId === sent.localId && f.upload?.id === sent.upload!.id)));
+    const remaining = useApp.getState().draftFiles[key] ?? [];
+    files.forEach((f) => { if (!remaining.some((next) => next.localId === f.localId)) originals.delete(f.localId); });
+    return true;
+  } catch (error) {
+    // Composer awaits admission: prequeue rejection must not sound or look sent.
+    if (!serverChanged) useApp.getState().toast({ serverId, title: "Couldn't send",
+      body: error instanceof Error && error.message ? error.message : 'Your draft is still here; try again.' });
+    return false;
+  } finally {
+    unsubscribe();
+    sendingDrafts.delete(key);
+  }
 }

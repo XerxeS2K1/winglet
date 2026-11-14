@@ -32,6 +32,9 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
   same delivery ID. Draft text, finished attachments and reply context survive app restarts.
   On Android, offline chat, inbox, draft and outbox values are encrypted with a device key kept in the
   OS keychain. The web app uses origin-scoped IndexedDB.
+- **Safer submission (unreleased, #41).** The message box clears only after a normal message has been
+  queued or a signed command accepted. A refusal before that keeps its text, reply and ready files
+  available to retry. Newer edits and replacement uploads are left alone.
 - **One screen for the connection.** See how phones reach the server, whether the tunnel is up, and
   whether this phone's notifications are getting through. Moved the server to Tailscale or a new domain?
   Point the Android app at the new address; it only moves once your server has signed that address as

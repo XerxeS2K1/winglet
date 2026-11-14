@@ -8,7 +8,7 @@ type Sent = { bot: string; chat: string; text: string; opts?: any };
 
 function harness() {
   const state: any = {
-    network: true,
+    network: true, servers: [{ id: 'main' }],
     runtime: { main: { status: 'online' } },
     drafts: { 'main:local:new-chat': 'Hello there', 'main:general': 'Home draft' },
     draftFiles: { 'main:local:new-chat': [{ localId: 'f1', name: 'photo.png', status: 'ready', upload: { id: 'u1' } }] },
@@ -29,7 +29,7 @@ function harness() {
   };
   const store = {
     draftKey: (bot: string, chat: string) => `${bot}:${chat}`,
-    useApp: { getState: () => state },
+    useApp: { getState: () => state, subscribe: () => () => {} },
   };
   const load = (file: string, modules: Record<string, any>) => {
     const result: any = {};

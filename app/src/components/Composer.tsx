@@ -80,6 +80,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
   const [commands, setCommands] = useState<Command[]>([]);
   const [boxY, setBoxY] = useState(0);
   const [preparing, setPreparing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const sending = useRef(false);
   const input = useRef<TextInput>(null);
   const setText = (value: string) => setDraft(server.id, chatId, value);
@@ -159,6 +160,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
   const send = async (value?: string) => {
     if (sending.current || (value === undefined && !ready)) return;
     sending.current = true;
+    setSubmitting(true);
     setPreparing(!!prepareChat);
     try {
       const destination = prepareChat ? await prepareChat() : chatId;
@@ -179,11 +181,11 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
       haptic.light();
       const prefix = showBusyModes && busyMode !== 'interrupt' ? `/${busyMode}` : '';
       const body = prepareChat ? useApp.getState().drafts[draftKey(server.id, destination)] ?? text : text;
-      void sendDraft(server.id, destination, body, prefix);
+      if (!await sendDraft(server.id, destination, body, prefix)) return;
       setHeight(MIN_INPUT);
       sound.sent();
       onSent?.();
-    } finally { sending.current = false; setPreparing(false); }
+    } finally { sending.current = false; setPreparing(false); setSubmitting(false); }
   };
 
   const pick = async (how: 'photos' | 'camera' | 'files') => {
@@ -294,9 +296,9 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
           {!busy && !text.trim() && !files.length && voice ? (
             <VoiceButton server={server} chatId={chatId} onSent={onSent} prepareChat={prepareChat} onBeforeSend={onBeforeSend} />
           ) : (
-            <Tap key="send" feedback="none" accessibilityLabel={preparing ? 'Starting chat' : uploading ? 'Waiting for uploads' : 'Send'} accessibilityState={{ disabled: !ready || preparing }}
-              disabled={!ready || preparing} onPress={() => send()} scaleTo={0.9} style={[s.sendBtn, { backgroundColor: ready ? t.colors.ink : t.colors.surfaceSunken }]}>
-              {uploading || preparing ? <ActivityIndicator size="small" color={t.colors.textSecondary} /> : (
+            <Tap key="send" feedback="none" accessibilityLabel={preparing ? 'Starting chat' : submitting ? 'Sending' : uploading ? 'Waiting for uploads' : 'Send'} accessibilityState={{ disabled: !ready || submitting }}
+              disabled={!ready || submitting} onPress={() => send()} scaleTo={0.9} style={[s.sendBtn, { backgroundColor: ready ? t.colors.ink : t.colors.surfaceSunken }]}>
+              {uploading || submitting ? <ActivityIndicator size="small" color={t.colors.textSecondary} /> : (
                 <ArrowUp size={19} color={ready ? t.colors.onInk : t.colors.textTertiary} strokeWidth={2.5} />
               )}
             </Tap>

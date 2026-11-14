@@ -88,6 +88,10 @@ explicitly untested visual/device states. Source and harness checks are not an a
   (touch) or hover (mouse).
 - Gateway progress notices ("⏳ Working …", "⚡ Stopped …") are status, not conversation: one muted line.
 - Tool activity collapses into a single "N steps" pill.
+- **Submission (unreleased, #41).** Send stays disabled with a progress indicator until the message
+  is queued or the signed command is accepted, not until network delivery finishes. Only then resize
+  the box and give sent feedback; leave newer text, replies and replacement uploads alone.
+  Queued does not mean delivered.
 
 ## Bots working together
 
