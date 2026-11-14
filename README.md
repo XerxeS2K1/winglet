@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.12.2](docs/releases/v0.12.2.md):** several chats streaming stay smoother (measured on the server, not yet on a phone), the bots view shows what a bot is really doing, and a reply cut off by the app being killed comes back with a "May be incomplete" note.
+> **New in [v0.12.3](docs/releases/v0.12.3.md):** the web chat's hover toolbar (Copy / Reply / More) now stays open while the pointer is on it. It also adds less idle polling, composer drafts kept until send, and no duplicate attachment retry uploads; those three have only been tested by unit tests and CI, not on a phone.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
