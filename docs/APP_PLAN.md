@@ -3,6 +3,23 @@
 **Goal: everything you normally do with Hermes, from your phone, without opening the server, and
 without making the server easier to misuse.**
 
+## Attachment Retry checkpoint — local, unreleased (#39)
+
+This scoped checkpoint covers attachment retries only; it does not refresh or revalidate the older
+integration record below. Source/test commit: `852c5fa`, based on `e4fea98` after PR #87.
+
+- **Catalogue/milestone:** U1/U2, M2-2 (app uploads); existing U5/M2-4 voice auto-send behaviour is preserved.
+- **Implementation:** reserve one attempt per file before preparation, retain it through web blob
+  conversion and upload, and ignore removed/settled callbacks. Different files remain concurrent.
+- **Acceptance checked locally:** duplicate Retry during preparation/upload, legitimate retry after
+  failure, concurrent files, removal and late callbacks, web conversion and preserved voice auto-send.
+  Parent and independent Reviewer each ran **18/18 focused** and **905/905 full** tests. The same
+  focused tests on unchanged base give **17 failures and 1 preserved-behaviour pass**. Parent directly
+  ran `npm run typecheck` (`tsc --noEmit`): **exit 0**. Reviewer verdict: **APPROVE**, optional low notes.
+- **Remaining:** publication/CI, build and approved physical-device checks. No release, install, restart
+  or phone verification is established by these code checks. Issue #40 and attachment-memory cleanup
+  are not included. The historical catalogue and milestone descriptions below are unchanged.
+
 ## Current checkpoint — 2026-11-08
 
 This is the cross-chat and cross-device progress record. **Local implementation, review,
