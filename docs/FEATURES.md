@@ -16,6 +16,9 @@ The [README](../README.md#what-it-does) has the overview. This page lists everyt
 - **Photos, files and voice notes**, both ways, with a full-screen viewer. Reply to a message, copy, retry
   or stop a reply, and export a chat.
   Every completed text reply has visible Copy, Reply and More actions below it.
+- **Attachment Retry (local, unreleased, #39).** Repeated Retry for the same file does not start
+  another upload while it is preparing or uploading. Other files keep uploading independently;
+  a failed attempt can be retried after it finishes. Removing a file ignores its late results.
 - **Share from any app** on Android: a page, some text, photos or files go to the chat you pick, ready to
   send with a note.
 - **Search every chat** and jump straight to the message. Each chat keeps its **files and photos** in one place.

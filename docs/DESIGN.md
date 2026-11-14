@@ -92,6 +92,10 @@ explicitly untested visual/device states. Source and harness checks are not an a
   is queued or the signed command is accepted, not until network delivery finishes. Only then resize
   the box and give sent feedback; leave newer text, replies and replacement uploads alone.
   Queued does not mean delivered.
+- **Attachment Retry (local, unreleased, #39).** Allow only one preparation/upload attempt per
+  file, including web blob conversion. Repeated Retry must not reset progress or replace the
+  active upload handle. Remove aborts an active transfer where possible and suppresses late
+  results; preparation or blob reading may still finish in the background. Other files remain independent.
 
 ## Bots working together
 

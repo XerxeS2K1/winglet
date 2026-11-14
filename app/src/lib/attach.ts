@@ -6,6 +6,8 @@ import type { AttachmentKind, DraftFile } from './types';
 
 // Uploads in flight, so they can be cancelled; and the original picks, so a failure can be retried.
 const handles = new Map<string, UploadHandle>();
+// Reserve before preparation, when there is not yet an upload handle to cancel.
+const attempts = new Map<string, { cancelled: boolean }>();
 const originals = new Map<string, { file: PickedFile; keepOriginal: boolean; voice: boolean }>();
 
 function kindFor(mime: string, voice: boolean): AttachmentKind {
@@ -44,16 +46,25 @@ function patch(serverId: string, chatId: string, localId: string, change: Partia
 async function start(serverId: string, chatId: string, localId: string) {
   const server = useApp.getState().servers.find((s) => s.id === serverId);
   const original = originals.get(localId);
-  if (!server || !original) return;
-  patch(serverId, chatId, localId, { status: 'uploading', progress: 0, error: undefined });
+  if (!server || !original || attempts.has(localId)) return;
+  const attempt = { cancelled: false };
+  attempts.set(localId, attempt);
+  const current = () => attempts.get(localId) === attempt && !attempt.cancelled;
   try {
+    patch(serverId, chatId, localId, { status: 'uploading', progress: 0, error: undefined });
     const prepared = await preparePhoto(original.file, original.keepOriginal);
+    if (!current()) return;
     // On the web a recording or pasted file may only exist as a blob: URL.
     if (Platform.OS === 'web' && !prepared.file) prepared.file = await (await fetch(prepared.uri)).blob();
-    const handle = uploadFile(server, chatId, prepared, (p) => patch(serverId, chatId, localId, { progress: p }), original.voice ? 'voice' : undefined);
+    if (!current()) return;
+    let uploading = true;
+    const handle = uploadFile(server, chatId, prepared, (p) => {
+      if (uploading && current()) patch(serverId, chatId, localId, { progress: p });
+    }, original.voice ? 'voice' : undefined);
     handles.set(localId, handle);
     const upload = await handle.promise;
-    handles.delete(localId);
+    uploading = false;
+    if (!current()) return;
     patch(serverId, chatId, localId, { status: 'ready', progress: 1, upload, kind: upload.kind, mime: upload.mime, size: upload.size, name: upload.name });
     const draft = useApp.getState().draftFiles[`${serverId}:${chatId}`]?.find((f) => f.localId === localId);
     if (draft?.autoSend) {
@@ -63,11 +74,16 @@ async function start(serverId: string, chatId: string, localId: string) {
       await useApp.getState().sendMessage(serverId, chatId, '', { attachments: [upload] });
     }
   } catch (e) {
-    handles.delete(localId);
+    if (!current()) return;
     const status = (e as { status?: number }).status;
     if (status === -1) return; // cancelled: already removed
     haptic.error();
     patch(serverId, chatId, localId, { status: 'failed', error: (e as Error).message });
+  } finally {
+    if (attempts.get(localId) === attempt) {
+      handles.delete(localId);
+      attempts.delete(localId);
+    }
   }
 }
 
@@ -76,6 +92,8 @@ export function retryFile(serverId: string, chatId: string, localId: string) {
 }
 
 export function removeFile(serverId: string, chatId: string, localId: string) {
+  const attempt = attempts.get(localId);
+  if (attempt) attempt.cancelled = true;
   handles.get(localId)?.abort();
   handles.delete(localId);
   originals.delete(localId);
