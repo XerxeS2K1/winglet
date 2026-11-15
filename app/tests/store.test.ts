@@ -109,7 +109,8 @@ function harness(os = 'web') {
     // Same logic, but no real waiting between the re-checks.
     './authCheck': { ...authCheck, AUTH_RECHECK_DELAYS_MS: [1, 1], pause: async () => {} },
     './handledNotifications': handled,
-    './perf': { get PERF_ON() { return perfState.on; }, perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]) },
+    './perf': { get PERF_ON() { return perfState.on; }, perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]),
+      perfSendStage: (clientId: string, stage: string, f?: any) => perfCalls.push(['stage', stage, f ?? {}, clientId]), perfSendEcho: (clientId: string) => perfCalls.push(['echo', clientId]) },
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
     './sounds': { sound: { reply: () => played.push('reply'), needsYou: () => played.push('needsYou'), tap: () => {}, sent: () => {} } },
@@ -1270,6 +1271,74 @@ test('with the timing switch off the store does no timing work at all on a send 
   h.event({ type: 'message.update', chat_id: 'general', message: { ...bot('r', 'Hi', 'final'), updated_at: 2 } });
   assert.deepEqual(h.perfCalls, [], 'perf must not be called, so its observation is never built');
   assert.equal(h.store.getState().runtime.s.messages.general.find((m: any) => m.id === 'r').text, 'Hi', 'the reply is still stored');
+});
+
+test('the send-order hooks see outbox, POST start, HTTP return and the socket echo of one send, by client id only', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.setRequest(async (_server: any, path: string, init: any) => {
+    const body = JSON.parse(init.body);
+    return { message: { ...msg(1), id: 'srv-1', role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+  });
+  await h.store.getState().sendMessage('s', 'general', 'secret words');
+  const stages = h.perfCalls.filter((c) => c[0] === 'stage');
+  assert.deepEqual(stages.map((c) => c[1]), ['outbox', 'post-start', 'http-return']);
+  assert.deepEqual(JSON.parse(JSON.stringify(stages[0][2])), { retry: false, online: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(stages[1][2])), { len: 'secret words'.length });
+  const ids = new Set(stages.map((c) => c[3]));
+  assert.equal(ids.size, 1, 'every step names the same client id');
+  const id = [...ids][0] as string;
+  h.event({ type: 'message.new', chat_id: 'general', message: { ...msg(2), id: 'srv-1', role: 'user', text: 'secret words', meta: { client_id: id } } });
+  assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), [['echo', id]]);
+  // Nothing handed to the hooks contains the message text.
+  assert.doesNotMatch(JSON.stringify(h.perfCalls), /secret words/);
+});
+
+test('a failed POST is reported as an http-error with only a boolean', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.setRequest(async () => { throw new Error('socket hang up'); });
+  await h.store.getState().sendMessage('s', 'general', 'hello');
+  const failed = h.perfCalls.filter((c) => c[0] === 'stage' && c[1] === 'http-error');
+  assert.equal(failed.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(failed[0][2])), { network: true });
+});
+
+test('with the timing switch off the send-order hooks are never called, and the send behaves the same', async () => {
+  const run = async (on: boolean) => {
+    const h = harness();
+    h.perfState.on = on;
+    await h.connect();
+    await h.hello();
+    h.setRequest(async (_server: any, _path: string, init: any) => {
+      const body = JSON.parse(init.body);
+      return { message: { ...msg(1), id: 'srv-1', role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+    });
+    await h.store.getState().sendMessage('s', 'general', 'hello');
+    const sent = h.messages().filter((m: any) => m.role === 'user');
+    h.event({ type: 'message.update', chat_id: 'general', message: { ...msg(3), id: 'srv-1', role: 'user', text: 'hello', meta: { client_id: sent[0]?.meta?.client_id } } });
+    return { h, view: JSON.parse(JSON.stringify({ messages: h.messages().map((m: any) => [m.role, m.text, m.status]), outbox: h.outbox().length })) };
+  };
+  const off = await run(false);
+  assert.deepEqual(off.h.perfCalls, [], 'no send-order hook is called when the switch is off');
+  const on = await run(true);
+  assert.ok(on.h.perfCalls.some((c) => c[0] === 'stage'));
+  assert.deepEqual(off.view, on.view, 'the stored messages and the outbox are identical with the switch on or off');
+});
+
+test('offline admission stays queued with timing on or off, without claiming POST', async () => {
+  for (const on of [false, true]) {
+    const h = harness(); h.perfState.on = on;
+    await h.connect(); await h.hello(); h.disconnect();
+    let calls = 0; let admitted = 0;
+    h.setRequest(async () => { calls++; throw new Error('must stay offline'); });
+    await h.store.getState().sendMessage('s', 'general', 'private fixture', { onAdmitted: () => { admitted++; } });
+    assert.equal(admitted, 1); assert.equal(calls, 0); assert.equal(h.outbox().length, 1);
+    assert.equal(h.messages()[0].status, 'queued');
+    assert.deepEqual(h.perfCalls.filter(c => c[0] === 'stage').map(c => c[1]), on ? ['outbox', 'deferred'] : []);
+  }
 });
 
 // ---- streamed updates are applied at most once a frame (src/lib/streamBuffer.ts) ----

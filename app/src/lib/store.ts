@@ -12,7 +12,7 @@ import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
 import { canCoalesce, createStreamBuffer } from './streamBuffer';
-import { PERF_ON, perfMessageSent, perfMessageUpdate } from './perf';
+import { PERF_ON, perfMessageSent, perfMessageUpdate, perfSendEcho, perfSendStage } from './perf';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { refreshNetworkNow } from './network';
@@ -315,6 +315,7 @@ export const useApp = create<AppState>((set, get) => {
     if (!server || !queued || queued.failed) return;
     if (sendPaused.has(serverId) || get().runtime[serverId]?.status !== 'online') {
       sendPaused.add(serverId);
+      if (PERF_ON) perfSendStage(entry.client_id, 'deferred', { online: get().runtime[serverId]?.status === 'online' });
       setLocalStatus(serverId, entry.chat_id, entry.client_id, 'queued');
       return;
     }
@@ -323,6 +324,7 @@ export const useApp = create<AppState>((set, get) => {
       if (entry.reply_to?.quote && get().runtime[serverId]?.info?.features?.quoted_comments !== true) {
         throw new ApiError("This server does not support exact quotes. Update the plugin or remove the quote; it was not sent.", 409);
       }
+      if (PERF_ON) perfSendStage(entry.client_id, 'post-start', { len: entry.text.length });
       const data = await api<{ message: Message }>(server, `/api/chats/${encodeURIComponent(entry.chat_id)}/messages`, {
         method: 'POST', body: JSON.stringify({
           text: entry.text, client_id: entry.client_id,
@@ -330,9 +332,11 @@ export const useApp = create<AppState>((set, get) => {
           ...(entry.reply_to ? { reply_to: entry.reply_to.id, ...(entry.reply_to.quote ? { quote: entry.reply_to.quote } : {}) } : {}),
         }),
       });
+      if (PERF_ON) perfSendStage(entry.client_id, 'http-return');
       upsertMessage(serverId, entry.chat_id, data.message);
       updateOutbox(serverId, (o) => o.filter((x) => x.client_id !== entry.client_id));
     } catch (e) {
+      if (PERF_ON) perfSendStage(entry.client_id, 'http-error', { network: isNetworkError(e) });
       // A socket acknowledgement may have removed this send while HTTP was still in flight.
       // Its later failure must not pause unrelated messages or put the accepted send back in the outbox.
       if (!get().runtime[serverId]?.outbox.some((o) => o.client_id === entry.client_id)) return;
@@ -448,6 +452,7 @@ export const useApp = create<AppState>((set, get) => {
         // Checked here so a release build does not even build the observation (isActivity, trim) on every update.
         if (PERF_ON && m.role === 'bot') perfMessageUpdate(`${serverId}:${ev.chat_id}`, { id: m.id, streaming: m.status === 'streaming', hasText: !isActivity(m) && m.text.trim() !== '' }, replayed);
         const clientId = m.meta?.client_id;
+        if (PERF_ON && !replayed && m.role === 'user' && clientId) perfSendEcho(clientId);
         if (m.role === 'user' && clientId && get().runtime[serverId]?.outbox.some((o) => o.client_id === clientId)) {
           // The server has it (the HTTP reply may have been lost): it's no longer ours to resend.
           updateOutbox(serverId, (o) => o.filter((x) => x.client_id !== clientId));
@@ -974,6 +979,7 @@ export const useApp = create<AppState>((set, get) => {
       updateOutbox(serverId, (o) => [...o.filter((x) => x.client_id !== clientId), entry]);
       upsertMessage(serverId, chatId, { ...localMessage(entry), status: get().runtime[serverId]?.status === 'online' ? 'pending' : 'queued' });
       if (PERF_ON && !retryClientId) perfMessageSent(`${serverId}:${chatId}`);
+      if (PERF_ON) perfSendStage(clientId, 'outbox', { retry: !!retryClientId, online: get().runtime[serverId]?.status === 'online' });
       if (retryClientId) sendPaused.delete(serverId);
       o.onAdmitted?.();
       await enqueue(serverId, entry);
