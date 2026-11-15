@@ -158,10 +158,37 @@ test('the Composer keeps its behaviour: onChangeText still stores the text, and 
   assert.match(c, /const body = prepareChat \? useApp\.getState\(\)\.drafts\[draftKey\(server\.id, destination\)\] \?\? text : text;/);
 });
 
+// The privacy check reads only the input/send section of perf.ts. If that section cannot be found the check must
+// fail, not pass on an empty or one-character slice.
+const SECTION_MARKER = '// -- input and send event order';
+const LEAKS = /\.text\b|\bbody\b|token|fetch\(|XMLHttpRequest|WebSocket|url/i;
+
+function privacySection(source: string): string {
+  const start = source.indexOf(SECTION_MARKER);
+  assert.notEqual(start, -1, `section marker not found in perf.ts: ${SECTION_MARKER}`);
+  const section = source.slice(start);
+  // A renamed marker that still matched something else would leave the check guarding the wrong code.
+  assert.match(section, /export function perfInput\(/, 'the section must contain the input hook');
+  assert.match(section, /export function perfSendEcho\(/, 'the section must contain the echo hook');
+  return section;
+}
+
 test('the logging never reads message text', () => {
+  const section = privacySection(read('../src/lib/perf.ts'));
+  assert.ok(section.length > 500, 'the guarded section is not trivially short');
+  assert.doesNotMatch(section, LEAKS);
+});
+
+test('the privacy check fails when its section marker is missing, and still catches a leak when it is present', () => {
   const perf = read('../src/lib/perf.ts');
-  const section = perf.slice(perf.indexOf('// -- input and send event order'));
-  assert.doesNotMatch(section, /\.text\b|\bbody\b|token|fetch\(|XMLHttpRequest|WebSocket|url/i);
+  // The marker renamed or absent (as in v0.12.3 before this change): the check must throw, not pass vacuously.
+  assert.throws(() => privacySection(perf.replace(SECTION_MARKER, '// -- renamed')), /section marker not found/);
+  assert.throws(() => privacySection(''), /section marker not found/);
+  // Marker present but the hooks gone: also a failure.
+  assert.throws(() => privacySection(`${SECTION_MARKER}\nexport const x = 1;\n`), /input hook/);
+  // With the marker present, a text read inside the section is seen.
+  const leaky = privacySection(`${perf}\nexport function leak(m: { text: string }) { return m.text; }\n`);
+  assert.match(leaky, LEAKS);
 });
 
 test('the watch expires after an idle minute and restarts on activity', () => {

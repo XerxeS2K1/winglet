@@ -1295,6 +1295,66 @@ test('the send-order hooks see outbox, POST start, HTTP return and the socket ec
   assert.doesNotMatch(JSON.stringify(h.perfCalls), /secret words/);
 });
 
+test('a replayed echo of a send admitted on this phone is not logged as a socket echo, a live one is', async () => {
+  for (const on of [true, false]) {
+    const h = harness(); h.perfState.on = on;
+    await h.connect();
+    h.cache.set('replay:s', { cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 }, state: {
+      chats: { general: { id: 'general', kind: 'chat', title: 'General' } }, messages: {}, deleted: {}, loaded: {},
+      inbox: {}, pending: 0, tasks: {},
+    } });
+    await h.store.getState().init();
+    const posted: string[] = [];
+    h.setRequest(async (_server: any, route: string, init?: any) => {
+      if (route.endsWith('/messages') && init?.method === 'POST') {
+        const body = JSON.parse(init.body); posted.push(body.client_id);
+        return { message: { ...msg(1), id: `srv-${posted.length}`, role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+      }
+      return route === '/api/inbox' ? { items: [], pending: 0 } : { messages: [], deleted_ids: [] };
+    });
+    // The real replay path: hello announces the journal, the phone asks to resume, the reply is applied as replayed.
+    h.event({ type: 'hello', chats: [{ id: 'general', kind: 'chat', title: 'General' }], pending: 0,
+      features: { event_replay: true }, event_stream: { scope: 'scope', epoch: 'epoch', watermark: 2 } });
+    await h.tick();
+    assert.equal(h.socket().sent.at(-1).type, 'resume', 'the phone asked the server to replay');
+    // Admitted on this phone while the replay is still pending: held in the outbox, so its client id is known locally.
+    await h.store.getState().sendMessage('s', 'general', 'first private words');
+    assert.equal(posted.length, 0, 'nothing is posted until the replay has caught up');
+    assert.equal(h.outbox().length, 1);
+    const replayedId = h.outbox()[0].client_id as string;
+    assert.equal(h.perfCalls.filter((c) => c[0] === 'stage' && c[1] === 'outbox').map((c) => c[3]).join(), on ? replayedId : '');
+    h.perfCalls.length = 0;
+
+    const user = (n: number, clientId: string) => ({ ...msg(n), id: `srv-${n}`, role: 'user', text: 'private words', meta: { client_id: clientId } });
+    const botReply = { ...msg(7), id: 'r', status: 'final', updated_at: 5 };
+    h.event({ type: 'resume', ok: true, scope: 'scope', epoch: 'epoch', watermark: 2, cursor: 2, has_more: false, events: [
+      { type: 'message.new', event_seq: 1, chat_id: 'general', message: user(1, replayedId) },
+      { type: 'message.update', event_seq: 2, chat_id: 'general', message: botReply },
+    ] });
+    await h.tick();
+    // Replay plumbing was really reached: applied from the resume reply, stored with its cursor, flagged replayed.
+    assert.equal(h.cache.get('replay:s').cursor.cursor, 2);
+    assert.ok(h.messages().some((m: any) => m.id === 'r'), 'the replayed bot reply was applied');
+    assert.equal(h.store.getState().runtime.s.sync.phase, 'idle');
+    const updates = h.perfCalls.filter((c) => c[0] === 'update');
+    assert.deepEqual(updates.map((c) => c[3]), on ? [true] : [], 'the replayed update reached the store flagged as replayed');
+    assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), [], 'a replayed echo of a known local id is not a fresh echo');
+
+    assert.equal(h.outbox().length, 0, 'the replayed echo settled the held send, so it is not posted again');
+    assert.equal(posted.length, 0);
+
+    // A send admitted after catch-up is posted, and its live echo is logged.
+    await h.store.getState().sendMessage('s', 'general', 'second private words');
+    assert.equal(posted.length, 1);
+    h.perfCalls.length = 0;
+    h.event({ type: 'message.new', event_seq: 3, chat_id: 'general', message: user(3, posted[0]) });
+    await h.tick();
+    assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), on ? [['echo', posted[0]]] : []);
+    assert.equal(h.cache.get('replay:s').cursor.cursor, 3, 'the live event went through the same session');
+    assert.doesNotMatch(JSON.stringify(h.perfCalls), /private words/);
+  }
+});
+
 test('a failed POST is reported as an http-error with only a boolean', async () => {
   const h = harness();
   await h.connect();
