@@ -58,9 +58,9 @@ function harness(shared?: Map<string, any>) {
   let brokenCloses = 0;
   const flushCalls: string[] = [];
   /** Timers the store itself scheduled (the save chain's bound), runnable on demand. */
-  const storeTimers: Array<(() => void) | undefined> = [];
+  const storeTimers: Array<{ fn?: () => void; ms: number } | undefined> = [];
   /** Timers the session scheduled (its resume timeout), runnable on demand. */
-  const sessionTimers: Array<(() => void) | undefined> = [];
+  const sessionTimers: Array<{ fn?: () => void; ms: number } | undefined> = [];
   const frames: Array<{ fn: () => void; ms: number; live: boolean }> = [];
   const played: string[] = [];
   const cache = shared ?? new Map<string, any>();
@@ -89,9 +89,9 @@ function harness(shared?: Map<string, any>) {
     retryNow() {}
   }
   /** A clock per side: a test can run the store's timers without firing the session's, and back. */
-  function clock(sink: Array<(() => void) | undefined>) {
+  function clock(sink: Array<{ fn?: () => void; ms: number } | undefined>) {
     return {
-      setTimeout: (fn: () => void) => { sink.push(fn); return sink.length - 1; },
+      setTimeout: (fn: () => void, ms?: number) => { sink.push({ fn, ms: ms ?? 0 }); return sink.length - 1; },
       clearTimeout: (id: number) => { if (typeof id === 'number') sink[id] = undefined; },
     };
   }
@@ -181,9 +181,11 @@ function harness(shared?: Map<string, any>) {
     /** Make the next n socket closes throw, as a wedged socket does. */
     failCloses: (n: number) => { brokenCloses = n; },
     /** Run the timers the store itself scheduled (its save chain's bound). */
-    runStoreTimers: () => { for (const fn of storeTimers.splice(0)) fn?.(); },
+    runStoreTimers: () => { for (const timer of storeTimers.splice(0)) timer?.fn?.(); },
+    /** The delays of the store's pending timers, so a bound's magnitude can be pinned. */
+    storeTimerDelays: () => storeTimers.filter((timer) => timer !== undefined).map((timer) => timer!.ms),
     /** Run the timers the session scheduled (its resume timeout). */
-    runSessionTimers: () => { for (const fn of sessionTimers.splice(0)) fn?.(); },
+    runSessionTimers: () => { for (const timer of sessionTimers.splice(0)) timer?.fn?.(); },
     /** Every cursor value a save actually put on disk, in order. */
     cursorWrites: () => writes.filter((w) => w.key === 'replay:s:v2').map((w) => w.value.cursor.cursor),
     event: (data: any) => socket.event(data),
@@ -442,6 +444,69 @@ test('a dispose waits for the burst it still holds before giving the session up'
   // A session that has given itself up is not resurrected by an event that arrives afterwards.
   await session.receive({ type: 'message.new', event_seq: 6, chat_id: 'general', message: msg(6) });
   assert.equal(h.saved.cursor.cursor, 5, 'nothing was written for a session that is gone');
+});
+
+test('a flush that outlives a reconnect does not wipe the session that replaced it', async () => {
+  // A drop flushes before it closes, but the store's own retry can reconnect first: Connection.open()
+  // calls closed(), and a fresh hello fills in the new stream, cursor and pending mark. A flush still
+  // waiting on the disk must not clear those on its way out, or the socket stays up and never saves.
+  const { SyncSession } = sessionModule();
+  clearSessionClock();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await caughtUp(session, h);
+  const realWrite = h.write;
+  let release!: () => void;
+  let writes = 0;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  h.write = async (cursor: any) => { if (writes++ === 0) await gate; return realWrite(cursor); };
+
+  const burst = session.receive({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
+  await new Promise((r) => setImmediate(r));
+  const ended = session.end(); // the drop: it flushes, and the disk does not answer
+  await new Promise((r) => setImmediate(r));
+
+  session.closed(); // what the retry's open() does, on the same session
+  await session.receive({ type: 'hello', chats: [], features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 600 } });
+  await session.receive({ type: 'resume', ok: true, scope: 'scope', epoch: 'epoch', watermark: 600,
+    cursor: 600, has_more: false, events: [] });
+  assert.equal(session.durable()?.cursor, 600, 'the new session caught up on its own');
+
+  release(); // the abandoned flush finally lands
+  await Promise.all([burst.catch(() => undefined), ended]);
+  await new Promise((r) => setImmediate(r));
+  assert.equal(session.durable()?.cursor, 600, 'the late flush did not clear the session that replaced it');
+  assert.equal(session.view().phase, 'idle', 'and it is still the new session reporting, not a wiped one');
+
+  // Its pending mark survived, so the socket still saves what it applies.
+  await session.receive({ type: 'message.new', event_seq: 601, chat_id: 'general', message: msg(601) });
+  assert.equal(h.saved.cursor.cursor, 601, 'the live socket still saves');
+});
+
+test('a session that did not reconnect still ends normally', async () => {
+  const { SyncSession } = sessionModule();
+  clearSessionClock();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await caughtUp(session, h);
+  await session.receive({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
+  await session.end();
+  assert.equal(h.saved.cursor.cursor, 1, 'the burst reached the disk before the session ended');
+  assert.equal(session.durable(), undefined, 'the session gave itself up');
+  assert.equal(session.view().phase, 'idle');
+  await session.receive({ type: 'message.new', event_seq: 2, chat_id: 'general', message: msg(2) });
+  assert.equal(h.saved.cursor.cursor, 1, 'a session that is gone saves nothing more');
+
+  // The failure path still reports itself: a burst that never reached the disk is not reported idle.
+  const failing = host();
+  const stuck = new SyncSession(failing, () => {});
+  await caughtUp(stuck, failing);
+  stuck.pending = 1; // applied but unsaved, as a burst whose save never ran leaves it
+  failing.fail(true);
+  await stuck.end();
+  assert.equal(stuck.view().phase, 'blocked', 'a burst that never reached the disk is reported blocked');
+  assert.equal(stuck.durable(), undefined);
 });
 
 test('a deleted chat loses its page record, and a chat that shares its prefix keeps its own', async () => {
@@ -782,6 +847,88 @@ test('a save that lost the race cannot move the cursor back or put an older page
   assert.ok(ids.includes('m101'), 'and the retired connection\'s own messages are still there');
 });
 
+test('once the replacement has committed, a save the chain gave up on writes nothing at all', async () => {
+  // The window the cold review found: the chain's bound fires while a retiring save is between two of
+  // its page writes. The replacement commits its own pages and its cursor; the abandoned save still
+  // owes its planned chat1 page. Writing it would leave the cursor covering a page record that no
+  // longer holds the messages it covers — and the refs the replacement recorded mean no later save
+  // rewrites that chat, so the loss is permanent.
+  const h = harness();
+  await h.connect(seed(2, 5, 20));
+  await h.join(0);
+  h.reset();
+  const c = (n: number) => ({ ...msg(n), id: `c${n}`, chat_id: 'chat1' });
+  const release = h.hold('replay:s:m:general');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
+  h.event({ type: 'message.new', event_seq: 2, chat_id: 'chat1', message: c(102) });
+  await h.tick();
+  assert.deepEqual(h.keys(), [], 'both writes of the bursting save are behind the held one');
+
+  // The replacement takes over and catches up to 5, with newer messages in chat1.
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  h.event({ type: 'hello', chats: [chat('general'), chat('chat1')], pending: 0, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
+  await h.tick();
+  await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n,
+    chat_id: n === 1 ? 'general' : 'chat1', message: n === 1 ? msg(100 + n) : c(100 + n) })));
+  h.runStoreTimers(); // the chain stops waiting on the save the device never answered
+  await h.tick();
+  const ids = (id: string) => (h.cache.get(`replay:s:m:${id}`)?.messages ?? []).map((m: any) => m.id);
+  assert.ok(ids('chat1').includes('c105'), 'the replacement\'s chat1 page is on the disk');
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'and its cursor is durable');
+
+  // The held write finally lands, as a device that stalled for longer than the bound does. The
+  // abandoned save's next planned key is chat1, and that page must not be written.
+  release();
+  await h.tick();
+  assert.ok(ids('chat1').includes('c105'),
+    `the abandoned save put its older chat1 page over the newer one (${ids('chat1').join(', ')})`);
+  const cursors = h.cursorWrites();
+  assert.equal(cursors[cursors.length - 1], 5, `the durable cursor is the newer one (wrote ${cursors.join(', ')})`);
+  assert.deepEqual([...cursors].sort((a: number, b: number) => a - b), cursors,
+    `the cursor never went backwards (wrote ${cursors.join(', ')})`);
+  assert.ok(ids('general').includes('m101'), 'the cursor still covers data that is on the disk');
+});
+
+test('a retiring save stops at its next key once a newer save has started', async () => {
+  // The strict cursor check alone only stops a retiring save once the newer cursor is durable. A save
+  // between two of its writes has to stop at the newer save's start: that save has already written the
+  // pages this one would put back, and only its cursor is still to land.
+  const h = harness();
+  await h.connect(seed(2, 5, 20));
+  await h.join(0);
+  h.reset();
+  const c = (n: number) => ({ ...msg(n), id: `c${n}`, chat_id: 'chat1' });
+  const release = h.hold('replay:s:m:general');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
+  h.event({ type: 'message.new', event_seq: 2, chat_id: 'chat1', message: c(102) });
+  await h.tick();
+
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  h.event({ type: 'hello', chats: [chat('general'), chat('chat1')], pending: 0, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
+  await h.tick();
+  // The replacement's own cursor write is the one still in flight when the abandoned save wakes up.
+  const releaseCursor = h.hold('replay:s:v2');
+  await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n,
+    chat_id: n === 1 ? 'general' : 'chat1', message: n === 1 ? msg(100 + n) : c(100 + n) })));
+  h.runStoreTimers();
+  await h.tick();
+  const ids = (id: string) => (h.cache.get(`replay:s:m:${id}`)?.messages ?? []).map((m: any) => m.id);
+  assert.ok(ids('chat1').includes('c105'), 'the replacement wrote its chat1 page before its cursor landed');
+
+  release();
+  await h.tick();
+  assert.ok(ids('chat1').includes('c105'),
+    `a save that lost the race put its older page back over the newer one (${ids('chat1').join(', ')})`);
+  releaseCursor();
+  await h.tick();
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'and the newer cursor is the one on the disk');
+  assert.ok(ids('chat1').includes('c105'), 'so the cursor does not cover a page that lost its messages');
+});
+
 test('a save that never settles cannot hold the next save for ever', async () => {
   const h = harness();
   await h.connect(seed(1, 5, 20));
@@ -803,6 +950,35 @@ test('a save that never settles cannot hold the next save for ever', async () =>
   await h.tick();
   assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'the next save ran anyway');
   assert.equal(h.phase(), 'idle');
+});
+
+test('the chain waits a bounded few seconds for a save that never settles', async () => {
+  // The bound's magnitude is the whole argument in both directions: zero lets every save race the one
+  // it should have waited for, and a minute is a stall the phone shows. The other half — a save that
+  // settles inside the bound keeps the chain ordered — is the race test above, which never fires it.
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  const pending = h.storeTimerDelays().length;
+  h.reset();
+  h.hold('replay:s:m:general'); // a write the device never answers
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
+  await h.tick();
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  h.event({ type: 'hello', chats: [chat('general')], pending: 0, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
+  await h.tick();
+  await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n, chat_id: 'general', message: msg(100 + n) })));
+
+  const bound = h.storeTimerDelays().slice(pending);
+  assert.equal(bound.length, 1, `the second save armed exactly one timer (${bound.join(', ')})`);
+  assert.ok(bound[0] >= 2000 && bound[0] <= 30000,
+    `a few seconds: 0 would let the saves race and 60 s is a stall (${bound[0]} ms)`);
+  assert.deepEqual(h.cursorWrites(), [], 'the second save waits inside the bound');
+  h.runStoreTimers();
+  await h.tick();
+  assert.deepEqual([...new Set(h.cursorWrites())], [5], 'and only then moves the cursor to its own');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -890,10 +1066,16 @@ test('page records no checkpoint names are swept at launch, and only at launch',
   assert.ok((cache.get('replay:s:m:general')?.messages ?? []).some((m: any) => m.id === 'm1'), 'a named page is kept');
   assert.ok(cache.has('replay:s:v2'), 'and the checkpoint itself is untouched');
 
-  // A record left by an interrupted prune, put back: a save is not a launch and must not sweep.
+  // A record left by an interrupted prune, put back: a save is not a launch and must not sweep. This
+  // half has to go through a path that really saves — with no session the frame is only applied in
+  // memory, nothing is written, and the assertion could not fail.
   cache.set('replay:s:m:ghost', { messages: [], deleted: [] });
+  await h.begin(0);
+  await h.reply(0, 0);
+  h.reset();
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(2, { id: 'm2' }) });
   await h.tick();
+  assert.deepEqual(h.cursorWrites(), [1], 'the frame went through a save');
   assert.ok(cache.has('replay:s:m:ghost'), 'a later save does not sweep again');
 });
 
@@ -945,6 +1127,8 @@ test('a bot that is removed and re-paired owes nothing from its old life', async
   cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
   cache.set('replay:s:meta', { chats: { gone: chat('gone') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['gone'] });
   cache.set('replay:s:m:gone', { messages: [], deleted: [] });
+  // A record the old life left behind that nothing names, so a launch sweep would take it.
+  cache.set('replay:s:m:orphan', { messages: [msg(9, { id: 'o1', chat_id: 'orphan' })], deleted: [] });
   await h.store.getState().addServer({ id: 's', url: 'http://test', token: 'test', deviceId: 'dev', bot: { title: 'Again' } });
   // The pairing flow hydrates before it connects, as a cold launch does; addServer alone does not.
   h.store.setState({ ready: false } as any);
@@ -956,4 +1140,5 @@ test('a bot that is removed and re-paired owes nothing from its old life', async
   // The fresh save retires the pre-split record itself, so the marker is expected; what must not
   // survive is the prune queued by the old life, which would delete the record just written.
   assert.ok(cache.has('replay:s:m:gone'), 'no stale prune deletes the re-paired page record');
+  assert.equal(cache.has('replay:s:m:orphan'), false, 'and the re-paired bot is swept like any other launch');
 });

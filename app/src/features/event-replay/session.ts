@@ -66,8 +66,13 @@ export class SyncSession {
   }
   /** Give the session up, but only once a burst it still holds is on disk. */
   async end(): Promise<void> {
+    const generation = this.generation;
     let failed = false;
     try { await this.flush(); } catch { failed = true; }
+    // A flush that outlived the socket's own retry belongs to the session that has already gone: the
+    // reconnect called closed() and a fresh hello filled in the new stream, cursor and pending mark, and
+    // clearing those here would leave a live socket that never saves again.
+    if (generation !== this.generation) return;
     this.closed();
     // closed() reports idle; a burst that never reached the disk has to keep saying so.
     if (failed) this.show('blocked', 'network');

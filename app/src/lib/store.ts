@@ -189,6 +189,14 @@ const sweptPages = new Set<string>();
 const saveChains = new Map<string, Promise<unknown>>();
 /** A save that never settles must not hold every later save for its bot: after this the next one runs. */
 const SAVE_CHAIN_WAIT_MS = 10_000;
+/**
+ * The save each bot is currently running, by number. The chain above normally keeps two saves for one
+ * bot apart, but its bound lets a later save start while an earlier one is still on the disk. A save
+ * whose connection has been replaced is older than the state the later save is about to write, so it
+ * has to stop at the first key after that one started rather than race it.
+ */
+const latestSave = new Map<string, number>();
+let saveSeq = 0;
 /** Per-bot send queue: keeps messages in order, and stops at the first one the network loses. */
 const sendChains = new Map<string, Promise<void>>();
 /** Last structured-task fetch per server+chat, so opening a sheet repeatedly doesn't hammer the server. */
@@ -653,6 +661,8 @@ export const useApp = create<AppState>((set, get) => {
       sync: {
         read: () => replayCursors.get(server.id),
         write: (cursor) => chainedSave(server.id, async () => {
+          const seq = ++saveSeq;
+          latestSave.set(server.id, seq);
           streamed.flush(); // the saved state must not trail the cursor it is saved with
           const rt = get().runtime[server.id];
           if (!rt) throw Error('Connection replaced');
@@ -667,9 +677,19 @@ export const useApp = create<AppState>((set, get) => {
           const cursorKey = checkpointKeys(server.id).cursor;
           const saveAt = PERF_ON ? perfSaveStart() : 0;
           for (const { key, value } of plan.write) {
-            // Re-checked right before the cursor lands: whatever was already durable when this save
-            // started, the cursor may still be ahead of its data, but never behind another save's.
-            if (key === cursorKey && !cursorAllowed(server.id, conn, cursor, true)) throw Error('Connection replaced');
+            // A save whose connection has been replaced writes only while it is still the newest save of
+            // its bot and its cursor is still ahead of the one on disk. The moment a later save starts —
+            // the chain's bound lets one start over a save the device never answered — its data is older
+            // than what that save is writing, so it writes nothing at all: a page record landed after the
+            // later save's would leave the cursor ahead of its data, and the refs that save recorded mean
+            // no later save rewrites that chat. A live save is unchanged and only re-checks here, right
+            // before the cursor lands: whatever was already durable when it started, its cursor may be
+            // ahead of its data, but never behind another save's.
+            const live = connections.get(server.id) === conn;
+            const stale = !live && (latestSave.get(server.id) !== seq || !cursorAllowed(server.id, conn, cursor, true));
+            if (stale || (live && key === cursorKey && !cursorAllowed(server.id, conn, cursor, true))) {
+              throw Error('Connection replaced');
+            }
             await cacheSetStrict(key, value);
           }
           if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
@@ -908,9 +928,16 @@ export const useApp = create<AppState>((set, get) => {
       // retirement marker for it, nor delete a page record a re-pairing writes under the same id.
       retirePending.delete(serverId);
       for (const key of [...prunePages]) if (key.startsWith(`replay:${serverId}:`)) prunePages.delete(key);
-      // Hygiene work owed for a bot that is being erased: a later save for another bot must not write a
-      // retirement marker for it, nor delete a page record a re-pairing writes under the same id.
       await cacheRemove(`replay:${serverId}`);
+      // This bot starts over if it is paired again in this launch: the checkpoint those refs describe is
+      // gone, so the next save must write everything rather than diff against it; the launch-time sweep
+      // is a launch job per bot and has to run for the new pairing, not stay marked as done; and a save
+      // still in flight belongs to the old life, so nothing new waits on it.
+      checkpointSaved.delete(serverId);
+      sweptPages.delete(serverId);
+      saveChains.delete(serverId);
+      latestSave.delete(serverId);
+      retired.delete(serverId);
       sendChains.delete(serverId);
       sendPaused.delete(serverId);
       if (server && unpair) {
