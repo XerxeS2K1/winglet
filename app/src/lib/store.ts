@@ -674,7 +674,6 @@ export const useApp = create<AppState>((set, get) => {
           // them can only leave the cursor behind its data, which replay repairs.
           const before = checkpointSaved.get(server.id);
           const plan = planCheckpoint(server.id, rt, cursor, before);
-          const cursorKey = checkpointKeys(server.id).cursor;
           const saveAt = PERF_ON ? perfSaveStart() : 0;
           for (const { key, value } of plan.write) {
             // A save whose connection has been replaced writes only while it is still the newest save of
@@ -682,14 +681,10 @@ export const useApp = create<AppState>((set, get) => {
             // the chain's bound lets one start over a save the device never answered — its data is older
             // than what that save is writing, so it writes nothing at all: a page record landed after the
             // later save's would leave the cursor ahead of its data, and the refs that save recorded mean
-            // no later save rewrites that chat. A live save is unchanged and only re-checks here, right
-            // before the cursor lands: whatever was already durable when it started, its cursor may be
-            // ahead of its data, but never behind another save's.
+            // no later save rewrites that chat. A live save is unchanged, and always writes every key.
             const live = connections.get(server.id) === conn;
             const stale = !live && (latestSave.get(server.id) !== seq || !cursorAllowed(server.id, conn, cursor, true));
-            if (stale || (live && key === cursorKey && !cursorAllowed(server.id, conn, cursor, true))) {
-              throw Error('Connection replaced');
-            }
+            if (stale) throw Error('Connection replaced');
             await cacheSetStrict(key, value);
           }
           if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
