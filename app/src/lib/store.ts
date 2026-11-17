@@ -242,14 +242,16 @@ async function sweepPageRecords(serverId: string, named: string[]) {
   } catch { /* nothing to sweep, or nothing that can be listed */ }
 }
 
-/** Whether this connection may still write a checkpoint: the live one always may. */
-const cursorAllowed = (serverId: string, conn: Connection, cursor: ReplayCursor, beforeCursor = false) => {
+/**
+ * Whether a save may start: the live connection always may, a connection being retired may only while
+ * its cursor is still ahead of the one on disk and of the same scope. A save that starts here and loses
+ * the race later is stopped write by write, so this is only the cheap early rejection.
+ */
+const cursorAllowed = (serverId: string, conn: Connection, cursor: ReplayCursor) => {
   if (connections.get(serverId) === conn) return true;
   const known = replayCursors.get(serverId);
   if (!retiring.has(conn) || !known || known.scope !== cursor.scope) return false;
-  // Right before the cursor record the rule is strict: a cursor at or below the one already durable is
-  // never written again, so a save that lost the race cannot move the checkpoint backwards.
-  return beforeCursor ? cursor.cursor > known.cursor : cursor.cursor >= known.cursor;
+  return cursor.cursor >= known.cursor;
 };
 
 /** Resolves when this bot's previous save settled — either way — or when waiting stops being worth it. */
@@ -677,14 +679,14 @@ export const useApp = create<AppState>((set, get) => {
           const saveAt = PERF_ON ? perfSaveStart() : 0;
           for (const { key, value } of plan.write) {
             // A save whose connection has been replaced writes only while it is still the newest save of
-            // its bot and its cursor is still ahead of the one on disk. The moment a later save starts —
-            // the chain's bound lets one start over a save the device never answered — its data is older
-            // than what that save is writing, so it writes nothing at all: a page record landed after the
-            // later save's would leave the cursor ahead of its data, and the refs that save recorded mean
-            // no later save rewrites that chat. A live save is unchanged, and always writes every key.
+            // its bot. The moment a later save starts — the chain's bound lets one start over a save the
+            // device never answered, and a removed bot's saves stop being newest at once — its data is
+            // older than what that save is writing, so it writes nothing at all, page records and cursor
+            // alike: a page record landed after the later save's would leave the cursor ahead of its data,
+            // and the refs that save recorded mean no later save rewrites that chat. A live save is
+            // unchanged and always writes every key.
             const live = connections.get(server.id) === conn;
-            const stale = !live && (latestSave.get(server.id) !== seq || !cursorAllowed(server.id, conn, cursor, true));
-            if (stale) throw Error('Connection replaced');
+            if (!live && latestSave.get(server.id) !== seq) throw Error('Connection replaced');
             await cacheSetStrict(key, value);
           }
           if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
