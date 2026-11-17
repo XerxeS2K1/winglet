@@ -153,3 +153,30 @@ test('the hooks are in place and cost nothing when off', () => {
   const perf = readFileSync(new URL('../src/lib/perf.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(perf, /fetch\(|XMLHttpRequest|WebSocket|from '\.\/api'|signedApi/);
 });
+
+test('a checkpoint save reports its records, characters and largest record, and costs nothing when off', () => {
+  const { perf, logs, state } = load({ dev: false, flag: '1' });
+  const page = { messages: [{ id: 'a', text: 'x'.repeat(90) }], deleted: [] };
+  const write = [
+    { key: 'replay:s:m:general', value: page },
+    { key: 'replay:s:meta', value: { chats: {}, pending: 0 } },
+    { key: 'replay:s:v2', value: { v: 2 } },
+  ];
+  const chars = write.reduce((n, w) => n + JSON.stringify(w.value).length, 0);
+  const started = perf.perfSaveStart();
+  state.now += 37; // the three writes take 37 ms
+  perf.perfSaveDone(write, started);
+  assert.deepEqual(logs.map((l) => l.replace('[winglet-perf] ', '')),
+    [`checkpoint save: records=3 chars=${chars} largest=${JSON.stringify(page).length} ms=37`],
+    'one line per save: records, characters, the largest record and the first-to-last time');
+
+  // A record that cannot be serialised is counted as nothing; a save must never fail over a diagnostic.
+  const circular: any = {}; circular.self = circular;
+  assert.doesNotThrow(() => perf.perfSaveDone([{ key: 'x', value: circular }], state.now));
+  assert.equal(logs.at(-1), '[winglet-perf] checkpoint save: records=1 chars=0 largest=0 ms=0');
+
+  const off = load({ dev: false });
+  off.perf.perfSaveStart();
+  off.perf.perfSaveDone(write, 0);
+  assert.deepEqual(off.logs, [], 'nothing is measured or logged with the switch off');
+});

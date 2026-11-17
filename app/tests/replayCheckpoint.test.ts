@@ -203,6 +203,37 @@ test('a save writes the chat that changed and the cursor, and the cursor goes la
   assert.deepEqual(h.keys(), ['replay:s:m:chat2', 'replay:s:v2'], 'only the chat that changed is rewritten');
 });
 
+test("a save where a new chat's page appears rewrites meta with the new id", async () => {
+  const h = harness();
+  await h.connect(seed(3, 20, 40));
+  await h.join(0);
+  assert.deepEqual([...h.cache.get('replay:s:meta').pages].sort(), ['chat1', 'chat2', 'general'],
+    'the first save named every page it wrote');
+  h.reset();
+
+  // A message for a chat this phone has not held before: its page record is new, so meta must name it too.
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'fresh', message: { ...msg(1), id: 'fresh-1', chat_id: 'fresh' } });
+  await h.tick();
+  assert.deepEqual(h.keys(), ['replay:s:m:fresh', 'replay:s:meta', 'replay:s:v2'],
+    'the new page, then a meta that names it, then the cursor');
+  assert.deepEqual([...h.cache.get('replay:s:meta').pages].sort(), ['chat1', 'chat2', 'fresh', 'general'],
+    'a restore reads the new page back because meta names it');
+});
+
+test('a save where only a meta slice changed rewrites meta and no page', async () => {
+  const h = harness();
+  await h.connect(seed(3, 20, 40));
+  await h.join(0);
+  h.reset();
+
+  // Renaming a chat changes the chat list and nothing else: no page's messages moved.
+  h.event({ type: 'chat.update', event_seq: 1, chat_id: 'general', chat: { ...chat('general'), title: 'Renamed' } });
+  await h.tick();
+  assert.deepEqual(h.keys(), ['replay:s:meta', 'replay:s:v2'], 'meta again, but no page record is rewritten');
+  assert.equal(h.cache.get('replay:s:meta').chats.general.title, 'Renamed',
+    'a restore reads the new chat list, not a stale one');
+});
+
 test('a streamed burst never writes the whole phone again', async () => {
   const h = harness();
   await h.connect(seed(8, 120, 400));

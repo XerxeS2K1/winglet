@@ -112,6 +112,7 @@ function harness(os = 'web') {
     './authCheck': { ...authCheck, AUTH_RECHECK_DELAYS_MS: [1, 1], pause: async () => {} },
     './handledNotifications': handled,
     './perf': { get PERF_ON() { return perfState.on; }, perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]),
+      perfSaveStart: () => 0, perfSaveDone: () => {},
       perfSendStage: (clientId: string, stage: string, f?: any) => perfCalls.push(['stage', stage, f ?? {}, clientId]), perfSendEcho: (clientId: string) => perfCalls.push(['echo', clientId]) },
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,

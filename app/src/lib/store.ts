@@ -13,7 +13,7 @@ import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
 import { canCoalesce, createStreamBuffer } from './streamBuffer';
-import { PERF_ON, perfMessageSent, perfMessageUpdate, perfSendEcho, perfSendStage } from './perf';
+import { PERF_ON, perfMessageSent, perfMessageUpdate, perfSaveDone, perfSaveStart, perfSendEcho, perfSendStage } from './perf';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { refreshNetworkNow } from './network';
@@ -557,7 +557,9 @@ export const useApp = create<AppState>((set, get) => {
           // written. Dirty chat records first, then the rest of the state, then the cursor: a crash between
           // them can only leave the cursor behind its data, which replay repairs.
           const plan = planCheckpoint(server.id, rt, cursor, checkpointSaved.get(server.id));
+          const saveAt = PERF_ON ? perfSaveStart() : 0;
           for (const { key, value } of plan.write) await cacheSetStrict(key, value);
+          if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
           checkpointSaved.set(server.id, plan.saved);
           if (connections.get(server.id) === conn) replayCursors.set(server.id, cursor);
           // The pre-split record (whole state, up to megabytes) is retired once, after a save that covers

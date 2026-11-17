@@ -329,3 +329,41 @@ export function perfSendEcho(clientId: string): void {
   const n = sendLabels.peek(clientId);
   if (n !== undefined) mark('socket-echo', { send: n });
 }
+
+// -- checkpoint save cost: what one save actually writes --------------------------------------------------
+// Counts and lengths again, never content. A save has to be proportional to what changed, and only the phone
+// can say what a real chat page costs: `chars` is the JSON handed to the sealer, so the sealed value stored
+// on disk is that text encrypted and base64-encoded — about a third longer, plus the nonce and tag.
+
+export type SaveMeasure = { records: number; chars: number; largest: number };
+
+/** How much text one save seals: one JSON string per record, plus the largest of them. */
+export function measureSave(write: { key: string; value: unknown }[]): SaveMeasure {
+  let chars = 0;
+  let largest = 0;
+  for (const { value } of write) {
+    let n = 0;
+    try { n = JSON.stringify(value)?.length ?? 0; } catch { n = 0; }
+    chars += n;
+    if (n > largest) largest = n;
+  }
+  return { records: write.length, chars, largest };
+}
+
+/** `checkpoint save: records=3 chars=412345 largest=409912 ms=24` */
+export const saveLine = (m: SaveMeasure, elapsedMs: number) =>
+  `checkpoint save: records=${m.records} chars=${m.chars} largest=${m.largest} ms=${Math.round(elapsedMs)}`;
+
+/** The clock value to hand back to `perfSaveDone`; 0 when the switch is off. */
+export function perfSaveStart(): number {
+  return PERF_ON ? clock() : 0;
+}
+
+/** A checkpoint save finished writing: log its cost. No awaits, no writes, and it never throws. */
+export function perfSaveDone(write: { key: string; value: unknown }[], startedAt: number): void {
+  if (!PERF_ON) return;
+  const elapsed = clock() - startedAt; // read before the measuring, so the probe is not counted as save time
+  try {
+    log(saveLine(measureSave(write), elapsed));
+  } catch { /* a diagnostic must never get in the way of a save */ }
+}
