@@ -8,7 +8,7 @@ import { api, ApiError, signedApi, wsUrl } from './api';
 import { needsSignature } from './commands';
 import { cacheDeleteStrict, cacheGet, cacheKeys, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
-import { checkpointKeys, loadCheckpoint, planCheckpoint, type SavedRefs } from '../features/event-replay/checkpoint';
+import { checkpointKeys, loadCheckpoint, planCheckpoint, savedRefsOf, type SavedRefs } from '../features/event-replay/checkpoint';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
@@ -182,6 +182,11 @@ const prunePages = new Set<string>();
 /** Bots whose page records have been swept this launch: that is a launch-time job, not a per-save one. */
 const sweptPages = new Set<string>();
 /**
+ * The v2 whole-chat records this launch loaded, by bot. They are the only copy of that history until a
+ * v3 save commits; once one has, they are dead weight and removed by the same hygiene pass.
+ */
+const legacyRecords = new Map<string, string[]>();
+/**
  * One checkpoint save at a time per bot. The storage queue orders each individual write, but a save is
  * several of them, so a replacement socket and the connection it retired could otherwise interleave at
  * a key boundary and undo each other. Keyed by bot, so different bots keep saving concurrently.
@@ -207,10 +212,10 @@ const sendPaused = new Set<string>();
 const isNetworkError = (e: unknown) => !(e instanceof ApiError) || e.status === 0;
 
 /**
- * Remove the page records of chats this phone no longer holds (a deleted chat must not keep its text
- * and its row on disk), then retire the pre-split whole-state record once a save covers it. Both are
- * cache hygiene rather than data: a failure is kept for the next save and never fails this save,
- * moves its cursor, or throws. Removal is by exact key, so a chat id that prefixes another stays put.
+ * Remove the records of chats this phone no longer holds (a deleted chat must not keep its text and its
+ * rows on disk), then retire the pre-split whole-state record once a save covers it. Removal is by exact
+ * key, so a chat id that prefixes another stays put. All of it is cache hygiene rather than data: a
+ * failure is kept for the next save and never fails this save, moves its cursor, or throws.
  */
 async function afterSaveHygiene(serverId: string) {
   for (const key of [...prunePages]) {
@@ -221,23 +226,36 @@ async function afterSaveHygiene(serverId: string) {
     try { await cacheSetStrict(checkpointKeys(id).base, { v: 2, retired: true }); retirePending.delete(id); retired.add(id); }
     catch { /* retried on the next save */ }
   }
+  // The v2 records, once a v3 save has committed: the cursor it wrote is the last record of the save, so
+  // the state on disk is complete without them. Keep them on any failure and try again next save.
+  for (const [id, records] of [...legacyRecords]) {
+    try {
+      for (const key of records) await cacheDeleteStrict(key);
+      legacyRecords.delete(id);
+    } catch { /* retried on the next save */ }
+  }
 }
 
 /**
- * Remove page records no checkpoint names — one a previous build wrote, or one an interrupted prune
- * left — once per launch, after a load that succeeded. Only exact keys are removed, a key the meta
- * record names is never touched, and a storage that cannot list its keys ends the sweep instead of
- * guessing, so a failed load sweeps nothing.
+ * Remove records no checkpoint names — one a previous build wrote, or one an interrupted prune left —
+ * once per launch, after a load that succeeded. Only exact keys are removed, a key the meta names is
+ * never touched, and a storage that cannot list its keys ends the sweep instead of guessing, so a failed
+ * load sweeps nothing.
  */
 async function sweepPageRecords(serverId: string, named: string[]) {
   if (sweptPages.has(serverId)) return;
   sweptPages.add(serverId);
   const keys = checkpointKeys(serverId);
-  const keep = new Set(named.map((id) => keys.chat(id)));
+  const keep = new Set(named);
+  // Both layouts' page records are listed: a v3 checkpoint does not name any v2 record, so the whole of
+  // the old layout goes; a v2 checkpoint names its own, so they stay.
+  const prefixes = [keys.chunkPrefix, keys.tombPrefix, keys.v2.chat(''), keys.v2.meta, keys.v2.cursor];
   try {
-    for (const key of await cacheKeys(keys.chat(''))) {
-      if (keep.has(key)) continue;
-      try { await cacheDeleteStrict(key); } catch { /* retried at the next launch */ }
+    for (const prefix of prefixes) {
+      for (const key of await cacheKeys(prefix)) {
+        if (keep.has(key)) continue;
+        try { await cacheDeleteStrict(key); } catch { /* retried at the next launch */ }
+      }
     }
   } catch { /* nothing to sweep, or nothing that can be listed */ }
 }
@@ -692,10 +710,10 @@ export const useApp = create<AppState>((set, get) => {
           if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
           checkpointSaved.set(server.id, plan.saved);
           if (connections.get(server.id) === conn) replayCursors.set(server.id, cursor);
-          // A chat that was here for the last save and is gone from this one keeps a page record nobody
-          // reads: deleted text left on disk, and rows that only ever grow. Queue its exact key, then let
-          // the hygiene below try it; the next save retries whatever fails.
-          for (const id of before?.ids ?? []) if (!plan.saved.ids.includes(id)) prunePages.add(checkpointKeys(server.id).chat(id));
+          // A chat that was here for the last save and is gone from this one keeps records nobody reads:
+          // deleted text left on disk, and rows that only ever grow. Queue their exact keys, then let the
+          // hygiene below try them; the next save retries whatever fails.
+          for (const key of plan.prune) prunePages.add(key);
           await afterSaveHygiene(server.id);
         }),
         apply: async (event, replayed) => {
@@ -779,12 +797,17 @@ export const useApp = create<AppState>((set, get) => {
       patch(serverId, () => checkpoint.state);
     }
     if (checkpoint?.cursor?.scope && checkpoint.state) {
-      // The load succeeded, so the pages it names are the only ones this checkpoint can restore: clear
-      // out records a previous build or an interrupted prune left behind, once, now.
-      const named = new Set([...(checkpoint.state.pages ?? []), ...Object.keys(checkpoint.state.chats ?? {}),
-        ...Object.keys(checkpoint.state.loaded ?? {}), ...Object.keys(checkpoint.state.messages ?? {}),
-        ...Object.keys(checkpoint.state.deleted ?? {})]);
-      void sweepPageRecords(serverId, [...named]);
+      // The load succeeded, so the records it names are the only ones this checkpoint can restore: clear
+      // out what a previous build or an interrupted prune left behind, once, now. A v3 checkpoint names
+      // none of the v2 records, so the whole old layout is swept with them.
+      void sweepPageRecords(serverId, checkpoint.keys ?? []);
+      if (checkpoint.legacy) legacyRecords.set(serverId, checkpoint.keys ?? []);
+      // A complete v3 restore is, by definition, what is already on the disk: adopting it as the last
+      // saved state means the next save writes only what changed, instead of the whole history once per
+      // launch. A truncated restore is not adopted, so its chats are written again.
+      if (checkpoint.complete && !checkpoint.legacy && get().runtime[serverId]?.status !== 'online') {
+        checkpointSaved.set(serverId, savedRefsOf(serverId, checkpoint.state));
+      }
     }
     const acknowledged = new Set(Object.values(checkpoint?.state?.messages ?? {}).flat()
       .filter((m) => !isLocal(m)).map((m) => m.meta?.client_id).filter(Boolean));
@@ -932,6 +955,7 @@ export const useApp = create<AppState>((set, get) => {
       // still in flight belongs to the old life, so nothing new waits on it.
       checkpointSaved.delete(serverId);
       sweptPages.delete(serverId);
+      legacyRecords.delete(serverId);
       saveChains.delete(serverId);
       latestSave.delete(serverId);
       retired.delete(serverId);

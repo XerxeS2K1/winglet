@@ -187,7 +187,7 @@ function harness(shared?: Map<string, any>) {
     /** Run the timers the session scheduled (its resume timeout). */
     runSessionTimers: () => { for (const timer of sessionTimers.splice(0)) timer?.fn?.(); },
     /** Every cursor value a save actually put on disk, in order. */
-    cursorWrites: () => writes.filter((w) => w.key === 'replay:s:v2').map((w) => w.value.cursor.cursor),
+    cursorWrites: () => writes.filter((w) => w.key === 'replay:s:v3').map((w) => w.value.cursor.cursor),
     event: (data: any) => socket.event(data),
     /** Make the next write of this key wait; the returned call releases it. A save held in flight. */
     hold: (key: string) => {
@@ -237,6 +237,17 @@ const wholeStateBytes = (h: any) => {
     projects: rt.projects, tasks: rt.tasks } }).length;
 };
 
+/** The chunk keys the meta record names for one chat, in order. */
+const chunkKeys = (h: any, chatId = 'general'): string[] =>
+  h.cache.get('replay:s:v3:meta')?.chunks?.[chatId] ?? [];
+
+/** The messages a restore would read back for one chat: every named chunk, concatenated in order. */
+const diskMessages = (cache: Map<string, any>, chatId = 'general'): any[] => {
+  const keys: string[] = cache.get('replay:s:v3:meta')?.chunks?.[chatId] ?? [];
+  return keys.flatMap((key) => cache.get(key)?.messages ?? []);
+};
+const onDisk = (h: any, chatId = 'general') => diskMessages(h.cache, chatId);
+
 test('a save writes the chat that changed and the cursor, and the cursor goes last', async () => {
   const h = harness();
   await h.connect(seed(4, 20, 40));
@@ -246,32 +257,33 @@ test('a save writes the chat that changed and the cursor, and the cursor goes la
 
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
   await h.tick();
-  assert.deepEqual(h.keys(), ['replay:s:m:general', 'replay:s:v2'], 'one chat and the cursor, nothing else');
-  assert.ok(h.cache.get('replay:s:m:general').messages.some((m: any) => m.id === 'm1'));
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1);
-  assert.equal(h.cache.get('replay:s:m:chat2').messages.length, 20, 'an untouched chat is still there from the first save');
+  assert.deepEqual(h.keys(), ['replay:s:c:general:0', 'replay:s:v3'], 'one chunk and the cursor, nothing else');
+  assert.ok(onDisk(h).some((m: any) => m.id === 'm1'));
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1);
+  assert.equal(onDisk(h, 'chat2').length, 20, 'an untouched chat is still there from the first save');
 
   h.reset();
   h.event({ type: 'message.new', event_seq: 2, chat_id: 'chat2', message: { ...msg(2), id: 'chat2-x', chat_id: 'chat2' } });
   await h.tick();
-  assert.deepEqual(h.keys(), ['replay:s:m:chat2', 'replay:s:v2'], 'only the chat that changed is rewritten');
+  assert.deepEqual(h.keys(), ['replay:s:c:chat2:0', 'replay:s:v3'], 'only the chat that changed is rewritten');
 });
 
 test("a save where a new chat's page appears rewrites meta with the new id", async () => {
   const h = harness();
   await h.connect(seed(3, 20, 40));
   await h.join(0);
-  assert.deepEqual([...h.cache.get('replay:s:meta').pages].sort(), ['chat1', 'chat2', 'general'],
+  assert.deepEqual([...h.cache.get('replay:s:v3:meta').pages].sort(), ['chat1', 'chat2', 'general'],
     'the first save named every page it wrote');
   h.reset();
 
-  // A message for a chat this phone has not held before: its page record is new, so meta must name it too.
+  // A message for a chat this phone has not held before: its chunk is new, so meta must name it too.
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'fresh', message: { ...msg(1), id: 'fresh-1', chat_id: 'fresh' } });
   await h.tick();
-  assert.deepEqual(h.keys(), ['replay:s:m:fresh', 'replay:s:meta', 'replay:s:v2'],
-    'the new page, then a meta that names it, then the cursor');
-  assert.deepEqual([...h.cache.get('replay:s:meta').pages].sort(), ['chat1', 'chat2', 'fresh', 'general'],
-    'a restore reads the new page back because meta names it');
+  assert.deepEqual(h.keys(), ['replay:s:c:fresh:0', 'replay:s:t:fresh', 'replay:s:v3:meta', 'replay:s:v3'],
+    'the new chunk, its (empty) tombstones, then a meta that names the chunk, then the cursor');
+  assert.deepEqual([...h.cache.get('replay:s:v3:meta').pages].sort(), ['chat1', 'chat2', 'fresh', 'general'],
+    'a restore reads the new chunk back because meta names it');
+  assert.deepEqual(chunkKeys(h, 'fresh'), ['replay:s:c:fresh:0'], 'the chunk list is in the meta, not implied');
 });
 
 test('a save where only a meta slice changed rewrites meta and no page', async () => {
@@ -280,11 +292,11 @@ test('a save where only a meta slice changed rewrites meta and no page', async (
   await h.join(0);
   h.reset();
 
-  // Renaming a chat changes the chat list and nothing else: no page's messages moved.
+  // Renaming a chat changes the chat list and nothing else: no chunk's messages moved.
   h.event({ type: 'chat.update', event_seq: 1, chat_id: 'general', chat: { ...chat('general'), title: 'Renamed' } });
   await h.tick();
-  assert.deepEqual(h.keys(), ['replay:s:meta', 'replay:s:v2'], 'meta again, but no page record is rewritten');
-  assert.equal(h.cache.get('replay:s:meta').chats.general.title, 'Renamed',
+  assert.deepEqual(h.keys(), ['replay:s:v3:meta', 'replay:s:v3'], 'meta again, but no chunk is rewritten');
+  assert.equal(h.cache.get('replay:s:v3:meta').chats.general.title, 'Renamed',
     'a restore reads the new chat list, not a stale one');
 });
 
@@ -308,7 +320,7 @@ test('a streamed burst never writes the whole phone again', async () => {
   assert.ok(h.writes.length <= 2, `twenty queued events cost ${h.writes.length} save(s)`);
   assert.ok(streamed < whole, `the burst wrote ${streamed} bytes, less than one old whole-state save (${whole})`);
   assert.ok(h.writes.every((w) => w.bytes < 100_000), 'no single write is a whole-state payload');
-  assert.match((h.cache.get('replay:s:m:general').messages.find((m: any) => m.id === 'm900') ?? {}).text ?? '',
+  assert.match((onDisk(h).find((m: any) => m.id === 'm900') ?? {}).text ?? '',
     /^y{400}20$/, 'the last token of the burst is on disk');
 });
 
@@ -318,13 +330,18 @@ test('per-event written bytes stay small however large the history is', async ()
   await h.join(0);
   const whole = wholeStateBytes(h);
   assert.ok(whole > 1_000_000, `a megabyte-plus history (${whole} bytes)`);
+  const chunks = chunkKeys(h, 'general');
+  assert.ok(chunks.length > 1, `the chat spans ${chunks.length} chunks`);
   h.reset();
-  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
+  // A new message at the end of the chat: positions are the server's insertion order, so a middle one
+  // would (correctly) move every message after it and rewrite their chunks.
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1, { position: 300 }) });
   await h.tick();
+  assert.equal(h.store.getState().runtime.s.messages.general.length, 301);
   const perEvent = h.bytes();
-  assert.ok(perEvent < 250_000, `one event wrote ${perEvent} bytes`);
+  assert.ok(perEvent < 70_000, `one event wrote ${perEvent} bytes`);
   assert.ok(perEvent < whole / 5, `${perEvent} bytes is under a fifth of the ${whole}-byte whole state`);
-  assert.deepEqual(h.keys(), ['replay:s:m:general', 'replay:s:v2']);
+  assert.deepEqual(h.keys(), [chunks[chunks.length - 1], 'replay:s:v3'], 'the tail chunk and the cursor');
 });
 
 test('a crash between the data write and the cursor write leaves the cursor behind its data', async () => {
@@ -334,16 +351,16 @@ test('a crash between the data write and the cursor write leaves the cursor behi
   await h.join(0);
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
   await h.tick();
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1);
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1);
 
-  // The next save's chat record lands, then the process dies before the cursor record can be written.
-  h.failOn.add('replay:s:v2');
+  // The next save's chunk lands, then the process dies before the cursor record can be written.
+  h.failOn.add('replay:s:v3');
   h.reset();
   h.event({ type: 'message.new', event_seq: 2, chat_id: 'general', message: msg(2) });
   await h.tick();
-  assert.deepEqual(h.keys(), ['replay:s:m:general'], 'the data was written, the cursor was not');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1, 'the durable cursor is still behind the data');
-  assert.ok(h.cache.get('replay:s:m:general').messages.some((m: any) => m.id === 'm2'));
+  assert.deepEqual(h.keys(), ['replay:s:c:general:0'], 'the data was written, the cursor was not');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1, 'the durable cursor is still behind the data');
+  assert.ok(onDisk(h).some((m: any) => m.id === 'm2'));
   assert.equal(h.phase(), 'blocked', 'the failure still blocks replay progress');
 
   // A fresh app start reads that checkpoint back: newer data, older cursor, so replay covers the gap.
@@ -356,19 +373,19 @@ test('a crash between the data write and the cursor write leaves the cursor behi
   await restarted.begin(2);
   await restarted.reply(2, 2, [{ type: 'message.new', event_seq: 2, chat_id: 'general', message: msg(2) }]);
   assert.equal(restarted.messages().map((m: any) => m.id).join(), before, 're-apply changed nothing');
-  assert.equal(restarted.cache.get('replay:s:v2').cursor.cursor, 2, 'the cursor caught up');
+  assert.equal(restarted.cache.get('replay:s:v3').cursor.cursor, 2, 'the cursor caught up');
 });
 
 test('a failed strict write is reported, and no cursor is written for a save that failed', async () => {
   const h = harness();
   await h.connect(seed(2, 10, 40));
   await h.join(0);
-  h.failOn.add('replay:s:m:general');
+  h.failOn.add('replay:s:c:general:0');
   h.reset();
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
   await h.tick();
   assert.equal(h.phase(), 'blocked');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 0, 'no cursor was written for a save that failed');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 0, 'no cursor was written for a save that failed');
   assert.deepEqual(h.keys(), [], 'and nothing followed the failed write');
   assert.ok(h.messages().some((m: any) => m.id === 'm1'),
     'the applied message is in memory; the next successful save persists it before any cursor');
@@ -390,10 +407,10 @@ test('a burst still in memory is written before the session is given up: a drop 
     for (const event of burst()) h.event(event);
     h.socket().readyState = 3; h.socket().onclose?.({ code: 1006 });
     await h.tick();
-    const page = cache.get('replay:s:m:general')?.messages ?? [];
+    const page = diskMessages(cache);
     assert.match((page.find((m: any) => m.id === 'm900') ?? {}).text ?? '', /x{200}12$/,
       'the last token of a burst still queued at the drop is on disk');
-    assert.equal(cache.get('replay:s:v2').cursor.cursor, 12, 'and the cursor covers it');
+    assert.equal(cache.get('replay:s:v3').cursor.cursor, 12, 'and the cursor covers it');
   }
 
   // 2. A background, with the same burst still queued. The OS may kill the app from here, so it has to
@@ -407,10 +424,10 @@ test('a burst still in memory is written before the session is given up: a drop 
     for (const event of burst()) h.event(event);
     h.store.getState().setForeground(false);
     await h.tick();
-    const page = cache.get('replay:s:m:general')?.messages ?? [];
+    const page = diskMessages(cache);
     assert.match((page.find((m: any) => m.id === 'm900') ?? {}).text ?? '', /x{200}12$/,
       'going to the background left nothing unsaved');
-    assert.equal(cache.get('replay:s:v2').cursor.cursor, 12);
+    assert.equal(cache.get('replay:s:v3').cursor.cursor, 12);
     h.store.getState().setForeground(true);
   }
 
@@ -517,14 +534,14 @@ test('a deleted chat loses its page record, and a chat that shares its prefix ke
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'a', message: { ...msg(1), id: 'a-1', chat_id: 'a' } });
   h.event({ type: 'message.new', event_seq: 2, chat_id: 'ab', message: { ...msg(2), id: 'ab-1', chat_id: 'ab' } });
   await h.tick();
-  assert.ok(h.cache.has('replay:s:m:a') && h.cache.has('replay:s:m:ab'), 'both pages are on disk');
+  assert.ok(h.cache.has('replay:s:c:a:0') && h.cache.has('replay:s:c:ab:0'), 'both pages are on disk');
 
   h.event({ type: 'chat.delete', event_seq: 3, chat_id: 'a' });
   await h.tick();
-  assert.equal(h.cache.has('replay:s:m:a'), false, "the deleted chat's page record is gone from disk");
-  assert.ok(h.cache.get('replay:s:m:ab')?.messages?.some((m: any) => m.id === 'ab-1'),
+  assert.equal(h.cache.has('replay:s:c:a:0'), false, "the deleted chat's page record is gone from disk");
+  assert.ok(diskMessages(h.cache, 'ab').some((m: any) => m.id === 'ab-1'),
     'the chat whose id starts with the deleted one keeps its page');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 3, 'the save that pruned it still moved the cursor');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 3, 'the save that pruned it still moved the cursor');
 });
 
 test('a failed retirement of the pre-split record is retried until it succeeds', async () => {
@@ -532,14 +549,14 @@ test('a failed retirement of the pre-split record is retried until it succeeds',
   h.failOn.add('replay:s');
   await h.connect(seed(2, 5, 20));
   await h.join(0);
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 0, 'the save that could not retire it still committed');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 0, 'the save that could not retire it still committed');
   assert.ok(h.cache.get('replay:s')?.state, 'the pre-split record is still there, not written off as retired');
 
   h.failOn.delete('replay:s');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
   await h.tick();
   assert.equal(h.cache.get('replay:s').retired, true, 'the next save retired it');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1, 'and the cursor was unaffected by the retry');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1, 'and the cursor was unaffected by the retry');
 });
 
 test('a replayed inbox event cannot drag the badge back to its journal-time count', async () => {
@@ -576,36 +593,48 @@ test('a failed meta write writes no cursor and reports the save failed', async (
   await h.connect(seed(2, 5, 20));
   await h.join(0);
   // A rename changes the meta record and nothing else, so meta is the first write of the save.
-  h.failOn.add('replay:s:meta');
+  h.failOn.add('replay:s:v3:meta');
   h.reset();
   h.event({ type: 'chat.update', event_seq: 1, chat_id: 'general', chat: { ...chat('general'), title: 'Renamed' } });
   await h.tick();
   assert.equal(h.phase(), 'blocked', 'the failure reached the session');
   assert.deepEqual(h.keys(), [], 'nothing was written after the failed meta record');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 0, 'no cursor was written for a save that failed');
-  assert.equal(h.cache.get('replay:s:meta').chats.general.title, 'general', 'the old meta record is intact');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 0, 'no cursor was written for a save that failed');
+  assert.equal(h.cache.get('replay:s:v3:meta').chats.general.title, 'general', 'the old meta record is intact');
 });
 
-test('a restore survives a missing, an unnamed and a malformed page record', async () => {
+test('a restore survives a missing, an unnamed and a malformed chunk record', async () => {
   const cache = new Map<string, any>();
-  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 9 } });
-  cache.set('replay:s:meta', { chats: { named: chat('named'), gone: chat('gone'), junk: chat('junk'), unnamed: chat('unnamed') },
-    loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['named', 'gone', 'junk'] });
-  cache.set('replay:s:m:named', { messages: [msg(1, { chat_id: 'named', id: 'named-1' })], deleted: [] });
-  // 'gone' has no record at all, 'junk' has one of the wrong shape, and 'unnamed' has a good record that
-  // meta does not name, so nothing reads it back.
-  cache.set('replay:s:m:junk', { messages: 'not an array', deleted: 7 });
-  cache.set('replay:s:m:unnamed', { messages: [msg(2, { chat_id: 'unnamed', id: 'unnamed-2' })], deleted: [] });
+  cache.set('replay:s:v3', { v: 3, cursor: { scope: 'scope', epoch: 'epoch', cursor: 9 } });
+  cache.set('replay:s:v3:meta', { v: 3, chats: { named: chat('named'), short: chat('short'), junk: chat('junk'),
+    unnamed: chat('unnamed') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['named', 'short', 'junk'],
+    chunks: { named: ['replay:s:c:named:0'],
+      short: ['replay:s:c:short:0', 'replay:s:c:short:1'],
+      junk: ['replay:s:c:junk:0'],
+      unnamed: ['replay:s:c:unnamed:0'] } });
+  cache.set('replay:s:c:named:0', { v: 3, messages: [msg(1, { chat_id: 'named', id: 'named-1' })] });
+  cache.set('replay:s:c:short:0', { v: 3, messages: [msg(2, { chat_id: 'short', id: 'short-1' })] });
+  // 'short' names a second chunk and no such record was written; 'junk' has one of the wrong shape;
+  // 'unnamed' has a good record that the meta does not name, so nothing reads it back.
+  cache.set('replay:s:c:junk:0', { v: 3, messages: 'not an array' });
+  cache.set('replay:s:c:unnamed:0', { v: 3, messages: [msg(3, { chat_id: 'unnamed', id: 'unnamed-1' })] });
   const h = harness(cache);
   await h.connect();
   assert.equal(h.store.getState().runtime.s.chats.named?.title, 'named', 'the chat list came back');
   assert.equal(h.messages('named').map((m: any) => m.id).join(), 'named-1');
-  assert.deepEqual(h.messages('gone'), [], 'a page with no record restores empty, not broken');
-  assert.deepEqual(h.messages('junk'), [], 'a malformed record is ignored');
-  assert.deepEqual(h.messages('unnamed'), [], 'a record meta does not name is not read back');
+  assert.equal(h.messages('short').map((m: any) => m.id).join(), 'short-1', 'the chunk that was readable came back');
+  assert.deepEqual(h.messages('gone'), [], 'a chat with no record restores empty, not broken');
+  assert.deepEqual(h.messages('junk'), [], 'a malformed chunk is ignored');
+  assert.deepEqual(h.messages('unnamed'), [], 'a chunk meta does not name is not read back');
+  // That restore was short — 'short' names two chunks and only one was there — so nothing is adopted as
+  // already saved: the first save after it writes those chats again rather than trusting their marks.
+  h.reset();
   await h.begin(9);
   await h.reply(9, 9, []);
   assert.equal(h.phase(), 'idle', 'and the cursor it restored still resumes cleanly');
+  const wrote = h.keys().filter((key) => key.includes(':c:'));
+  assert.deepEqual([...wrote].sort(), ['replay:s:c:named:0', 'replay:s:c:short:0'],
+    `the chats it read are written again, not trusted as saved (${wrote.join(', ')})`);
 });
 
 test('a whole page re-applied from a coarser cursor leaves the state identical', async () => {
@@ -631,7 +660,7 @@ test('a whole page re-applied from a coarser cursor leaves the state identical',
 
   // The cursor is lost (a crash between data and cursor, or a storage reset) and the server replays the
   // same page from an older one. Every handler must converge on the same state.
-  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
+  cache.set('replay:s:v3', { v: 3, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
   const second = harness(cache);
   await second.connect();
   await second.begin(5);
@@ -640,7 +669,7 @@ test('a whole page re-applied from a coarser cursor leaves the state identical',
   const task = rt.tasks.general ? { ...rt.tasks.general, updated_at: 0 } : undefined;
   assert.equal(JSON.stringify([rt.messages, rt.deleted, rt.chats, task]), after,
     're-applying the page changed nothing');
-  assert.equal(second.cache.get('replay:s:v2').cursor.cursor, 5);
+  assert.equal(second.cache.get('replay:s:v3').cursor.cursor, 5);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -821,7 +850,7 @@ test('a save that lost the race cannot move the cursor back or put an older page
   await h.join(0);
   h.reset();
   // The burst is applied and its first write is in flight when the connection is retired.
-  const release = h.hold('replay:s:m:general');
+  const release = h.hold('replay:s:c:general:0');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
   await h.tick();
   assert.deepEqual(h.keys(), [], 'the page write is still in flight');
@@ -842,7 +871,7 @@ test('a save that lost the race cannot move the cursor back or put an older page
   assert.equal(cursors[cursors.length - 1], 5, `the durable cursor is the newer one (wrote ${cursors.join(', ')})`);
   assert.deepEqual([...cursors].sort((a: number, b: number) => a - b), cursors,
     `the cursor never went backwards (wrote ${cursors.join(', ')})`);
-  const ids = (h.cache.get('replay:s:m:general')?.messages ?? []).map((m: any) => m.id);
+  const ids = (diskMessages(h.cache)).map((m: any) => m.id);
   assert.ok(ids.includes('m105'), `the newer page was not replaced by an older snapshot (${ids.join(', ')})`);
   assert.ok(ids.includes('m101'), 'and the retired connection\'s own messages are still there');
 });
@@ -858,7 +887,7 @@ test('once the replacement has committed, a save the chain gave up on writes not
   await h.join(0);
   h.reset();
   const c = (n: number) => ({ ...msg(n), id: `c${n}`, chat_id: 'chat1' });
-  const release = h.hold('replay:s:m:general');
+  const release = h.hold('replay:s:c:general:0');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
   h.event({ type: 'message.new', event_seq: 2, chat_id: 'chat1', message: c(102) });
   await h.tick();
@@ -874,9 +903,9 @@ test('once the replacement has committed, a save the chain gave up on writes not
     chat_id: n === 1 ? 'general' : 'chat1', message: n === 1 ? msg(100 + n) : c(100 + n) })));
   h.runStoreTimers(); // the chain stops waiting on the save the device never answered
   await h.tick();
-  const ids = (id: string) => (h.cache.get(`replay:s:m:${id}`)?.messages ?? []).map((m: any) => m.id);
+  const ids = (id: string) => diskMessages(h.cache, id).map((m: any) => m.id);
   assert.ok(ids('chat1').includes('c105'), 'the replacement\'s chat1 page is on the disk');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'and its cursor is durable');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 5, 'and its cursor is durable');
 
   // The held write finally lands, as a device that stalled for longer than the bound does. The
   // abandoned save's next planned key is chat1, and that page must not be written.
@@ -900,7 +929,7 @@ test('a retiring save stops at its next key once a newer save has started', asyn
   await h.join(0);
   h.reset();
   const c = (n: number) => ({ ...msg(n), id: `c${n}`, chat_id: 'chat1' });
-  const release = h.hold('replay:s:m:general');
+  const release = h.hold('replay:s:c:general:0');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
   h.event({ type: 'message.new', event_seq: 2, chat_id: 'chat1', message: c(102) });
   await h.tick();
@@ -911,12 +940,12 @@ test('a retiring save stops at its next key once a newer save has started', asyn
     event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
   await h.tick();
   // The replacement's own cursor write is the one still in flight when the abandoned save wakes up.
-  const releaseCursor = h.hold('replay:s:v2');
+  const releaseCursor = h.hold('replay:s:v3');
   await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n,
     chat_id: n === 1 ? 'general' : 'chat1', message: n === 1 ? msg(100 + n) : c(100 + n) })));
   h.runStoreTimers();
   await h.tick();
-  const ids = (id: string) => (h.cache.get(`replay:s:m:${id}`)?.messages ?? []).map((m: any) => m.id);
+  const ids = (id: string) => diskMessages(h.cache, id).map((m: any) => m.id);
   assert.ok(ids('chat1').includes('c105'), 'the replacement wrote its chat1 page before its cursor landed');
 
   release();
@@ -925,7 +954,7 @@ test('a retiring save stops at its next key once a newer save has started', asyn
     `a save that lost the race put its older page back over the newer one (${ids('chat1').join(', ')})`);
   releaseCursor();
   await h.tick();
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'and the newer cursor is the one on the disk');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 5, 'and the newer cursor is the one on the disk');
   assert.ok(ids('chat1').includes('c105'), 'so the cursor does not cover a page that lost its messages');
 });
 
@@ -935,7 +964,7 @@ test('a save that never settles cannot hold the next save for ever', async () =>
   await h.join(0);
   h.reset();
   // A write the device never answers: the save stays in the chain for ever.
-  h.hold('replay:s:m:general');
+  h.hold('replay:s:c:general:0');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
   await h.tick();
   await h.store.getState().updateServer('s', { token: 'next' } as any, true);
@@ -944,11 +973,11 @@ test('a save that never settles cannot hold the next save for ever', async () =>
     event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
   await h.tick();
   await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n, chat_id: 'general', message: msg(100 + n) })));
-  assert.equal(h.cache.get('replay:s:v2')?.cursor?.cursor, 0, 'the replacement is waiting, not silently stuck');
+  assert.equal(h.cache.get('replay:s:v3')?.cursor?.cursor, 0, 'the replacement is waiting, not silently stuck');
 
   h.runStoreTimers(); // the chain stops waiting on the abandoned save
   await h.tick();
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'the next save ran anyway');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 5, 'the next save ran anyway');
   assert.equal(h.phase(), 'idle');
 });
 
@@ -961,7 +990,7 @@ test('the chain waits a bounded few seconds for a save that never settles', asyn
   await h.join(0);
   const pending = h.storeTimerDelays().length;
   h.reset();
-  h.hold('replay:s:m:general'); // a write the device never answers
+  h.hold('replay:s:c:general:0'); // a write the device never answers
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
   await h.tick();
   await h.store.getState().updateServer('s', { token: 'next' } as any, true);
@@ -1053,30 +1082,31 @@ test('dropping to the background flushes what the connection still holds', async
 // ---------------------------------------------------------------------------------------------
 // Hygiene that has to look past the records this session wrote.
 
-test('page records no checkpoint names are swept at launch, and only at launch', async () => {
+test('chunk records no checkpoint names are swept at launch, and only at launch', async () => {
   const cache = new Map<string, any>();
-  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
-  cache.set('replay:s:meta', { chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['general'] });
-  cache.set('replay:s:m:general', { messages: [msg(1)], deleted: [] });
-  cache.set('replay:s:m:ghost', { messages: [msg(9, { id: 'g1', chat_id: 'ghost' })], deleted: [] });
+  cache.set('replay:s:v3', { v: 3, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
+  cache.set('replay:s:v3:meta', { v: 3, chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0,
+    tasks: {}, pages: ['general'], chunks: { general: ['replay:s:c:general:0'] } });
+  cache.set('replay:s:c:general:0', { v: 3, messages: [msg(1)] });
+  cache.set('replay:s:c:ghost:0', { v: 3, messages: [msg(9, { id: 'g1', chat_id: 'ghost' })] });
   const h = harness(cache);
   await h.connect();
   await h.tick();
-  assert.equal(cache.has('replay:s:m:ghost'), false, 'a page record nothing names is gone');
-  assert.ok((cache.get('replay:s:m:general')?.messages ?? []).some((m: any) => m.id === 'm1'), 'a named page is kept');
-  assert.ok(cache.has('replay:s:v2'), 'and the checkpoint itself is untouched');
+  assert.equal(cache.has('replay:s:c:ghost:0'), false, 'a chunk record nothing names is gone');
+  assert.ok(diskMessages(cache).some((m: any) => m.id === 'm1'), 'a named chunk is kept');
+  assert.ok(cache.has('replay:s:v3'), 'and the checkpoint itself is untouched');
 
   // A record left by an interrupted prune, put back: a save is not a launch and must not sweep. This
   // half has to go through a path that really saves — with no session the frame is only applied in
   // memory, nothing is written, and the assertion could not fail.
-  cache.set('replay:s:m:ghost', { messages: [], deleted: [] });
+  cache.set('replay:s:c:ghost:0', { v: 3, messages: [] });
   await h.begin(0);
   await h.reply(0, 0);
   h.reset();
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(2, { id: 'm2' }) });
   await h.tick();
   assert.deepEqual(h.cursorWrites(), [1], 'the frame went through a save');
-  assert.ok(cache.has('replay:s:m:ghost'), 'a later save does not sweep again');
+  assert.ok(cache.has('replay:s:c:ghost:0'), 'a later save does not sweep again');
 });
 
 test('a checkpoint that cannot be read sweeps nothing', async () => {
@@ -1114,16 +1144,17 @@ test('a bot that is removed and re-paired owes nothing from its old life', async
   assert.notEqual(cache.get('replay:s')?.retired, true, 'the retirement is still owed');
   h.event({ type: 'message.new', event_seq: 1, chat_id: 'gone', message: msg(60, { id: 'g1', chat_id: 'gone' }) });
   await h.tick();
-  h.failOn.add('replay:s:m:gone');
+  h.failOn.add('replay:s:c:gone:0');
   h.event({ type: 'chat.delete', event_seq: 2, chat_id: 'gone' });
   await h.tick();
-  assert.ok(cache.has('replay:s:m:gone'), 'the prune is still owed');
+  assert.ok(cache.has('replay:s:c:gone:0'), 'the prune is still owed');
   h.failOn.clear();
 
   await h.store.getState().removeServer('s');
   assert.equal([...cache.keys()].some((k) => k.startsWith('replay:s')), false, 'its checkpoint is gone');
 
-  // Re-pairing the same id writes a fresh checkpoint and a page record under that id.
+  // Re-pairing the same id writes a fresh checkpoint. The record the old life still owes is the same key
+  // as the one the new life writes, so this is where a stale prune would delete fresh data.
   cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
   cache.set('replay:s:meta', { chats: { gone: chat('gone') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['gone'] });
   cache.set('replay:s:m:gone', { messages: [], deleted: [] });
@@ -1136,9 +1167,152 @@ test('a bot that is removed and re-paired owes nothing from its old life', async
   await h.tick();
   await h.begin(0);
   await h.reply(0, 0);
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'gone', message: msg(61, { id: 'g2', chat_id: 'gone' }) });
+  await h.tick();
 
-  // The fresh save retires the pre-split record itself, so the marker is expected; what must not
-  // survive is the prune queued by the old life, which would delete the record just written.
-  assert.ok(cache.has('replay:s:m:gone'), 'no stale prune deletes the re-paired page record');
+  // What must not survive is the prune queued by the old life, which would delete the record just written.
+  assert.deepEqual(diskMessages(cache, 'gone').map((m: any) => m.id), ['g2'], 'the fresh chunk still holds its message');
+  assert.equal(cache.has('replay:s:m:gone'), false, 'the v2 record it replaced is gone');
   assert.equal(cache.has('replay:s:m:orphan'), false, 'and the re-paired bot is swept like any other launch');
+});
+
+// ---------------------------------------------------------------------------------------------
+// A chat's messages are stored as ordered chunks: one new message must seal a small tail, never the
+// whole chat. These pin the cost and the correctness of the layout that buys it.
+
+test('a new message in a 5,000-message chat writes one small chunk, and the meta stays small', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5000, 430));
+  await h.join(0);
+  const chunks = chunkKeys(h, 'general');
+  assert.ok(chunks.length > 20, `the history is stored as ${chunks.length} chunks`);
+  const whole = onDisk(h).reduce((n: number, m: any) => n + JSON.stringify(m).length, 0);
+  assert.ok(whole > 2_000_000, `a phone-sized history (${whole} bytes)`);
+  const meta = JSON.stringify(h.cache.get('replay:s:v3:meta'));
+  assert.ok(meta.length < 8_192,
+    `the meta naming ${chunks.length} chunks of a 5,000-message chat is ${meta.length} bytes`);
+
+  h.reset();
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(5001, { position: 5000 }) });
+  await h.tick();
+  const tail = chunks[chunks.length - 1];
+  assert.deepEqual(h.keys(), [tail, 'replay:s:v3'], 'the tail chunk and the cursor, no other chunk');
+  const bytes = h.bytes();
+  assert.ok(bytes < 70_000, `one new message wrote ${bytes} bytes, not the ${whole}-byte history`);
+  assert.ok(bytes < whole / 10, `${bytes} bytes is under a tenth of the chat`);
+  const page = onDisk(h);
+  assert.equal(page.length, 5001, 'nothing was lost or duplicated');
+  assert.equal(page[5000].id, 'm5001', 'the new message is last on disk, where it belongs');
+});
+
+test('editing an old message rewrites only the chunk it is in', async () => {
+  const h = harness();
+  await h.connect(seed(1, 900, 500));
+  await h.join(0);
+  const chunks = chunkKeys(h, 'general');
+  assert.ok(chunks.length >= 3, `the chat spans ${chunks.length} chunks`);
+  const target = onDisk(h)[5];
+  h.reset();
+  // A shorter text as well: the edit changes its chunk's size, and still stays in its own chunk.
+  h.event({ type: 'message.update', event_seq: 1, chat_id: 'general',
+    message: { ...target, text: 'edited', updated_at: target.updated_at + 1 } });
+  await h.tick();
+  assert.deepEqual(h.keys(), [chunks[0], 'replay:s:v3'], 'the edited chunk and the cursor, no other chunk');
+  const after = onDisk(h);
+  assert.equal(after.length, 900, 'no message was added or lost');
+  assert.equal(after[5].text, 'edited', 'and the edit is on disk');
+});
+
+test('a restore concatenates the chunks back to the exact array, across boundaries and with tombstones', async () => {
+  const cache = new Map<string, any>();
+  const h = harness(cache);
+  await h.connect(seed(2, 400, 500));
+  await h.join(0);
+  h.event({ type: 'message.delete', event_seq: 1, chat_id: 'general', message_id: 'general-7' });
+  await h.tick();
+  const chunks = chunkKeys(h, 'general');
+  assert.ok(chunks.length >= 4, `several chunks to join (${chunks.length})`);
+  const stored = onDisk(h);
+  assert.equal(stored.length, 399);
+  assert.deepEqual(Array.from(h.cache.get('replay:s:t:general').deleted), ['general-7']);
+
+  const again = harness(cache);
+  await again.connect();
+  // The store runs in its own realm, so its arrays are copied out before a strict comparison.
+  const ids = Array.from(again.messages() as any[]).map((m: any) => m.id);
+  const want = stored.map((m: any) => m.id);
+  assert.deepEqual(ids, want, 'the same messages, in the same order');
+  assert.equal(new Set(ids).size, ids.length, 'nothing duplicated');
+  assert.deepEqual(Array.from(again.store.getState().runtime.s.deleted.general), ['general-7'], 'the tombstones came back');
+});
+
+test('a v2 whole-chat page loads on the first launch, and the first save replaces it with chunks', async () => {
+  const cache = new Map<string, any>();
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 7 } });
+  cache.set('replay:s:meta', { chats: { general: chat('general') }, loaded: { general: true }, inbox: {}, pending: 0,
+    tasks: {}, pages: ['general'] });
+  const page = Array.from({ length: 40 }, (_, i) => msg(i, { chat_id: 'general', id: `v2-${i}` }));
+  cache.set('replay:s:m:general', { messages: page, deleted: ['gone-1'] });
+  const h = harness(cache);
+  await h.connect();
+  assert.deepEqual(h.messages().map((m: any) => m.id), page.map((m) => m.id), "the old build's history is all there");
+  assert.deepEqual(Array.from(h.store.getState().runtime.s.deleted.general), ['gone-1']);
+  assert.equal(h.store.getState().runtime.s.loaded.general, true, 'and the rest of the old meta with it');
+
+  await h.begin(7);
+  await h.reply(7, 7, []);
+  h.event({ type: 'message.new', event_seq: 8, chat_id: 'general', message: msg(40, { position: 40, id: 'v2-40' }) });
+  await h.tick();
+  assert.deepEqual(chunkKeys(h, 'general'), ['replay:s:c:general:0'], 'the history is stored as chunks now');
+  assert.equal(onDisk(h).length, 41);
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 8);
+  assert.equal(h.cache.has('replay:s:m:general'), false, 'the v2 page goes once the v3 cursor is on the disk');
+  assert.equal(h.cache.has('replay:s:meta'), false);
+  assert.equal(h.cache.has('replay:s:v2'), false);
+
+  const again = harness(cache);
+  await again.connect();
+  assert.equal(again.messages().length, 41, 'a restore of the new layout is the same history');
+  assert.deepEqual(Array.from(again.store.getState().runtime.s.deleted.general), ['gone-1']);
+});
+
+test('deleting a chat removes every chunk it owned and its tombstones', async () => {
+  const h = harness();
+  await h.connect(seed(2, 400, 500));
+  await h.join(0);
+  h.event({ type: 'message.delete', event_seq: 1, chat_id: 'general', message_id: 'general-7' });
+  await h.tick();
+  const chunks = chunkKeys(h, 'general');
+  assert.ok(chunks.length >= 4, `the chat spans ${chunks.length} chunks`);
+  assert.ok(h.cache.has('replay:s:t:general'), 'its tombstones are their own record');
+  assert.deepEqual(chunks.filter((key) => !h.cache.has(key)), [], 'every chunk is on disk before the delete');
+
+  h.event({ type: 'chat.delete', event_seq: 2, chat_id: 'general' });
+  await h.tick();
+  assert.deepEqual(chunks.filter((key) => h.cache.has(key)), [], 'every chunk it owned is gone');
+  assert.equal(h.cache.has('replay:s:t:general'), false, 'and its tombstones with them');
+  assert.deepEqual(chunkKeys(h, 'general'), [], 'the meta names none of them any more');
+  const other = chunkKeys(h, 'chat1');
+  assert.ok(other.length > 0 && other.every((key) => h.cache.has(key)), 'the other chat keeps its own');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 2, 'and the save that pruned it still moved the cursor');
+});
+
+test('two saves in flight still serialise, chunk by chunk', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  h.reset();
+  const release = h.hold('replay:s:c:general:0');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101, { position: 5 }) });
+  await h.tick();
+  assert.deepEqual(h.keys(), [], 'the first save is inside its chunk write');
+  h.event({ type: 'message.new', event_seq: 2, chat_id: 'general', message: msg(102, { position: 6 }) });
+  await h.tick();
+  assert.deepEqual(h.keys(), [], 'the second save waits for the first');
+  release();
+  await h.tick();
+  assert.deepEqual(h.cursorWrites(), [1, 2], 'each save wrote its own cursor, in order');
+  const ids = onDisk(h).map((m: any) => m.id);
+  assert.equal(ids.length, 7, 'neither message was duplicated and none lost');
+  assert.ok(ids.includes('m101') && ids.includes('m102'), 'both messages are on disk');
 });

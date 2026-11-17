@@ -1027,8 +1027,8 @@ test('real socket replay persists applied messages with its cursor and suppresse
     events: [{ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(9) }] });
   await h.tick();
   const checkpoint = h.cache.get('replay:s');
-  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1);
-  assert.equal(h.cache.get('replay:s:m:general').messages[0].id, 'm9');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1);
+  assert.equal(h.cache.get('replay:s:c:general:0').messages[0].id, 'm9');
   assert.equal(checkpoint.retired, true, 'the pre-split record is retired once its split copy is durable');
   assert.equal(h.store.getState().runtime.s.sync.phase, 'idle'); assert.equal(h.played.length, 0);
 });
@@ -1339,7 +1339,7 @@ test('a replayed echo of a send admitted on this phone is not logged as a socket
     ] });
     await h.tick();
     // Replay plumbing was really reached: applied from the resume reply, stored with its cursor, flagged replayed.
-    assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 2);
+    assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 2);
     assert.ok(h.messages().some((m: any) => m.id === 'r'), 'the replayed bot reply was applied');
     assert.equal(h.store.getState().runtime.s.sync.phase, 'idle');
     const updates = h.perfCalls.filter((c) => c[0] === 'update');
@@ -1356,7 +1356,7 @@ test('a replayed echo of a send admitted on this phone is not logged as a socket
     h.event({ type: 'message.new', event_seq: 3, chat_id: 'general', message: user(3, posted[0]) });
     await h.tick();
     assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), on ? [['echo', posted[0]]] : []);
-    assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 3, 'the live event went through the same session');
+    assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 3, 'the live event went through the same session');
     assert.doesNotMatch(JSON.stringify(h.perfCalls), /private words/);
   }
 });

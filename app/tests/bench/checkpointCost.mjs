@@ -111,3 +111,73 @@ console.log('--- the phone-sized history that was measured on the device (3 MB, 
 run(10, 300, 500, 30);
 console.log('--- a smaller history, to show the cost follows what changed ---');
 run(3, 60, 200, 30);
+
+/**
+ * The case the chunking is for: one long chat and one new message at a time, comparing the v2 layout
+ * (one record per chat holding the whole message array) with the v3 layout (ordered ~64 KB chunks).
+ */
+function longChat(nMessages = 5000, textLen = 430, rounds = 7) {
+  const { planCheckpoint } = loadCheckpointModule();
+  const slices = history(1, nMessages, textLen);
+  const cursor = (n) => ({ scope: 'scope', epoch: 'epoch', cursor: n });
+  const kib = (n) => `${(n / 1024).toFixed(1)} KiB`;
+
+  // (a) v2, as shipped at 74e5096: every message rewrites the chat's whole array as one record.
+  const v2 = [];
+  const v2Bytes = [];
+  for (let i = 0; i < rounds; i++) {
+    const page = [...slices.messages.general, {
+      id: `live-${i}`, position: nMessages + i, chat_id: 'general', role: 'bot', text: 'y'.repeat(textLen),
+      status: 'final', meta: {}, created_at: 1, updated_at: 2000 + i,
+    }];
+    const started = performance.now();
+    v2Bytes.push(seal('replay:s:m:general', JSON.stringify({ messages: page, deleted: [] })));
+    v2.push(performance.now() - started);
+  }
+
+  // (b) v3: the first save after the upgrade writes every chunk once; after that a new message is the
+  // tail chunk, its tombstones only when they change, and the cursor.
+  const firstPlan = planCheckpoint('s', slices, cursor(0));
+  const firstStarted = performance.now();
+  let chunkBytes = 0;
+  let meta = 0;
+  for (const item of firstPlan.write) {
+    chunkBytes += seal(item.key, JSON.stringify(item.value));
+    if (item.key === 'replay:s:v3:meta') meta = JSON.stringify(item.value).length;
+  }
+  const first = performance.now() - firstStarted;
+  const chunks = firstPlan.saved.chats.general.keys.length;
+  let saved = firstPlan.saved;
+
+  const v3 = [];
+  const v3Bytes = [];
+  let wrote = [];
+  for (let i = 0; i < rounds; i++) {
+    const page = [...slices.messages.general, {
+      id: `live-${i}`, position: nMessages + i, chat_id: 'general', role: 'bot', text: 'y'.repeat(textLen),
+      status: 'final', meta: {}, created_at: 1, updated_at: 2000 + i,
+    }];
+    slices.messages = { ...slices.messages, general: page };
+    const started = performance.now();
+    const plan = planCheckpoint('s', slices, cursor(i + 1), saved);
+    let bytes = 0;
+    for (const item of plan.write) bytes += seal(item.key, JSON.stringify(item.value));
+    v3.push(performance.now() - started);
+    v3Bytes.push(bytes);
+    if (i === 0) wrote = plan.write.map((item) => item.key);
+    saved = plan.saved;
+  }
+
+  console.log(`--- one chat of ${nMessages} messages (${kib(JSON.stringify(slices.messages.general).length)} of JSON) ---`);
+  console.log(`  v2 whole-page save, one new message: ${kib(median(v2Bytes))} sealed, ${median(v2).toFixed(1)} ms`);
+  console.log(`  v3 tail-chunk save, one new message: ${kib(median(v3Bytes))} sealed, ${median(v3).toFixed(1)} ms`);
+  console.log(`  ratio: ${(median(v2Bytes) / median(v3Bytes)).toFixed(0)}x fewer bytes, `
+    + `${(median(v2) / median(v3)).toFixed(0)}x less time per message`);
+  console.log(`  v3 first save (the upgrade): ${kib(chunkBytes)} in ${chunks} chunks, ${first.toFixed(1)} ms`);
+  console.log(`  v3 meta record naming all ${chunks} chunks: ${meta} bytes of JSON`);
+  console.log(`  v3 records written by one new message: ${wrote.join(', ')}`);
+  return { v2Bytes: median(v2Bytes), v3Bytes: median(v3Bytes), v2: median(v2), v3: median(v3), meta, chunks };
+}
+
+console.log('--- the case the chunking is for: a 5,000-message chat, one message at a time ---');
+longChat();
