@@ -25,6 +25,9 @@ const msg = (n: number, over: any = {}) => ({ id: `m${n}`, position: n, chat_id:
 
 const chat = (id: string) => ({ id, kind: 'chat', title: id });
 
+const inboxItem = (id: string, over: any = {}) => ({ id, kind: 'task', status: 'pending',
+  title: `item ${id}`, body: 'body', created_at: 1, ...over });
+
 /** A history big enough that the old whole-state checkpoint is megabytes. */
 function seed(nChats: number, nMessages: number, textLen: number) {
   const chats: Record<string, any> = {};
@@ -56,6 +59,8 @@ function harness(shared?: Map<string, any>) {
   const cache = shared ?? new Map<string, any>();
   const writes: Write[] = [];
   const failOn = new Set<string>();
+  /** Keys whose next write waits for the test to release it: a save held in flight. */
+  const gates = new Map<string, Promise<void>>();
   class FakeSocket {
     readyState = 1;
     sent: any[] = [];
@@ -119,11 +124,18 @@ function harness(shared?: Map<string, any>) {
       cacheGet: async (key: string, fallback: any) => (cache.has(key) ? structuredClone(cache.get(key)) : fallback),
       cacheSetStrict: async (key: string, value: any) => {
         if (failOn.has(key)) throw new Error(`storage full: ${key}`);
+        const gate = gates.get(key);
+        if (gate) { gates.delete(key); await gate; }
         writes.push({ key, bytes: JSON.stringify(value).length });
         cache.set(key, structuredClone(value));
       },
       cacheSet: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
+      /** Exact, like the real one: a chat id must not take a longer id that starts with it. */
+      cacheDeleteStrict: async (key: string) => {
+        if (failOn.has(key)) throw new Error(`storage full: ${key}`);
+        cache.delete(key);
+      },
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
     './network': { refreshNetworkNow: async () => {} },
@@ -141,6 +153,12 @@ function harness(shared?: Map<string, any>) {
     store, cache, writes, failOn, played, checkpoint, tick,
     socket: () => socket,
     event: (data: any) => socket.event(data),
+    /** Make the next write of this key wait; the returned call releases it. A save held in flight. */
+    hold: (key: string) => {
+      let release!: () => void;
+      gates.set(key, new Promise<void>((resolve) => { release = resolve; }));
+      return () => release();
+    },
     setRequest: (fn: typeof request) => { request = fn; },
     reset: () => { writes.length = 0; },
     /** Bytes written since the last reset, and the keys in order. */
@@ -320,35 +338,175 @@ test('a failed strict write is reported, and no cursor is written for a save tha
     'the applied message is in memory; the next successful save persists it before any cursor');
 });
 
-test('nothing applied is left only in memory at rest, after a background or a dropped connection', async () => {
-  const cache = new Map<string, any>();
-  const h = harness(cache);
-  await h.connect(seed(2, 10, 40));
+test('a burst still in memory is written before the session is given up: a drop and a background', async () => {
+  // The boundary that ends a session throws its pending mark away (closed()). A burst that has been
+  // applied but not saved must therefore reach the disk first, or the newest transcript is lost and
+  // recovery depends on how long the server keeps its journal.
+  const burst = () => Array.from({ length: 12 }, (_, i) => ({ type: 'message.update', event_seq: i + 1,
+    chat_id: 'general', message: msg(900, { status: 'streaming', text: 'x'.repeat(200) + String(i + 1) }) }));
+
+  // 1. A dropped socket, with every frame of the burst still queued: nothing has even been applied.
+  {
+    const cache = new Map<string, any>();
+    const h = harness(cache);
+    await h.connect(seed(2, 10, 40));
+    await h.join(0);
+    for (const event of burst()) h.event(event);
+    h.socket().readyState = 3; h.socket().onclose?.({ code: 1006 });
+    await h.tick();
+    const page = cache.get('replay:s:m:general')?.messages ?? [];
+    assert.match((page.find((m: any) => m.id === 'm900') ?? {}).text ?? '', /x{200}12$/,
+      'the last token of a burst still queued at the drop is on disk');
+    assert.equal(cache.get('replay:s:v2').cursor.cursor, 12, 'and the cursor covers it');
+  }
+
+  // 2. A background, with the same burst still queued. The OS may kill the app from here, so it has to
+  // be on disk before this settles. (This one cannot fail under a fake that is never killed; it pins
+  // the intent; the drop case is what fails without the flush.)
+  {
+    const cache = new Map<string, any>();
+    const h = harness(cache);
+    await h.connect(seed(2, 10, 40));
+    await h.join(0);
+    for (const event of burst()) h.event(event);
+    h.store.getState().setForeground(false);
+    await h.tick();
+    const page = cache.get('replay:s:m:general')?.messages ?? [];
+    assert.match((page.find((m: any) => m.id === 'm900') ?? {}).text ?? '', /x{200}12$/,
+      'going to the background left nothing unsaved');
+    assert.equal(cache.get('replay:s:v2').cursor.cursor, 12);
+    h.store.getState().setForeground(true);
+  }
+
+});
+
+test('a dispose waits for the burst it still holds before giving the session up', async () => {
+  // Connection.close() ends the session: closed() throws the pending mark away, so it must not run
+  // while a save that carries the burst is still in flight.
+  const { SyncSession } = sessionModule();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await caughtUp(session, h);
+  const realWrite = h.write;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  h.write = async (cursor: any) => { await gate; return realWrite(cursor); };
+  const burst = [1, 2, 3, 4, 5].map((seq) =>
+    session.receive({ type: 'message.new', event_seq: seq, chat_id: 'general', message: msg(seq) }));
+  await new Promise((r) => setImmediate(r));
+  const ended = session.end();
+  let gaveUp = false; void ended.then(() => { gaveUp = true; });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(gaveUp, false, 'the session is not given up while its save is in flight');
+  release();
+  await Promise.all([...burst, ended]);
+  assert.deepEqual(h.state.applied, [1, 2, 3, 4, 5], 'every event of the burst was applied');
+  assert.equal(h.saved.cursor.cursor, 5, 'the cursor on disk covers the whole burst');
+  assert.equal(h.saved.writes.at(-1).bytes, 5, 'the save that carried it saw all five applied');
+  assert.equal(h.saved.writes.length, 1, 'the burst cost one save, not one per event');
+  assert.equal(session.view().phase, 'idle');
+  // A session that has given itself up is not resurrected by an event that arrives afterwards.
+  await session.receive({ type: 'message.new', event_seq: 6, chat_id: 'general', message: msg(6) });
+  assert.equal(h.saved.cursor.cursor, 5, 'nothing was written for a session that is gone');
+});
+
+test('a deleted chat loses its page record, and a chat that shares its prefix keeps its own', async () => {
+  const h = harness();
+  await h.connect(seed(2, 5, 20));
   await h.join(0);
+  // Two chats whose ids prefix each other: removing the short one by prefix would take the long one too.
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'a', message: { ...msg(1), id: 'a-1', chat_id: 'a' } });
+  h.event({ type: 'message.new', event_seq: 2, chat_id: 'ab', message: { ...msg(2), id: 'ab-1', chat_id: 'ab' } });
+  await h.tick();
+  assert.ok(h.cache.has('replay:s:m:a') && h.cache.has('replay:s:m:ab'), 'both pages are on disk');
 
-  const durable = () => (cache.get('replay:s:m:general')?.messages ?? []).map((m: any) => m.id).join();
-  const shown = () => h.messages().map((m: any) => m.id).join();
+  h.event({ type: 'chat.delete', event_seq: 3, chat_id: 'a' });
+  await h.tick();
+  assert.equal(h.cache.has('replay:s:m:a'), false, "the deleted chat's page record is gone from disk");
+  assert.ok(h.cache.get('replay:s:m:ab')?.messages?.some((m: any) => m.id === 'ab-1'),
+    'the chat whose id starts with the deleted one keeps its page');
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 3, 'the save that pruned it still moved the cursor');
+});
 
-  h.event({ type: 'message.update', event_seq: 1, chat_id: 'general', message: msg(50, { status: 'streaming', text: 'hello' }) });
-  await h.tick();
-  assert.equal(durable(), shown(), 'a streamed token is on disk once the frame ends');
+test('a failed retirement of the pre-split record is retried until it succeeds', async () => {
+  const h = harness();
+  h.failOn.add('replay:s');
+  await h.connect(seed(2, 5, 20));
+  await h.join(0);
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 0, 'the save that could not retire it still committed');
+  assert.ok(h.cache.get('replay:s')?.state, 'the pre-split record is still there, not written off as retired');
 
-  h.event({ type: 'message.update', event_seq: 2, chat_id: 'general', message: msg(50, { status: 'streaming', text: 'hello there' }) });
+  h.failOn.delete('replay:s');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(1) });
   await h.tick();
-  h.store.getState().setForeground(false);
-  await h.tick();
-  assert.equal(durable(), shown(), 'going to the background leaves nothing unsaved');
+  assert.equal(h.cache.get('replay:s').retired, true, 'the next save retired it');
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 1, 'and the cursor was unaffected by the retry');
+});
 
-  h.event({ type: 'message.new', event_seq: 3, chat_id: 'general', message: msg(51) });
+test('a replayed inbox event cannot drag the badge back to its journal-time count', async () => {
+  const cache = new Map<string, any>();
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
+  cache.set('replay:s:meta', { chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: [] });
+  const h = harness(cache);
+  await h.connect();
+  const pending = () => h.store.getState().runtime.s.pending;
+  // Two items are waiting now, and the inbox snapshot says so.
+  h.setRequest(async (_server: any, path: string) => (path === '/api/inbox'
+    ? { items: [inboxItem('i1'), inboxItem('i2')], pending: 2 }
+    : { items: [], pending: 0, messages: [], deleted_ids: [], pet: null, projects: undefined }));
+  h.event({ type: 'hello', chats: [chat('general')], pending: 2, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 2 } });
   await h.tick();
-  h.event({ type: 'message.update', event_seq: 4, chat_id: 'general', message: msg(51, { status: 'final', text: 'done' }) });
+  assert.equal(pending(), 2, 'two items waiting');
+
+  // The journal replays an event from when nothing was waiting: applying that count would hide both.
+  await h.reply(2, 2, [{ type: 'inbox.update', event_seq: 2, item: inboxItem('i3'), pending: 0 }]);
+  assert.equal(pending(), 2, 'a replay keeps the count the app already has');
+
+  // Live counts still move it both ways.
+  h.event({ type: 'inbox.update', event_seq: 3, item: inboxItem('i4'), pending: 1 });
   await h.tick();
-  const atDrop = shown();
-  h.socket().readyState = 3; h.socket().onclose?.({ code: 1006 });
+  assert.equal(pending(), 1, 'a live count down');
+  h.event({ type: 'inbox.update', event_seq: 4, item: inboxItem('i5'), pending: 4 });
   await h.tick();
-  h.store.getState().setForeground(true);
+  assert.equal(pending(), 4, 'and a live count up');
+});
+
+test('a failed meta write writes no cursor and reports the save failed', async () => {
+  const h = harness();
+  await h.connect(seed(2, 5, 20));
+  await h.join(0);
+  // A rename changes the meta record and nothing else, so meta is the first write of the save.
+  h.failOn.add('replay:s:meta');
+  h.reset();
+  h.event({ type: 'chat.update', event_seq: 1, chat_id: 'general', chat: { ...chat('general'), title: 'Renamed' } });
   await h.tick();
-  assert.equal(durable(), atDrop, 'a dropped connection loses nothing that arrived before it');
+  assert.equal(h.phase(), 'blocked', 'the failure reached the session');
+  assert.deepEqual(h.keys(), [], 'nothing was written after the failed meta record');
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 0, 'no cursor was written for a save that failed');
+  assert.equal(h.cache.get('replay:s:meta').chats.general.title, 'general', 'the old meta record is intact');
+});
+
+test('a restore survives a missing, an unnamed and a malformed page record', async () => {
+  const cache = new Map<string, any>();
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 9 } });
+  cache.set('replay:s:meta', { chats: { named: chat('named'), gone: chat('gone'), junk: chat('junk'), unnamed: chat('unnamed') },
+    loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['named', 'gone', 'junk'] });
+  cache.set('replay:s:m:named', { messages: [msg(1, { chat_id: 'named', id: 'named-1' })], deleted: [] });
+  // 'gone' has no record at all, 'junk' has one of the wrong shape, and 'unnamed' has a good record that
+  // meta does not name, so nothing reads it back.
+  cache.set('replay:s:m:junk', { messages: 'not an array', deleted: 7 });
+  cache.set('replay:s:m:unnamed', { messages: [msg(2, { chat_id: 'unnamed', id: 'unnamed-2' })], deleted: [] });
+  const h = harness(cache);
+  await h.connect();
+  assert.equal(h.store.getState().runtime.s.chats.named?.title, 'named', 'the chat list came back');
+  assert.equal(h.messages('named').map((m: any) => m.id).join(), 'named-1');
+  assert.deepEqual(h.messages('gone'), [], 'a page with no record restores empty, not broken');
+  assert.deepEqual(h.messages('junk'), [], 'a malformed record is ignored');
+  assert.deepEqual(h.messages('unnamed'), [], 'a record meta does not name is not read back');
+  await h.begin(9);
+  await h.reply(9, 9, []);
+  assert.equal(h.phase(), 'idle', 'and the cursor it restored still resumes cleanly');
 });
 
 test('a whole page re-applied from a coarser cursor leaves the state identical', async () => {
@@ -507,4 +665,37 @@ test('a page overlapping the saved cursor applies only what is new', async () =>
   assert.deepEqual(h.state.applied, [3, 4, 5], 'the two events the cursor already covered were not applied again');
   assert.equal(h.saved.cursor.cursor, 5, 'the cursor is the reply watermark, not the last event');
   assert.equal(session.view().phase, 'idle');
+});
+
+test('the in-memory cursor does not move before its write resolves', async () => {
+  // The rule is that the cursor is never ahead of the data. Assigning it before the await moves it
+  // while the disk still holds the older one, and a burst that fails afterwards would resume from a
+  // cursor the disk never took.
+  const { SyncSession } = sessionModule();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await caughtUp(session, h);
+  const realWrite = h.write;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  h.write = async (cursor: any) => { await gate; return realWrite(cursor); };
+  const saving = session.receive({ type: 'message.new', event_seq: 7, chat_id: 'general', message: msg(7) });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(session.durable()?.cursor, 0, 'the reported cursor stays on the value the disk has');
+  release();
+  await saving;
+  assert.equal(session.durable()?.cursor, 7, 'and moves once the write has resolved');
+  assert.equal(h.saved.cursor.cursor, 7);
+
+  // A write that fails must not leave the session believing a cursor the disk never took.
+  let fail!: (e: Error) => void;
+  const refuses = new Promise<void>((_, reject) => { fail = reject; });
+  h.write = async (cursor: any) => { await refuses; return realWrite(cursor); };
+  const failed = session.receive({ type: 'message.new', event_seq: 8, chat_id: 'general', message: msg(8) });
+  await new Promise((r) => setImmediate(r));
+  fail(new Error('storage full'));
+  await failed;
+  assert.equal(session.durable()?.cursor, 7, 'a failed write leaves the reported cursor at the last durable one');
+  assert.equal(h.saved.cursor.cursor, 7);
+  assert.equal(session.view().phase, 'blocked');
 });

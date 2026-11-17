@@ -33,11 +33,41 @@ export class SyncSession {
   private timeout?: ReturnType<typeof setTimeout>;
   constructor(private host: SyncHost, private send: (frame: any) => void) {}
   view() { return this.state; }
+  /** The cursor this session has proven durable: it is only replaced once its write resolved. */
+  durable(): ReplayCursor | undefined { return this.cursor; }
   closed() {
     this.generation++; this.stream = undefined; this.cursor = undefined;
     this.held = []; this.pages = 0; this.bytes = 0; this.heldBytes = 0; this.queued = 0; this.pending = 0;
     clearTimeout(this.timeout); this.chain = Promise.resolve();
     this.show('idle');
+  }
+  /**
+   * Write a burst that was applied but is still only in memory, before the caller gives the session
+   * up. `closed()` throws the pending mark away, so every boundary that ends the session — a dropped
+   * socket, a background, a dispose — has to flush first or the newest transcript is lost with it and
+   * recovery depends on the server's journal. One save covers the whole burst, so coalescing holds.
+   * A failed flush blocks and propagates like any other failed save instead of vanishing with the
+   * queue. Never call this from inside the queue: it waits for the queue to drain.
+   */
+  async flush(): Promise<void> {
+    const generation = this.generation;
+    try { await this.chain; } catch { /* the frame that failed already reported itself */ }
+    if (generation !== this.generation || !this.pending || !this.stream) return;
+    const cursor = { scope: this.stream.scope, epoch: this.stream.epoch, cursor: this.pending };
+    this.pending = 0;
+    try { await this.save(cursor, generation); }
+    catch (error) {
+      if (generation === this.generation) this.show('blocked', 'network');
+      throw error;
+    }
+  }
+  /** Give the session up, but only once a burst it still holds is on disk. */
+  async end(): Promise<void> {
+    let failed = false;
+    try { await this.flush(); } catch { failed = true; }
+    this.closed();
+    // closed() reports idle; a burst that never reached the disk has to keep saying so.
+    if (failed) this.show('blocked', 'network');
   }
   /** The queue includes async persistence. A slow/full device disconnects before memory grows unbounded. */
   receive(event: any): Promise<void> {
