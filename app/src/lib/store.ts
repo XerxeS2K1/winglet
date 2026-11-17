@@ -8,7 +8,7 @@ import { api, ApiError, signedApi, wsUrl } from './api';
 import { needsSignature } from './commands';
 import { cacheDeleteStrict, cacheGet, cacheKeys, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
-import { checkpointKeys, loadCheckpoint, planCheckpoint, savedRefsOf, type SavedRefs } from '../features/event-replay/checkpoint';
+import { checkpointKeys, loadCheckpoint, planCheckpoint, savedRefsOf, type CheckpointPlan, type SavedRefs } from '../features/event-replay/checkpoint';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
@@ -212,13 +212,39 @@ const sendPaused = new Set<string>();
 const isNetworkError = (e: unknown) => !(e instanceof ApiError) || e.status === 0;
 
 /**
+ * Every record key this save left owning state: the keys it wrote, and for each chat the chunk keys the
+ * meta names plus its tombstone record. Hygiene must never delete one of these, whatever an earlier save
+ * queued for removal.
+ */
+function checkpointOwned(serverId: string, plan: CheckpointPlan): Set<string> {
+  const keys = checkpointKeys(serverId);
+  const owned = new Set<string>();
+  for (const { key } of plan.write) owned.add(key);
+  for (const [chatId, chat] of Object.entries(plan.saved.chats)) {
+    for (const key of chat.keys) owned.add(key);
+    owned.add(keys.tombstones(chatId));
+  }
+  owned.add(keys.meta);
+  owned.add(keys.cursor);
+  return owned;
+}
+
+/**
  * Remove the records of chats this phone no longer holds (a deleted chat must not keep its text and its
  * rows on disk), then retire the pre-split whole-state record once a save covers it. Removal is by exact
  * key, so a chat id that prefixes another stays put. All of it is cache hygiene rather than data: a
  * failure is kept for the next save and never fails this save, moves its cursor, or throws.
+ *
+ * `owned` is what the save that just committed wrote and named, and no key in it is ever deleted here.
+ * Chunk keys are index-based, so a key a chat stopped owning — queued for removal by an earlier save
+ * whose delete failed — is commonly owned again: the chat regrows past the same boundary, this save
+ * writes `…:c:<chat>:1` and names it in the meta, and deleting it would leave the meta naming a record
+ * that is not on the disk, with a restore coming back short of those messages. A key that is owned again
+ * is therefore not "still owed": it is live, and it leaves the queue.
  */
-async function afterSaveHygiene(serverId: string) {
+async function afterSaveHygiene(serverId: string, owned: Set<string>) {
   for (const key of [...prunePages]) {
+    if (owned.has(key)) { prunePages.delete(key); continue; }
     try { await cacheDeleteStrict(key); prunePages.delete(key); } catch { /* retried on the next save */ }
   }
   if (!retired.has(serverId)) retirePending.add(serverId);
@@ -712,9 +738,13 @@ export const useApp = create<AppState>((set, get) => {
           if (connections.get(server.id) === conn) replayCursors.set(server.id, cursor);
           // A chat that was here for the last save and is gone from this one keeps records nobody reads:
           // deleted text left on disk, and rows that only ever grow. Queue their exact keys, then let the
-          // hygiene below try them; the next save retries whatever fails.
+          // hygiene below try them; the next save retries whatever fails. A key this save has just written
+          // or the meta now names is live again — an index-based chunk key a chat regrew into — so it is
+          // dropped from the queue rather than deleted after the save that owns it.
+          const owned = checkpointOwned(server.id, plan);
           for (const key of plan.prune) prunePages.add(key);
-          await afterSaveHygiene(server.id);
+          for (const key of owned) prunePages.delete(key);
+          await afterSaveHygiene(server.id, owned);
         }),
         apply: async (event, replayed) => {
           if (connections.get(server.id) !== conn) return;
@@ -806,7 +836,7 @@ export const useApp = create<AppState>((set, get) => {
       // saved state means the next save writes only what changed, instead of the whole history once per
       // launch. A truncated restore is not adopted, so its chats are written again.
       if (checkpoint.complete && !checkpoint.legacy && get().runtime[serverId]?.status !== 'online') {
-        checkpointSaved.set(serverId, savedRefsOf(serverId, checkpoint.state));
+        checkpointSaved.set(serverId, savedRefsOf(serverId, checkpoint.state, checkpoint.layout));
       }
     }
     const acknowledged = new Set(Object.values(checkpoint?.state?.messages ?? {}).flat()

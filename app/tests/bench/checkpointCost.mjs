@@ -181,3 +181,56 @@ function longChat(nMessages = 5000, textLen = 430, rounds = 7) {
 
 console.log('--- the case the chunking is for: a 5,000-message chat, one message at a time ---');
 longChat();
+
+/**
+ * The scaling end: a chat long enough that the plan itself, and the number of records a restore fans out
+ * over, become the cost. The chunk target doubles with the history (see MAX_CHUNKS in checkpoint.ts), so
+ * a 100,000-message chat is ~220 chunks of 256 KB rather than ~880 of 64 KB, and an append still only
+ * walks the tail chunk. Times are the plan alone (no sealing), which is what a live save spends on the JS
+ * thread before any encryption.
+ */
+function planCost(nMessages = 100000, textLen = 430, rounds = 7) {
+  const { planCheckpoint, MAX_CHUNKS, CHUNK_TARGET_BYTES } = loadCheckpointModule();
+  const slices = history(1, nMessages, textLen);
+  const cursor = (n) => ({ scope: 'scope', epoch: 'epoch', cursor: n });
+  const kib = (n) => `${(n / 1024).toFixed(1)} KiB`;
+  const total = JSON.stringify(slices.messages.general).length;
+
+  let started = performance.now();
+  const firstPlan = planCheckpoint('s', slices, cursor(0));
+  const firstMs = performance.now() - started;
+  const chunks = firstPlan.saved.chats.general.keys.length;
+  let saved = firstPlan.saved;
+
+  const planMs = [];
+  const bytes = [];
+  let wrote = 0;
+  for (let i = 0; i < rounds; i++) {
+    const page = [...slices.messages.general, {
+      id: `live-${i}`, position: nMessages + i, chat_id: 'general', role: 'bot', text: 'y'.repeat(textLen),
+      status: 'final', meta: {}, created_at: 1, updated_at: 5000 + i,
+    }];
+    slices.messages = { ...slices.messages, general: page };
+    started = performance.now();
+    const plan = planCheckpoint('s', slices, cursor(i + 1), saved);
+    planMs.push(performance.now() - started);
+    let sealed = 0;
+    for (const item of plan.write) sealed += seal(item.key, JSON.stringify(item.value));
+    bytes.push(sealed);
+    if (i === 0) wrote = plan.write.length;
+    saved = plan.saved;
+  }
+
+  console.log(`--- one chat of ${nMessages} messages (${(total / 1e6).toFixed(1)} MB of JSON) ---`);
+  console.log(`  chunks: ${chunks} (cap ${MAX_CHUNKS}, base target ${kib(CHUNK_TARGET_BYTES)} -> target ${kib(saved.chats.general.target ?? CHUNK_TARGET_BYTES)})`);
+  console.log(`  first save (the upgrade) plans in ${firstMs.toFixed(1)} ms, before any sealing`);
+  console.log(`  one new message: plan ${median(planMs).toFixed(2)} ms, ${wrote} records, ${kib(median(bytes))} sealed`);
+  return { chunks, planMs: median(planMs), firstMs, bytes: median(bytes) };
+}
+
+console.log('--- plan cost at 5,000 messages (the device-sized case above) ---');
+planCost(5000);
+
+console.log('--- the scaling end: a 100,000-message chat, one message at a time ---');
+planCost();
+

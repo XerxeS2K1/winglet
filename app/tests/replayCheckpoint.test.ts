@@ -66,6 +66,8 @@ function harness(shared?: Map<string, any>) {
   const cache = shared ?? new Map<string, any>();
   const writes: Write[] = [];
   const failOn = new Set<string>();
+  /** Deletes that fail, kept apart from writes so a prune can fail while the save that owns the key succeeds. */
+  const failDeleteOn = new Set<string>();
   /** Keys whose next write waits for the test to release it: a save held in flight. */
   const gates = new Map<string, Promise<void>>();
   class FakeSocket {
@@ -128,6 +130,8 @@ function harness(shared?: Map<string, any>) {
     },
   };
   const checkpoint = compile('../src/features/event-replay/checkpoint.ts', {});
+  /** The merge the store's resync applies, driven directly by the invariant test. */
+  const mergeModule = compile('../src/features/event-replay/merge.ts', {});
   const { useApp: store } = compile('../src/lib/store.ts', {
     zustand: { create: (fn: any) => createStore(fn) },
     'zustand/react/shallow': { useShallow: (fn: any) => fn },
@@ -139,7 +143,7 @@ function harness(shared?: Map<string, any>) {
     './commands': { needsSignature: () => false },
     '../features/projects/logic': compile('../src/features/projects/logic.ts', {}),
     '../features/event-replay/session': sessionSpy,
-    '../features/event-replay/merge': compile('../src/features/event-replay/merge.ts', {}),
+    '../features/event-replay/merge': mergeModule,
     '../features/event-replay/checkpoint': checkpoint,
     './api': { api: (...args: any[]) => request(...args), ApiError, wsUrl: (s: any) => s.url,
       signedApi: (...args: any[]) => request(...args) },
@@ -156,7 +160,7 @@ function harness(shared?: Map<string, any>) {
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
       /** Exact, like the real one: a chat id must not take a longer id that starts with it. */
       cacheDeleteStrict: async (key: string) => {
-        if (failOn.has(key)) throw new Error(`storage full: ${key}`);
+        if (failOn.has(key) || failDeleteOn.has(key)) throw new Error(`storage full: ${key}`);
         cache.delete(key);
       },
       cacheKeys: async (prefix: string) => [...cache.keys()].filter((k) => k.startsWith(prefix)),
@@ -174,7 +178,7 @@ function harness(shared?: Map<string, any>) {
   });
   const tick = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
   return {
-    store, cache, writes, failOn, played, checkpoint, tick, flushCalls,
+    store, cache, writes, failOn, failDeleteOn, played, checkpoint, merge: mergeModule, tick, flushCalls,
     socket: () => socket,
     /** Every socket opened, oldest first: a replacement is the last one. */
     sockets: () => sockets,
@@ -1315,4 +1319,305 @@ test('two saves in flight still serialise, chunk by chunk', async () => {
   const ids = onDisk(h).map((m: any) => m.id);
   assert.equal(ids.length, 7, 'neither message was duplicated and none lost');
   assert.ok(ids.includes('m101') && ids.includes('m102'), 'both messages are on disk');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Cold review v4: a prune that cannot delete, the identity invariant, and the layout a load adopts.
+
+/** The weight the checkpoint gives a message: its serialised length, plus the separator. */
+const weightOf = (message: any) => JSON.stringify(message).length + 1;
+
+/**
+ * A one-chat history whose messages total just past the chunk target, so a single append crosses a chunk
+ * boundary and a single delete uncrosses it: the prune cases need that to be exact rather than lucky.
+ * `over` is how far past the target the total lands.
+ */
+function acrossBoundary(h: any, over = 200, textLen = 430) {
+  const target: number = h.checkpoint.CHUNK_TARGET_BYTES;
+  const messages: any[] = [];
+  let total = 0;
+  while (total < target - 2000) {
+    const message = msg(messages.length, { id: `general-${messages.length}`, text: 'x'.repeat(textLen) });
+    messages.push(message);
+    total += weightOf(message);
+  }
+  // The last message is padded so the total lands exactly `over` bytes past the target: the JSON of the
+  // same message with no text is its fixed part, and each padding character adds one byte.
+  const last = msg(messages.length, { id: `general-${messages.length}`, text: '' });
+  const fixed = weightOf(last);
+  last.text = 'x'.repeat(target + over - total - fixed);
+  messages.push(last);
+  assert.equal(messages.reduce((sum, message) => sum + weightOf(message), 0), target + over,
+    'the fixture ends exactly `over` bytes past a chunk boundary');
+  return { chats: { general: chat('general') }, messages: { general: messages } };
+}
+
+/** A whole checkpoint as the restore would assemble it, readable straight from the harness cache. */
+const loadFrom = (h: any, cache: Map<string, any>) =>
+  h.checkpoint.loadCheckpoint('s', async (key: string, fallback: any) =>
+    (cache.has(key) ? structuredClone(cache.get(key)) : fallback));
+
+test('a prune whose delete failed cannot delete the chunk the next save writes and names', async () => {
+  const h = harness();
+  await h.connect(acrossBoundary(h));
+  await h.join(0);
+  const chunks = Array.from(chunkKeys(h, 'general'));
+  assert.equal(chunks.length, 2, 'the chat starts as two chunks');
+  const ids = onDisk(h).map((m: any) => m.id);
+
+  // The chat shrinks to one chunk, and the delete of the record it no longer owns fails once.
+  h.failDeleteOn.add('replay:s:c:general:1');
+  h.event({ type: 'message.delete', event_seq: 1, chat_id: 'general', message_id: ids[ids.length - 1] });
+  await h.tick();
+  assert.deepEqual(chunkKeys(h, 'general'), ['replay:s:c:general:0'], 'one chunk is named now');
+  assert.ok(h.cache.has('replay:s:c:general:1'), 'the failed prune leaves the record on the disk');
+
+  // The chat regrows across the same boundary, so this save writes and names the very key that the
+  // earlier save queued for deletion: chunk keys are positional, and the key is live again.
+  h.failDeleteOn.clear();
+  h.reset();
+  h.event({ type: 'message.new', event_seq: 2, chat_id: 'general',
+    message: msg(1, { id: 'general-live', position: ids.length - 1 + 1, text: 'y'.repeat(4000), updated_at: 9000 }) });
+  await h.tick();
+  assert.deepEqual(h.keys().filter((key) => key.includes(':c:')), ['replay:s:c:general:1'],
+    'the save wrote the chunk the chat regrew into');
+  assert.deepEqual(chunkKeys(h, 'general'), ['replay:s:c:general:0', 'replay:s:c:general:1'],
+    'and the meta names it');
+  assert.ok(h.cache.has('replay:s:c:general:1'), 'the live record survives the hygiene of the save that wrote it');
+
+  // A record the meta names is readable, so the restore is complete and holds the whole chat.
+  const loaded = await loadFrom(h, h.cache);
+  assert.equal(loaded.complete, true, 'nothing the meta names is missing from the disk');
+  const again = harness(h.cache);
+  await again.connect();
+  assert.deepEqual(Array.from(again.messages() as any[]).map((m: any) => m.id), onDisk(h).map((m: any) => m.id),
+    'the restored chat is the one that was written, not a short one');
+});
+
+test('a chat that shrinks past a chunk boundary prunes the chunk it no longer owns', async () => {
+  const h = harness();
+  await h.connect(acrossBoundary(h));
+  await h.join(0);
+  assert.equal(chunkKeys(h, 'general').length, 2, 'two chunks to start with');
+  const ids = onDisk(h).map((m: any) => m.id);
+
+  h.reset();
+  h.event({ type: 'message.delete', event_seq: 1, chat_id: 'general', message_id: ids[ids.length - 1] });
+  await h.tick();
+  // Removing the tail drops the chat under the target, so a fresh cut is one chunk and the second record
+  // is nobody's: the save has to prune it, not merely stop naming it.
+  assert.deepEqual(chunkKeys(h, 'general'), ['replay:s:c:general:0'], 'one chunk is named');
+  assert.equal(h.cache.has('replay:s:c:general:1'), false, 'the record nothing names is deleted');
+  assert.deepEqual(onDisk(h).map((m: any) => m.id), ids.slice(0, -1), 'the messages that remain are intact');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1, 'on a save that also moved the cursor');
+});
+
+test('a v3 checkpoint whose tombstone record is missing is not adopted as already saved', async () => {
+  const h = harness();
+  await h.connect(seed(1, 4, 40));
+  await h.join(0);
+  h.event({ type: 'message.delete', event_seq: 1, chat_id: 'general', message_id: 'general-1' });
+  await h.tick();
+  assert.deepEqual(h.cache.get('replay:s:t:general').deleted, ['general-1'], 'the tombstones are on the disk');
+
+  // The tombstone record goes missing: the load cannot know which ids were deleted, so it is unfinished
+  // in exactly the way a malformed record is, and adopting it would lose the deletion for good.
+  h.cache.delete('replay:s:t:general');
+  const loaded = await loadFrom(h, h.cache);
+  assert.equal(loaded.complete, false, 'a missing tombstone record makes the restore incomplete');
+
+  const again = harness(h.cache);
+  await again.connect();
+  await again.join(1);
+  // Not adopted, so the first save after the load writes the chat back — including the record the load
+  // could not read, which is how an absent tombstone record heals itself.
+  assert.ok(again.keys().includes('replay:s:t:general'), 'the next save writes that chat\'s tombstones');
+});
+
+/** Each message's identity and its content, so a path can be checked for an edit that landed in place. */
+const snapshotOf = (list: any[]) => new Map(list.map((message: any) => [message.id, { object: message, json: JSON.stringify(message) }]));
+
+/**
+ * The invariant: a message whose content changed must be a different object. If any path ever edited a
+ * message in place, its content would differ while its identity matched, and this fails — which is the
+ * only thing that stops the checkpoint's identity-based change detection from losing the edit.
+ */
+function assertReplacedWhenChanged(before: Map<string, any>, after: any[], what: string) {
+  const now = new Map(after.map((message: any) => [message.id, message]));
+  for (const [id, was] of before) {
+    const object = now.get(id);
+    if (!object) continue;
+    if (JSON.stringify(object) !== was.json) {
+      assert.ok(object !== was.object, `${what}: ${id} changed, so it must be a new object, not an edit in place`);
+    }
+  }
+}
+
+test('every path that changes a message leaves a new object, never an edit in place', async () => {
+  const h = harness();
+  await h.connect(seed(1, 6, 40));
+  await h.join(0);
+  const list = () => h.messages() as any[];
+
+  // A streamed upsert of a message already on the page: the same id arrives again with new text.
+  let was = snapshotOf(list());
+  h.event({ type: 'message.update', event_seq: 1, chat_id: 'general',
+    message: { ...list()[2], text: 'streamed', updated_at: list()[2].updated_at + 1 } });
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'a streamed upsert');
+  assert.equal(list()[2].text, 'streamed', 'and the change really landed');
+
+  // An edit, as the server sends one: a message.update carrying a new object.
+  was = snapshotOf(list());
+  h.event({ type: 'message.update', event_seq: 2, chat_id: 'general',
+    message: { ...list()[2], text: 'edited', updated_at: list()[2].updated_at + 1 } });
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'an edit');
+  assert.equal(list()[2].text, 'edited');
+
+  // A reaction, which arrives the same way and changes only the message's meta.
+  was = snapshotOf(list());
+  h.event({ type: 'message.update', event_seq: 3, chat_id: 'general',
+    message: { ...list()[2], meta: { ...list()[2].meta, reaction: 'thumbs up' } } });
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'a reaction');
+  assert.equal(list()[2].meta.reaction, 'thumbs up');
+
+  // A status change and a failed mark, through a real send: queued, then failed.
+  h.setRequest(async () => { throw new ApiError('offline', 0); });
+  await h.store.getState().sendMessage('s', 'general', 'a question');
+  await h.tick();
+  const queued = list().find((m: any) => m.status === 'queued');
+  assert.ok(queued, 'a send with no network leaves the message queued');
+  was = snapshotOf(list());
+  h.setRequest(async () => { throw new ApiError('the server refused it', 409); });
+  await h.store.getState().sendMessage('s', 'general', 'a question', { retryClientId: queued.id });
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'a status change and a failed mark');
+  const failed = list().find((m: any) => m.id === queued.id);
+  assert.equal(failed.status, 'failed', 'the retry was refused and the row says so');
+  assert.equal(failed.meta.delivery_error, 'the server refused it');
+
+  // A delete removes the message and leaves the survivors' objects alone.
+  was = snapshotOf(list());
+  const gone = list()[0];
+  h.event({ type: 'message.delete', event_seq: 4, chat_id: 'general', message_id: gone.id });
+  await h.tick();
+  assert.equal(list().some((m: any) => m.id === gone.id), false, 'the deleted message is gone');
+  assertReplacedWhenChanged(was, list(), 'a delete');
+
+  // A resync snapshot, merged: it reuses the chat's page when nothing was removed, and filters it when
+  // something was, so every survivor is still the same object rather than a copy.
+  const before = list();
+  const merged = h.merge.mergeSnapshot(h.store.getState().runtime.s, { scope: 'scope', server_id: 's',
+    bot: 'Test', epoch: 'epoch', watermark: 4, chats: [chat('general')], inbox: [], pending: 0, paused: null,
+    deletions: { general: [before[1].id] } });
+  const survivors = merged.messages.general as any[];
+  assert.equal(survivors.length, before.length - 1, 'the snapshot\'s deletion is applied');
+  assert.ok(survivors.every((m: any) => before.includes(m)), 'and the survivors are the very objects, not copies');
+  assertReplacedWhenChanged(snapshotOf(before), survivors, 'a snapshot merge');
+});
+
+test('a load adopts the chunk layout the meta names instead of re-cutting it', async () => {
+  const cache = new Map<string, any>();
+  const first = harness(cache);
+  await first.connect(acrossBoundary(first, 300));
+  await first.join(0);
+  assert.equal(chunkKeys(first, 'general').length, 2, 'two chunks to start with');
+
+  // An edit does not change the message count, so the layout the chat already had is kept. The text that
+  // emptied makes a fresh greedy cut produce one chunk, so the disk is left holding a layout a re-cut
+  // would not reproduce — exactly the edit-era layout a load must adopt rather than recompute.
+  const edited = first.messages()[0];
+  first.event({ type: 'message.update', event_seq: 1, chat_id: 'general',
+    message: { ...edited, text: '', updated_at: edited.updated_at + 1 } });
+  await first.tick();
+  const chunks = Array.from(chunkKeys(first, 'general'));
+  assert.deepEqual(chunks, ['replay:s:c:general:0', 'replay:s:c:general:1'], 'the kept layout survives the edit');
+
+  const second = harness(cache);
+  await second.connect();
+  second.reset();
+  await second.join(1);
+  assert.deepEqual(Array.from(chunkKeys(second, 'general')), chunks,
+    'the first save after the load names the same records, not a re-cut');
+  assert.deepEqual(second.keys().filter((key) => key.includes(':c:')), [], 'and rewrites no chunk at all');
+
+  // Deleting the chat must take every record it owns; a re-cut baseline would have forgotten one and left
+  // a record holding deleted text on the disk until the next launch swept it.
+  second.event({ type: 'chat.delete', event_seq: 2, chat_id: 'general' });
+  await second.tick();
+  assert.deepEqual(chunks.filter((key) => cache.has(key)), [], 'no orphan chunk is left holding deleted text');
+});
+
+test('a message bigger than the chunk target is its own chunk, and no chunk record is ever empty', async () => {
+  const h = harness();
+  // The guard the cut needs: a message heavier than the target must start a chunk, not close an empty
+  // one. Without it the first record holds no messages, and a restore would carry a hole it cannot see.
+  const history = { chats: { general: chat('general') }, messages: { general: [
+    msg(0, { id: 'general-huge', text: 'x'.repeat(200000) }),
+    msg(1, { id: 'general-after' }),
+  ] } };
+  const plan = h.checkpoint.planCheckpoint('s', checkpointState(history) as any,
+    { scope: 'scope', epoch: 'epoch', cursor: 1 });
+  const written = Array.from(plan.write as any[]).filter((item: any) => item.key.includes(':c:general:'));
+  assert.deepEqual(written.map((item: any) => [item.key, item.value.messages.length]),
+    [['replay:s:c:general:0', 1], ['replay:s:c:general:1', 1]], 'two records of one message each');
+});
+
+test('a very long chat raises its chunk size instead of its chunk count, and an append still writes the tail', async () => {
+  const h = harness();
+  // 30,000 messages of ~700 bytes: 21 MB, which at a fixed 64 KB target would be ~330 chunks.
+  const messages = Array.from({ length: 30000 }, (_, i) => ({ id: `general-${i}`, position: i,
+    chat_id: 'general', role: 'bot', text: 'x'.repeat(600), status: 'final', meta: {},
+    created_at: 1, updated_at: i + 1 }));
+  const slices = checkpointState({ chats: { general: chat('general') }, messages: { general: messages } } as any);
+  const plan = h.checkpoint.planCheckpoint('s', slices, { scope: 'scope', epoch: 'epoch', cursor: 1 });
+  const keys = Array.from(plan.saved.chats.general.keys as string[]);
+  const total = messages.reduce((sum, message) => sum + weightOf(message), 0);
+  assert.ok(keys.length > 100, `21 MB is ${keys.length} chunks, so the cap is doing the work`);
+  assert.ok(keys.length <= h.checkpoint.MAX_CHUNKS,
+    `${keys.length} chunks is within the cap of ${h.checkpoint.MAX_CHUNKS}`);
+
+  // One append: every boundary but the tail's closed long ago and cannot move, so only the tail is walked
+  // and only the tail record is sealed.
+  const page = [...messages, { ...messages[0], id: 'general-live', position: messages.length, updated_at: 9000 }];
+  const next = h.checkpoint.planCheckpoint('s', { ...slices, messages: { general: page } } as any,
+    { scope: 'scope', epoch: 'epoch', cursor: 2 }, plan.saved);
+  const sealed = Array.from(next.write as any[]).map((item: any) => item.key).filter((key: string) => key.includes(':c:'));
+  assert.deepEqual(sealed, [keys[keys.length - 1]], 'only the tail chunk is written');
+});
+
+test('a restore reads its chunk records a bounded number at a time', async () => {
+  const h = harness();
+  const cache = new Map<string, any>();
+  // Twelve chats of five chunks each: without a bound the restore fans out over all twelve chats at once,
+  // and a 100,000-message chat would do the same with 220 records.
+  const ids = ['general', ...Array.from({ length: 11 }, (_, i) => `chat${i + 1}`)];
+  const chunks: Record<string, string[]> = {};
+  const chats: Record<string, any> = {};
+  for (const id of ids) {
+    chats[id] = chat(id);
+    chunks[id] = Array.from({ length: 5 }, (_, i) => `replay:s:c:${id}:${i}`);
+    for (const [i, key] of chunks[id].entries()) cache.set(key, { v: 3, messages: [msg(i, { id: `${id}-${i}` })] });
+    cache.set(`replay:s:t:${id}`, { v: 3, deleted: [] });
+  }
+  cache.set('replay:s:v3', { v: 3, cursor: { scope: 'scope', epoch: 'epoch', cursor: 1 } });
+  cache.set('replay:s:v3:meta', { v: 3, chats, loaded: {}, inbox: {}, pending: 0, tasks: {},
+    pages: ids, chunks });
+
+  let active = 0;
+  let peak = 0;
+  const loaded = await h.checkpoint.loadCheckpoint('s', async (key: string, fallback: any) => {
+    active += 1;
+    peak = Math.max(peak, active);
+    await new Promise((resolve) => setImmediate(resolve));
+    const value = cache.has(key) ? structuredClone(cache.get(key)) : fallback;
+    active -= 1;
+    return value;
+  });
+  assert.equal(loaded.complete, true, 'all 60 records read');
+  assert.equal(ids.reduce((n, id) => n + loaded.state.messages[id].length, 0), 60, 'every message came back');
+  assert.ok(peak <= h.checkpoint.READ_CONCURRENCY,
+    `${peak} reads were in flight over ${ids.length} chats, and the bound is ${h.checkpoint.READ_CONCURRENCY}`);
 });
