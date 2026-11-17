@@ -1773,3 +1773,36 @@ test('a restore reads its chunk records a bounded number at a time', async () =>
   assert.ok(fastPeak <= h.checkpoint.READ_CONCURRENCY,
     `${fastPeak} instantly-resolving reads were in flight, and the bound is ${h.checkpoint.READ_CONCURRENCY}`);
 });
+
+// ---------------------------------------------------------------------------------------------
+// A cold relaunch: the cost of the first save after a restore, which is what a user feels when they
+// open the app on a chat with megabytes of history. A restarted phone must write only what moved.
+
+test('a relaunch off a complete restore writes only what changed, never the whole history again', async () => {
+  const first = harness();
+  await first.connect(seed(2, 400, 430));
+  await first.join(0);
+  const whole = onDisk(first).reduce((n: number, m: any) => n + JSON.stringify(m).length, 0)
+    + ['chat1'].flatMap((id) => diskMessages(first.cache, id)).reduce((n: number, m: any) => n + JSON.stringify(m).length, 0);
+  assert.ok(whole > 300_000, `a phone-sized history (${whole} bytes) is on the disk`);
+
+  // A cold launch off that disk: the store hydrates and adopts the layout, then the session joins.
+  const second = harness(first.cache);
+  // Nothing is reset after this: the point is to count everything the launch itself writes.
+  await second.connect();
+  await second.join(1);
+  await second.tick();
+  const restored = second.keys().filter((k: string) => /:c:/.test(k));
+  assert.deepEqual(restored, [], 'the first save after a restore wrote no chunk records at all');
+  assert.ok(second.bytes() < whole / 4,
+    `the launch wrote ${second.bytes()} bytes against a ${whole}-byte history`);
+
+  // And the app still works: one new message writes one tail, not the history.
+  second.reset();
+  second.event({ type: 'message.new', event_seq: 2, chat_id: 'general', message: msg(999, { id: 'after-restart' }) });
+  await second.tick();
+  const chunks = second.keys().filter((k: string) => /:c:/.test(k));
+  assert.equal(chunks.length, 1, `one new message rewrote ${chunks.length} chunk records`);
+  assert.ok(diskMessages(second.cache, 'general').some((m: any) => m.id === 'after-restart'), 'and the message is on the disk');
+  assert.equal(diskMessages(second.cache, 'general').length, 401, 'with the whole history still in front of it');
+});
