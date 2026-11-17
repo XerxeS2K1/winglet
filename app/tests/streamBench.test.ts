@@ -85,6 +85,7 @@ function build(options: { persist: boolean; coalesce?: boolean }) {
     cacheGet: async (_: string, fallback: any) => fallback,
     cacheSetStrict: async () => {},
     cacheRemove: async () => {},
+    cacheKeys: async () => [],
     // What cache.ts does on the JS thread before the SQLite write: stringify, then seal.
     cacheSet: (k: string, value: unknown) => {
       const raw = JSON.stringify(value);

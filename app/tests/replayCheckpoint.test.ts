@@ -18,7 +18,7 @@ class ApiError extends Error {
   constructor(message: string, status: number, data?: any) { super(message); this.status = status; this.data = data; }
 }
 
-type Write = { key: string; bytes: number };
+type Write = { key: string; bytes: number; value: any };
 
 const msg = (n: number, over: any = {}) => ({ id: `m${n}`, position: n, chat_id: 'general', role: 'bot',
   text: String(n), status: 'final', meta: {}, created_at: 1, updated_at: n, ...over });
@@ -53,7 +53,14 @@ function harness(shared?: Map<string, any>) {
   });
   let persisted: any;
   let socket: any;
-  const timers: (() => void)[] = [];
+  const sockets: any[] = [];
+  /** Closes that must throw, as a wedged socket does. */
+  let brokenCloses = 0;
+  const flushCalls: string[] = [];
+  /** Timers the store itself scheduled (the save chain's bound), runnable on demand. */
+  const storeTimers: Array<(() => void) | undefined> = [];
+  /** Timers the session scheduled (its resume timeout), runnable on demand. */
+  const sessionTimers: Array<(() => void) | undefined> = [];
   const frames: Array<{ fn: () => void; ms: number; live: boolean }> = [];
   const played: string[] = [];
   const cache = shared ?? new Map<string, any>();
@@ -66,9 +73,9 @@ function harness(shared?: Map<string, any>) {
     sent: any[] = [];
     onmessage?: (event: any) => void;
     onclose?: (event: any) => void;
-    constructor() { socket = this; }
+    constructor() { socket = this; sockets.push(this); }
     send(data: string) { this.sent.push(JSON.parse(data)); }
-    close() {}
+    close() { if (brokenCloses > 0) { brokenCloses--; throw new Error('socket close failed'); } }
     event(data: any) { this.onmessage?.({ data: JSON.stringify(data) }); }
   }
   class FakeCoordinator {
@@ -81,6 +88,13 @@ function harness(shared?: Map<string, any>) {
     setOnline() {}
     retryNow() {}
   }
+  /** A clock per side: a test can run the store's timers without firing the session's, and back. */
+  function clock(sink: Array<(() => void) | undefined>) {
+    return {
+      setTimeout: (fn: () => void) => { sink.push(fn); return sink.length - 1; },
+      clearTimeout: (id: number) => { if (typeof id === 'number') sink[id] = undefined; },
+    };
+  }
   function compile(file: string, imports: Record<string, any>) {
     const exports: any = {};
     const source = ts.transpileModule(readFileSync(new URL(file, import.meta.url), 'utf8'), {
@@ -91,7 +105,8 @@ function harness(shared?: Map<string, any>) {
         if (id in imports) return imports[id];
         throw new Error(`Unexpected import ${id}`);
       },
-      WebSocket: FakeSocket, setTimeout: (fn: () => void) => { timers.push(fn); return 0; }, clearTimeout: () => {},
+      WebSocket: FakeSocket,
+      ...clock(file.includes('store.ts') ? storeTimers : sessionTimers),
       setInterval: () => 0, clearInterval: () => {},
     });
     return exports;
@@ -104,6 +119,14 @@ function harness(shared?: Map<string, any>) {
   }) };
   const replayProtocol = compile('../src/features/event-replay/protocol.ts', {});
   const replaySession = compile('../src/features/event-replay/session.ts', { './protocol': replayProtocol });
+  // The store's own end-of-life boundaries drop a connection; only a flush can persist what it still
+  // holds, so the store's path is counted here rather than assumed.
+  const sessionSpy = {
+    ...replaySession,
+    SyncSession: class extends (replaySession as any).SyncSession {
+      flush() { flushCalls.push('flush'); return super.flush(); }
+    },
+  };
   const checkpoint = compile('../src/features/event-replay/checkpoint.ts', {});
   const { useApp: store } = compile('../src/lib/store.ts', {
     zustand: { create: (fn: any) => createStore(fn) },
@@ -115,7 +138,7 @@ function harness(shared?: Map<string, any>) {
     './streamBuffer': streamBuffer,
     './commands': { needsSignature: () => false },
     '../features/projects/logic': compile('../src/features/projects/logic.ts', {}),
-    '../features/event-replay/session': replaySession,
+    '../features/event-replay/session': sessionSpy,
     '../features/event-replay/merge': compile('../src/features/event-replay/merge.ts', {}),
     '../features/event-replay/checkpoint': checkpoint,
     './api': { api: (...args: any[]) => request(...args), ApiError, wsUrl: (s: any) => s.url,
@@ -126,7 +149,7 @@ function harness(shared?: Map<string, any>) {
         if (failOn.has(key)) throw new Error(`storage full: ${key}`);
         const gate = gates.get(key);
         if (gate) { gates.delete(key); await gate; }
-        writes.push({ key, bytes: JSON.stringify(value).length });
+        writes.push({ key, bytes: JSON.stringify(value).length, value: structuredClone(value) });
         cache.set(key, structuredClone(value));
       },
       cacheSet: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
@@ -136,6 +159,7 @@ function harness(shared?: Map<string, any>) {
         if (failOn.has(key)) throw new Error(`storage full: ${key}`);
         cache.delete(key);
       },
+      cacheKeys: async (prefix: string) => [...cache.keys()].filter((k) => k.startsWith(prefix)),
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
     './network': { refreshNetworkNow: async () => {} },
@@ -150,8 +174,18 @@ function harness(shared?: Map<string, any>) {
   });
   const tick = async () => { for (let i = 0; i < 6; i++) await new Promise((r) => setImmediate(r)); };
   return {
-    store, cache, writes, failOn, played, checkpoint, tick,
+    store, cache, writes, failOn, played, checkpoint, tick, flushCalls,
     socket: () => socket,
+    /** Every socket opened, oldest first: a replacement is the last one. */
+    sockets: () => sockets,
+    /** Make the next n socket closes throw, as a wedged socket does. */
+    failCloses: (n: number) => { brokenCloses = n; },
+    /** Run the timers the store itself scheduled (its save chain's bound). */
+    runStoreTimers: () => { for (const fn of storeTimers.splice(0)) fn?.(); },
+    /** Run the timers the session scheduled (its resume timeout). */
+    runSessionTimers: () => { for (const fn of sessionTimers.splice(0)) fn?.(); },
+    /** Every cursor value a save actually put on disk, in order. */
+    cursorWrites: () => writes.filter((w) => w.key === 'replay:s:v2').map((w) => w.value.cursor.cursor),
     event: (data: any) => socket.event(data),
     /** Make the next write of this key wait; the returned call releases it. A save held in flight. */
     hold: (key: string) => {
@@ -547,6 +581,11 @@ test('a whole page re-applied from a coarser cursor leaves the state identical',
 // ---------------------------------------------------------------------------------------------
 // The session on its own: coalescing and failure propagation, with the host stubbed.
 
+/** Timers a session scheduled on its own (its resume timeout), runnable on demand. */
+const sessionClocks: Array<(() => void) | undefined> = [];
+const runSessionClock = () => { for (const fn of sessionClocks.splice(0)) fn?.(); };
+const clearSessionClock = () => { sessionClocks.length = 0; };
+
 const sessionModule = () => {
   const exports: any = {};
   vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/features/event-replay/session.ts', import.meta.url), 'utf8'), {
@@ -561,13 +600,16 @@ const sessionModule = () => {
         return protocol;
       }
       throw new Error(`Unexpected import ${id}`);
-    }, setTimeout: (fn: () => void) => { return 0; }, clearTimeout: () => {},
+    },
+    setTimeout: (fn: () => void) => { sessionClocks.push(fn); return sessionClocks.length - 1; },
+    clearTimeout: (id: number) => { if (typeof id === 'number') sessionClocks[id] = undefined; },
   });
   return exports;
 };
 
 function host(options: { failWrites?: boolean; start?: number; snapshot?: any } = {}) {
   const fail = { on: options.failWrites === true };
+  const counters = { disconnects: 0, blocked: 0 };
   const saved: { cursor?: any; writes: { cursor: any; bytes: number }[] } = {
     cursor: { scope: 'scope', epoch: 'epoch', cursor: options.start ?? 0 }, writes: [] };
   const state = { applied: [] as number[], appliedBack: 0, released: false };
@@ -583,8 +625,9 @@ function host(options: { failWrites?: boolean; start?: number; snapshot?: any } 
     apply: (event: any) => { if (typeof event.event_seq === 'number') state.applied.push(event.event_seq); },
     applySnapshot: async () => { state.appliedBack++; },
     fetch: async () => options.snapshot ?? {},
-    view: () => {},
-    disconnect: () => {},
+    view: (view: any) => { if (view.phase === 'blocked') counters.blocked++; },
+    disconnect: () => { counters.disconnects++; },
+    counters,
   };
 }
 
@@ -698,4 +741,219 @@ test('the in-memory cursor does not move before its write resolves', async () =>
   assert.equal(session.durable()?.cursor, 7, 'a failed write leaves the reported cursor at the last durable one');
   assert.equal(h.saved.cursor.cursor, 7);
   assert.equal(session.view().phase, 'blocked');
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// One save at a time per bot: a retiring connection cannot undo the save that replaced it.
+
+/** session.ts's MAX_HELD: the queue depth a live burst may reach before the session gives up. */
+const HEAP_LIMIT = 512;
+
+test('a save that lost the race cannot move the cursor back or put an older page over a newer one', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  h.reset();
+  // The burst is applied and its first write is in flight when the connection is retired.
+  const release = h.hold('replay:s:m:general');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
+  await h.tick();
+  assert.deepEqual(h.keys(), [], 'the page write is still in flight');
+
+  // The replacement resumes from the cursor the disk holds, and catches up to 5 on its own.
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  h.event({ type: 'hello', chats: [chat('general')], pending: 0, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
+  await h.tick();
+  await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n, chat_id: 'general', message: msg(100 + n) })));
+
+  // The retiring save is released: it had already planned its writes from the older state.
+  release();
+  await h.tick();
+
+  const cursors = h.cursorWrites();
+  assert.equal(cursors[cursors.length - 1], 5, `the durable cursor is the newer one (wrote ${cursors.join(', ')})`);
+  assert.deepEqual([...cursors].sort((a: number, b: number) => a - b), cursors,
+    `the cursor never went backwards (wrote ${cursors.join(', ')})`);
+  const ids = (h.cache.get('replay:s:m:general')?.messages ?? []).map((m: any) => m.id);
+  assert.ok(ids.includes('m105'), `the newer page was not replaced by an older snapshot (${ids.join(', ')})`);
+  assert.ok(ids.includes('m101'), 'and the retired connection\'s own messages are still there');
+});
+
+test('a save that never settles cannot hold the next save for ever', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  h.reset();
+  // A write the device never answers: the save stays in the chain for ever.
+  h.hold('replay:s:m:general');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(101) });
+  await h.tick();
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  h.event({ type: 'hello', chats: [chat('general')], pending: 0, features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 5 } });
+  await h.tick();
+  await h.reply(5, 5, [1, 2, 3, 4, 5].map((n) => ({ type: 'message.new', event_seq: n, chat_id: 'general', message: msg(100 + n) })));
+  assert.equal(h.cache.get('replay:s:v2')?.cursor?.cursor, 0, 'the replacement is waiting, not silently stuck');
+
+  h.runStoreTimers(); // the chain stops waiting on the abandoned save
+  await h.tick();
+  assert.equal(h.cache.get('replay:s:v2').cursor.cursor, 5, 'the next save ran anyway');
+  assert.equal(h.phase(), 'idle');
+});
+
+// ---------------------------------------------------------------------------------------------
+// The session's own end-of-life boundaries must flush a burst before they drop it.
+
+test('a queue that overruns flushes the burst it holds before giving the session up', async () => {
+  const { SyncSession } = sessionModule();
+  clearSessionClock();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await caughtUp(session, h);
+  const realWrite = h.write;
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  h.write = async (cursor: any) => { await gate; return realWrite(cursor); };
+  // One frame past the limit: the session gives itself up with 512 applied frames still unsaved.
+  const events = Array.from({ length: HEAP_LIMIT + 1 }, (_, i) =>
+    ({ type: 'message.new', event_seq: i + 1, chat_id: 'general', message: msg(i + 1) }));
+  const all = events.map((event) => session.receive(event));
+  await new Promise((r) => setImmediate(r));
+  release();
+  await Promise.all(all);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(h.state.applied.length, HEAP_LIMIT, 'every frame the session accepted was applied');
+  assert.equal(h.saved.cursor.cursor, HEAP_LIMIT, 'and the burst reached the disk before the session went');
+  assert.equal(h.counters.disconnects, 1, 'the socket was still given up');
+});
+
+test('a resume that never answers flushes the burst it holds before giving the session up', async () => {
+  const { SyncSession } = sessionModule();
+  clearSessionClock();
+  const h = host();
+  const session = new SyncSession(h, () => {});
+  await session.receive({ type: 'hello', chats: [], features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 4 } });
+  assert.equal(session.view().phase, 'catching-up');
+  // Nothing is applied while a session is catching up, so a pending mark cannot arise here on its own.
+  // Set it directly: this test is about where the timeout route sends it, not about how it got there.
+  session.pending = 4;
+  runSessionClock(); // the resume timeout fires
+  await new Promise((r) => setImmediate(r));
+
+  assert.equal(h.saved.cursor.cursor, 4, 'the burst was written before the session was given up');
+  assert.equal(h.counters.disconnects, 1, 'and the socket was disconnected');
+  assert.equal(session.view().phase, 'idle');
+
+  // A flush that cannot complete still says blocked, though the session is gone.
+  const failing = host({ failWrites: true });
+  const second = new SyncSession(failing, () => {});
+  await second.receive({ type: 'hello', chats: [], features: { event_replay: true },
+    event_stream: { scope: 'scope', epoch: 'epoch', watermark: 4 } });
+  second.pending = 4;
+  runSessionClock();
+  await new Promise((r) => setImmediate(r));
+  assert.equal(second.view().phase, 'blocked', 'a flush that failed is not reported as an idle session');
+  assert.equal(failing.counters.disconnects, 1);
+});
+
+test('dropping to the background flushes what the connection still holds', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  h.flushCalls.length = 0;
+  h.store.getState().setForeground(false);
+  await h.tick();
+  // The OS may kill the app on the way out: presence(false) is the only put-it-on-disk moment left.
+  assert.deepEqual(h.flushCalls, ['flush']);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Hygiene that has to look past the records this session wrote.
+
+test('page records no checkpoint names are swept at launch, and only at launch', async () => {
+  const cache = new Map<string, any>();
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
+  cache.set('replay:s:meta', { chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['general'] });
+  cache.set('replay:s:m:general', { messages: [msg(1)], deleted: [] });
+  cache.set('replay:s:m:ghost', { messages: [msg(9, { id: 'g1', chat_id: 'ghost' })], deleted: [] });
+  const h = harness(cache);
+  await h.connect();
+  await h.tick();
+  assert.equal(cache.has('replay:s:m:ghost'), false, 'a page record nothing names is gone');
+  assert.ok((cache.get('replay:s:m:general')?.messages ?? []).some((m: any) => m.id === 'm1'), 'a named page is kept');
+  assert.ok(cache.has('replay:s:v2'), 'and the checkpoint itself is untouched');
+
+  // A record left by an interrupted prune, put back: a save is not a launch and must not sweep.
+  cache.set('replay:s:m:ghost', { messages: [], deleted: [] });
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(2, { id: 'm2' }) });
+  await h.tick();
+  assert.ok(cache.has('replay:s:m:ghost'), 'a later save does not sweep again');
+});
+
+test('a checkpoint that cannot be read sweeps nothing', async () => {
+  const cache = new Map<string, any>();
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 'nonsense' } });
+  cache.set('replay:s:meta', { chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['general'] });
+  cache.set('replay:s:m:ghost', { messages: [], deleted: [] });
+  const h = harness(cache);
+  await h.connect();
+  await h.tick();
+  assert.ok(cache.has('replay:s:m:ghost'), 'a failed load deletes nothing');
+});
+
+test('a replacement opens even when retiring the old connection throws', async () => {
+  const h = harness();
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  h.failCloses(1); // the retiring socket refuses to close
+  const before = h.sockets().length;
+  await h.store.getState().updateServer('s', { token: 'next' } as any, true);
+  await h.tick();
+  await h.begin(5);
+  await h.reply(5, 5);
+  assert.equal(h.sockets().length, before + 1, 'the replacement was opened');
+  assert.equal(h.phase(), 'idle', 'and caught up: the throw did not escape or block it');
+});
+
+test('a bot that is removed and re-paired owes nothing from its old life', async () => {
+  const h = harness();
+  const cache = h.cache;
+  // A retirement and a prune that cannot succeed yet: both stay owed to bot 's'.
+  h.failOn.add('replay:s');
+  await h.connect(seed(1, 5, 20));
+  await h.join(0);
+  assert.notEqual(cache.get('replay:s')?.retired, true, 'the retirement is still owed');
+  h.event({ type: 'message.new', event_seq: 1, chat_id: 'gone', message: msg(60, { id: 'g1', chat_id: 'gone' }) });
+  await h.tick();
+  h.failOn.add('replay:s:m:gone');
+  h.event({ type: 'chat.delete', event_seq: 2, chat_id: 'gone' });
+  await h.tick();
+  assert.ok(cache.has('replay:s:m:gone'), 'the prune is still owed');
+  h.failOn.clear();
+
+  await h.store.getState().removeServer('s');
+  assert.equal([...cache.keys()].some((k) => k.startsWith('replay:s')), false, 'its checkpoint is gone');
+
+  // Re-pairing the same id writes a fresh checkpoint and a page record under that id.
+  cache.set('replay:s:v2', { v: 2, cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 } });
+  cache.set('replay:s:meta', { chats: { gone: chat('gone') }, loaded: {}, inbox: {}, pending: 0, tasks: {}, pages: ['gone'] });
+  cache.set('replay:s:m:gone', { messages: [], deleted: [] });
+  await h.store.getState().addServer({ id: 's', url: 'http://test', token: 'test', deviceId: 'dev', bot: { title: 'Again' } });
+  // The pairing flow hydrates before it connects, as a cold launch does; addServer alone does not.
+  h.store.setState({ ready: false } as any);
+  await h.store.getState().init();
+  await h.tick();
+  await h.begin(0);
+  await h.reply(0, 0);
+
+  // The fresh save retires the pre-split record itself, so the marker is expected; what must not
+  // survive is the prune queued by the old life, which would delete the record just written.
+  assert.ok(cache.has('replay:s:m:gone'), 'no stale prune deletes the re-paired page record');
 });

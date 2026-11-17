@@ -105,6 +105,7 @@ function harness(os = 'web') {
       cacheSetStrict: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
       cacheSet: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
+      cacheKeys: async (prefix: string) => [...cache.keys()].filter((k) => k.startsWith(prefix)),
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
     './network': { refreshNetworkNow: async () => {} },

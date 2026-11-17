@@ -151,3 +151,17 @@ export async function cacheSetStrict(key: string, value: unknown): Promise<void>
 export async function cacheDeleteStrict(key: string): Promise<void> {
   await ordered(async () => { await ready(); await db.removeItemAsync(key); });
 }
+
+/**
+ * List the keys under a prefix, for hygiene that has to find records nothing points at any more.
+ * Only ever used to discover exact keys: removal stays cacheDeleteStrict. A storage that cannot list
+ * answers with nothing, so a caller never deletes on a guess.
+ */
+export async function cacheKeys(prefix: string): Promise<string[]> {
+  try {
+    return await ordered(async () => {
+      const keys = await db.getAllKeysAsync();
+      return keys.filter((key) => key.startsWith(prefix));
+    });
+  } catch { return []; }
+}

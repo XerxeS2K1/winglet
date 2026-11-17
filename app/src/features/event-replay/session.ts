@@ -30,6 +30,8 @@ export class SyncSession {
   /** Highest live seq applied whose save has not resolved yet; 0 when nothing is pending. */
   private pending = 0;
   private chain = Promise.resolve();
+  /** Set once this session has decided to give itself up: no new frame is applied after that. */
+  private givingUp = false;
   private timeout?: ReturnType<typeof setTimeout>;
   constructor(private host: SyncHost, private send: (frame: any) => void) {}
   view() { return this.state; }
@@ -38,6 +40,7 @@ export class SyncSession {
   closed() {
     this.generation++; this.stream = undefined; this.cursor = undefined;
     this.held = []; this.pages = 0; this.bytes = 0; this.heldBytes = 0; this.queued = 0; this.pending = 0;
+    this.givingUp = false;
     clearTimeout(this.timeout); this.chain = Promise.resolve();
     this.show('idle');
   }
@@ -69,13 +72,27 @@ export class SyncSession {
     // closed() reports idle; a burst that never reached the disk has to keep saying so.
     if (failed) this.show('blocked', 'network');
   }
+  /**
+   * Give the session up at a boundary it owns — a queue that overran, a resume that never came. That
+   * is the same flush-then-close path as a drop and a dispose, so a pending burst still reaches the
+   * disk, but the socket is not left open waiting on a disk that may never answer: the disconnect
+   * happens now and end() reports blocked when the flush could not complete.
+   */
+  private giveUp() {
+    if (this.givingUp) return;
+    this.givingUp = true;
+    const flushed = this.end(); // starts the flush; nothing new is applied from here on
+    this.host.disconnect();
+    void flushed;
+  }
   /** The queue includes async persistence. A slow/full device disconnects before memory grows unbounded. */
   receive(event: any): Promise<void> {
+    if (this.givingUp) return Promise.resolve();
     const generation = this.generation;
     const size = JSON.stringify(event).length * 2;
     this.queued++; this.bytes += size;
     if (this.queued + this.held.length > MAX_HELD || this.bytes + this.heldBytes > MAX_BYTES) {
-      this.closed(); this.host.disconnect(); return Promise.resolve();
+      this.giveUp(); return Promise.resolve();
     }
     const work = this.chain.then(async () => {
       if (generation !== this.generation) return;
@@ -95,7 +112,7 @@ export class SyncSession {
   private request() {
     if (!this.cursor) return;
     clearTimeout(this.timeout);
-    this.timeout = setTimeout(() => { this.closed(); this.host.disconnect(); }, 15000);
+    this.timeout = setTimeout(() => this.giveUp(), 15000);
     this.send({ type: 'resume', ...this.cursor });
   }
   private async save(cursor: ReplayCursor, generation: number) {
