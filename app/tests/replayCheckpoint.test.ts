@@ -1483,17 +1483,41 @@ test('every path that changes a message leaves a new object, never an edit in pl
   assertReplacedWhenChanged(was, list(), 'a reaction');
   assert.equal(list()[2].meta.reaction, 'thumbs up');
 
-  // A status change and a failed mark, through a real send: queued, then failed.
+  // The two status paths, each snapshotted while the row it mutates is still the live one. A send marks
+  // its row pending, and a send that then fails rewrites that same row: if the snapshot is taken before
+  // the send, the send's own replacement hides the mutation entirely, which is how a markFailed that
+  // edited in place and a setLocalStatus that edited in place both went unnoticed. So each request is
+  // held in flight, the live row is snapshotted, and only then is the request failed.
   h.setRequest(async () => { throw new ApiError('offline', 0); });
   await h.store.getState().sendMessage('s', 'general', 'a question');
   await h.tick();
   const queued = list().find((m: any) => m.status === 'queued');
   assert.ok(queued, 'a send with no network leaves the message queued');
-  was = snapshotOf(list());
-  h.setRequest(async () => { throw new ApiError('the server refused it', 409); });
-  await h.store.getState().sendMessage('s', 'general', 'a question', { retryClientId: queued.id });
+
+  // A connection lost mid-send: the pending row goes back to queued, a change to a row that exists.
+  let lose: (error: any) => void = () => {};
+  h.setRequest(() => new Promise((_, reject) => { lose = reject; }));
+  const lost = h.store.getState().sendMessage('s', 'general', 'a question', { retryClientId: queued.id });
   await h.tick();
-  assertReplacedWhenChanged(was, list(), 'a status change and a failed mark');
+  assert.equal(list().find((m: any) => m.id === queued.id).status, 'pending', 'the retry is on its way');
+  was = snapshotOf(list());
+  lose(new ApiError('the network dropped it', 0));
+  await lost;
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'a status change (setLocalStatus)');
+  assert.equal(list().find((m: any) => m.id === queued.id).status, 'queued', 'and it is queued again');
+
+  // A refusal: that same pending row is what markFailed rewrites, so the snapshot has to be taken now.
+  let refuse: (error: any) => void = () => {};
+  h.setRequest(() => new Promise((_, reject) => { refuse = reject; }));
+  const refused = h.store.getState().sendMessage('s', 'general', 'a question', { retryClientId: queued.id });
+  await h.tick();
+  assert.equal(list().find((m: any) => m.id === queued.id).status, 'pending', 'the refused attempt is on its way');
+  was = snapshotOf(list());
+  refuse(new ApiError('the server refused it', 409));
+  await refused;
+  await h.tick();
+  assertReplacedWhenChanged(was, list(), 'a failed mark (markFailed)');
   const failed = list().find((m: any) => m.id === queued.id);
   assert.equal(failed.status, 'failed', 'the retry was refused and the row says so');
   assert.equal(failed.meta.delivery_error, 'the server refused it');
@@ -1588,6 +1612,103 @@ test('a very long chat raises its chunk size instead of its chunk count, and an 
   assert.deepEqual(sealed, [keys[keys.length - 1]], 'only the tail chunk is written');
 });
 
+test('a chat grown by appends stops at the chunk cap, and the crossing recuts it exactly once', () => {
+  const h = harness();
+  const cursor = (n: number) => ({ scope: 'scope', epoch: 'epoch', cursor: n });
+  // ~8 KiB of JSON per message, so eight fill a 64 KiB chunk and the cap is about 2,048 messages away:
+  // the crossing is reached by ordinary appends rather than turned up on purpose.
+  const page = (n: number) => ({ id: `general-${n}`, position: n, chat_id: 'general', role: 'bot',
+    text: 'x'.repeat(8000), status: 'final', meta: {}, created_at: 1, updated_at: n + 1 });
+  const base = { chats: { general: chat('general') }, deleted: {}, loaded: {}, inbox: {}, pending: 0, tasks: {} };
+  let messages: any[] = [];
+  let saved: any;
+  let most = 0;
+  const recuts: Array<{ chunks: number; wrote: number }> = [];
+
+  /** One ordinary append: a new message, one save, and the chunk count it left on the disk. */
+  const append = (n: number) => {
+    messages = [...messages, page(n)];
+    const plan = h.checkpoint.planCheckpoint('s', { ...base, messages: { general: messages } }, cursor(n + 1), saved);
+    const chat_ = plan.saved.chats.general;
+    const keys = Array.from(chat_.keys as string[]);
+    assert.equal(chat_.marks.reduce((sum: number, mark: any) => sum + mark.n, 0), messages.length,
+      `save ${n} laid out every message exactly once`);
+    const wrote = Array.from(plan.write as any[]).map((item: any) => item.key)
+      .filter((key: string) => key.includes(':c:general:'));
+    most = Math.max(most, keys.length);
+    if (wrote.length > 1) recuts.push({ chunks: keys.length, wrote: wrote.length });
+    else assert.deepEqual(wrote, [keys[keys.length - 1]], `save ${n} rewrote no chunk but the tail`);
+    saved = plan.saved;
+    return keys.length;
+  };
+
+  // Grow the chat one message per save until the append that would go past the cap arrives.
+  const counts: number[] = [];
+  let n = 0;
+  while (recuts.length === 0) {
+    counts.push(append(n++));
+    assert.ok(n < 4096, 'the chat reached the cap by appends');
+  }
+
+  // The save before the crossing sat exactly on the cap, and the crossing save recut the whole chat once
+  // instead of adding a 257th chunk. One recut, not one per message.
+  assert.equal(counts[counts.length - 2], h.checkpoint.MAX_CHUNKS, 'the chat was at the cap before the crossing');
+  assert.equal(recuts.length, 1, 'exactly one whole-chat recut');
+  assert.equal(recuts[0].wrote, recuts[0].chunks, 'and it rewrote every chunk of the chat, so it was a recut');
+  assert.ok(recuts[0].chunks < h.checkpoint.MAX_CHUNKS,
+    `the recut left ${recuts[0].chunks} chunks, inside the cap of ${h.checkpoint.MAX_CHUNKS}`);
+  assert.equal(counts[counts.length - 1], recuts[0].chunks, 'that is the count the crossing save left behind');
+  assert.ok(saved.chats.general.target > h.checkpoint.CHUNK_TARGET_BYTES,
+    `the cap raised the target to ${saved.chats.general.target} bytes instead of adding chunks`);
+
+  // Appends after the crossing are one chunk again, and nothing crosses the cap for a second time.
+  for (let k = 0; k < 12; k++) {
+    const count = append(n++);
+    assert.ok(count <= h.checkpoint.MAX_CHUNKS, `save ${n} left ${count} chunks`);
+  }
+  assert.equal(recuts.length, 1, 'the appends after the crossing paid for no second recut');
+  assert.ok(most <= h.checkpoint.MAX_CHUNKS,
+    `no save left more than ${h.checkpoint.MAX_CHUNKS} chunks, and the most any left was ${most}`);
+  assert.equal(saved.chats.general.marks.reduce((sum: number, mark: any) => sum + mark.n, 0), messages.length,
+    'and every message is still laid out once, in order');
+});
+
+test('a load takes its recut threshold from the target the disk was cut at, not from the weight', async () => {
+  const h = harness();
+  // A chat the disk holds cut at 128 KiB: the size the append path is recut at when it reaches the cap,
+  // while the chat's weight alone only justifies 64 KiB. A load that recomputed the target would disagree
+  // with the records it had just read.
+  const messages = Array.from({ length: 40 }, (_, i) => msg(i, { id: `adopt-${i}`, text: 'x'.repeat(1200) }));
+  const chunks = Array.from({ length: 4 }, (_, index) => `replay:s:c:general:${index}`);
+  const cache = new Map<string, any>();
+  for (const [index, key] of chunks.entries()) {
+    cache.set(key, { v: 3, messages: messages.slice(index * 10, index * 10 + 10) });
+  }
+  cache.set('replay:s:t:general', { v: 3, deleted: [] });
+  cache.set('replay:s:v3', { v: 3, cursor: { scope: 'scope', epoch: 'epoch', cursor: 1 } });
+  cache.set('replay:s:v3:meta', { v: 3, chats: { general: chat('general') }, loaded: {}, inbox: {}, pending: 0,
+    tasks: {}, pages: ['general'], chunks: { general: chunks }, targets: { general: 128 * 1024 } });
+
+  const loaded = await h.checkpoint.loadCheckpoint('s',
+    async (key: string, fallback: any) => (cache.has(key) ? structuredClone(cache.get(key)) : fallback));
+  assert.ok(loaded, 'the checkpoint loads');
+  assert.equal(loaded.layout.general.target, 128 * 1024, 'the target came off the disk beside the keys');
+
+  const refs = h.checkpoint.savedRefsOf('s', loaded.state, loaded.layout);
+  assert.deepEqual(Array.from(refs.chats.general.keys as string[]), chunks, 'the same records, in order');
+  assert.equal(refs.chats.general.target, 128 * 1024, 'and the same target to recut against');
+  assert.equal(refs.meta.targets.general, 128 * 1024, 'recorded in the meta, so the next load has it too');
+
+  // What a recomputation would have said, and why it matters: this chat still fits 64 KiB chunks by weight.
+  const total = messages.reduce((sum, message) => sum + weightOf(message), 0);
+  assert.ok(total < h.checkpoint.CHUNK_TARGET_BYTES * h.checkpoint.MAX_CHUNKS,
+    `the weight alone (${total} bytes) still fits the 64 KiB target, so a recomputed target would be 65536`);
+  const plan = h.checkpoint.planCheckpoint('s', loaded.state,
+    { scope: 'scope', epoch: 'epoch', cursor: 2 }, refs);
+  assert.deepEqual(Array.from(plan.write as any[]).map((item: any) => item.key), ['replay:s:v3'],
+    'the first save after the load rewrites no chunk and leaves the meta alone');
+});
+
 test('a restore reads its chunk records a bounded number at a time', async () => {
   const h = harness();
   const cache = new Map<string, any>();
@@ -1620,4 +1741,35 @@ test('a restore reads its chunk records a bounded number at a time', async () =>
   assert.equal(ids.reduce((n, id) => n + loaded.state.messages[id].length, 0), 60, 'every message came back');
   assert.ok(peak <= h.checkpoint.READ_CONCURRENCY,
     `${peak} reads were in flight over ${ids.length} chats, and the bound is ${h.checkpoint.READ_CONCURRENCY}`);
+
+  // The same records, wider and resolving at once: this is the accounting, not the read. A slot taken only
+  // after the wait is not counted while the woken caller is still queued, so readers that have been handed
+  // a slot stack up on top of the ones already inside `run`. Sixty chats of five chunks expose it: the
+  // bound is 8 and it peaked at 32 with the slot counted after the wait.
+  const wide = Array.from({ length: 60 }, (_, i) => `wide${i}`);
+  const wideChats: Record<string, any> = {};
+  const wideChunks: Record<string, string[]> = {};
+  for (const id of wide) {
+    wideChats[id] = chat(id);
+    wideChunks[id] = Array.from({ length: 5 }, (_, i) => `replay:s:c:${id}:${i}`);
+    for (const [i, key] of wideChunks[id].entries()) cache.set(key, { v: 3, messages: [msg(i, { id: `${id}-${i}` })] });
+    cache.set(`replay:s:t:${id}`, { v: 3, deleted: [] });
+  }
+  cache.set('replay:s:v3:meta', { v: 3, chats: wideChats, loaded: {}, inbox: {}, pending: 0, tasks: {},
+    pages: wide, chunks: wideChunks });
+
+  let fastActive = 0;
+  let fastPeak = 0;
+  const fast = await h.checkpoint.loadCheckpoint('s', async (key: string, fallback: any) => {
+    fastActive += 1;
+    fastPeak = Math.max(fastPeak, fastActive);
+    await null;
+    const value = cache.has(key) ? structuredClone(cache.get(key)) : fallback;
+    fastActive -= 1;
+    return value;
+  });
+  assert.equal(fast.complete, true, 'all 300 records read');
+  assert.equal(wide.reduce((n, id) => n + fast.state.messages[id].length, 0), 300, 'every message came back');
+  assert.ok(fastPeak <= h.checkpoint.READ_CONCURRENCY,
+    `${fastPeak} instantly-resolving reads were in flight, and the bound is ${h.checkpoint.READ_CONCURRENCY}`);
 });

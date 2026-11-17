@@ -50,6 +50,7 @@ function history(nChats, nMessages, textLen) {
 }
 
 const median = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+const kib = (n) => `${(n / 1024).toFixed(1)} KiB`;
 
 function sealed(slices, cursor) {
   // The pre-split checkpoint: one value holding every chat and every message.
@@ -184,10 +185,10 @@ longChat();
 
 /**
  * The scaling end: a chat long enough that the plan itself, and the number of records a restore fans out
- * over, become the cost. The chunk target doubles with the history (see MAX_CHUNKS in checkpoint.ts), so
- * a 100,000-message chat is ~220 chunks of 256 KB rather than ~880 of 64 KB, and an append still only
- * walks the tail chunk. Times are the plan alone (no sealing), which is what a live save spends on the JS
- * thread before any encryption.
+ * over, become the cost. This is the bulk case — one chat loaded in one go, cut at the size its whole
+ * history needs (see MAX_CHUNKS in checkpoint.ts) — and `planCostGrown` below prints the same history grown
+ * by appends beside it, because the two paths reach their chunk count by different routes. Times are the
+ * plan alone (no sealing), which is what a live save spends on the JS thread before any encryption.
  */
 function planCost(nMessages = 100000, textLen = 430, rounds = 7) {
   const { planCheckpoint, MAX_CHUNKS, CHUNK_TARGET_BYTES } = loadCheckpointModule();
@@ -225,12 +226,76 @@ function planCost(nMessages = 100000, textLen = 430, rounds = 7) {
   console.log(`  chunks: ${chunks} (cap ${MAX_CHUNKS}, base target ${kib(CHUNK_TARGET_BYTES)} -> target ${kib(saved.chats.general.target ?? CHUNK_TARGET_BYTES)})`);
   console.log(`  first save (the upgrade) plans in ${firstMs.toFixed(1)} ms, before any sealing`);
   console.log(`  one new message: plan ${median(planMs).toFixed(2)} ms, ${wrote} records, ${kib(median(bytes))} sealed`);
-  return { chunks, planMs: median(planMs), firstMs, bytes: median(bytes) };
+  return { chunks, planMs: median(planMs), firstMs, bytes: median(bytes),
+    target: saved.chats.general.target ?? CHUNK_TARGET_BYTES, cap: MAX_CHUNKS };
 }
 
 console.log('--- plan cost at 5,000 messages (the device-sized case above) ---');
 planCost(5000);
 
 console.log('--- the scaling end: a 100,000-message chat, one message at a time ---');
-planCost();
+const bulk = planCost();
+
+/**
+ * The same history, grown the way a real chat grows: from empty, by saves that append a batch of messages.
+ * This is the case the cap used to miss — the append path kept the target it started with and never asked
+ * for a bigger one, so a chat grown to 100,000 messages ended at 1,176 chunks of 64 KiB, 4.6x the cap.
+ * Printed beside the bulk load so the two numbers can be read together.
+ */
+function planCostGrown(nMessages = 100000, batch = 500, textLen = 430) {
+  const { planCheckpoint, MAX_CHUNKS, CHUNK_TARGET_BYTES } = loadCheckpointModule();
+  const cursor = (n) => ({ scope: 'scope', epoch: 'epoch', cursor: n });
+  const kib = (n) => `${(n / 1024).toFixed(1)} KiB`;
+  const message = (i) => ({ id: `general-${i}`, position: i, chat_id: 'general', role: 'bot',
+    text: 'x'.repeat(textLen), status: 'final', meta: {}, created_at: 1, updated_at: i + 1 });
+  const slices = { chats: { general: { id: 'general', kind: 'chat', title: 'general' } },
+    messages: { general: [] }, deleted: {}, loaded: {}, inbox: {}, pending: 0, paused: null,
+    me: undefined, projects: undefined, tasks: {} };
+
+  let saved;
+  let worst = 0;
+  let saves = 0;
+  const recuts = [];
+  const started = performance.now();
+  while (slices.messages.general.length < nMessages) {
+    const page = slices.messages.general;
+    const grown = [...page, ...Array.from({ length: Math.min(batch, nMessages - page.length) },
+      (_, k) => message(page.length + k))];
+    slices.messages = { ...slices.messages, general: grown };
+    const plan = planCheckpoint('s', slices, cursor(++saves), saved);
+    const count = plan.saved.chats.general.keys.length;
+    worst = Math.max(worst, count);
+    const wrote = plan.write.filter((item) => item.key.includes(':c:')).length;
+    // A whole-chat recut rewrites every chunk; an ordinary append writes the one tail chunk, and a batch
+    // append writes the few chunks it touched. The first save is a new chat cut whole, not a recut.
+    if (saves > 1 && wrote === count && count > 1) recuts.push({ at: grown.length, count });
+    saved = plan.saved;
+  }
+  const growthMs = performance.now() - started;
+
+  // One more message, appended to the chat as it now stands: what a live save costs after the growth.
+  const page = slices.messages.general;
+  slices.messages = { ...slices.messages, general: [...page, message(page.length)] };
+  const appended = performance.now();
+  const plan = planCheckpoint('s', slices, cursor(++saves), saved);
+  const planMs = performance.now() - appended;
+  let sealedBytes = 0;
+  for (const item of plan.write) sealedBytes += seal(item.key, JSON.stringify(item.value));
+  const wrote = plan.write.filter((item) => item.key.includes(':c:')).length;
+
+  console.log(`--- the same ${nMessages.toLocaleString('en-GB')}-message chat grown live: ${batch} messages per save, from empty ---`);
+  console.log(`  chunks: ${saved.chats.general.keys.length} (cap ${MAX_CHUNKS}, base target ${kib(CHUNK_TARGET_BYTES)} -> target ${kib(saved.chats.general.target ?? CHUNK_TARGET_BYTES)})`);
+  console.log(`  most chunks any save left: ${worst}; whole-chat recuts while growing: ${recuts.length}`
+    + (recuts.length ? ` (at ${recuts.map((r) => `${r.at} messages -> ${r.count} chunks`).join(', ')})` : ''));
+  console.log(`  growth: ${saves} saves, ${growthMs.toFixed(0)} ms of planning in total`);
+  console.log(`  one message appended after that growth: plan ${planMs.toFixed(2)} ms, `
+    + `${wrote} chunk record${wrote === 1 ? '' : 's'}, ${kib(sealedBytes)} sealed`);
+  return { chunks: saved.chats.general.keys.length, worst, recuts: recuts.length, planMs, sealedBytes,
+    target: saved.chats.general.target ?? CHUNK_TARGET_BYTES };
+}
+
+console.log('--- the grown-live case, for the two numbers side by side ---');
+const grown = planCostGrown();
+console.log('--- side by side: bulk load ' + `${bulk.chunks} chunks of ${kib(bulk.target)}, `
+  + `grown live ${grown.chunks} chunks of ${kib(grown.target)}, cap ${bulk.cap} on both paths ---`);
 

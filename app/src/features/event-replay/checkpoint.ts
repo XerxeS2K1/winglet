@@ -40,13 +40,19 @@ export const CHUNK_TARGET_BYTES = 64 * 1024;
 /**
  * A chat is never cut into more chunks than this. Chunk count is what the meta record, the restore's
  * read fan-out and the number of records a save compares all pay for, so a chat that outgrows 256 chunks
- * of 64 KB raises its target instead of adding chunks: 100,000 messages become ~220 chunks of 256 KB,
- * not ~880 of 64 KB.
+ * of 64 KB raises its target instead of adding chunks.
+ *
+ * Both ways a chat grows honour it. A chat loaded in one go is cut at the size its whole history needs
+ * (`cutWithinCap`), so 100,000 messages are ~220 chunks of 256 KB rather than ~880 of 64 KB. A chat grown
+ * by appends keeps the target it was last cut at and rewrites only the tail — the cap cannot bite until
+ * its count reaches MAX_CHUNKS — and the append that would go past the cap recuts the whole chat at the
+ * size its history now needs, once. After that recut the count is far under the cap and appends are one
+ * chunk again: the same 100,000 messages grown live end at 220 chunks too, after two recuts.
  *
  * The target is quantised to a power-of-two multiple of CHUNK_TARGET_BYTES, so an append cannot move it:
- * it changes only when a chat doubles its history, and that one save recuts the whole chat. Between
- * doublings the target is fixed, and the greedy cut of the messages before the tail depends on nothing
- * after it, so the boundaries of the closed chunks do not move and an append rewrites only the tail.
+ * it changes only when a chat doubles its history or crosses the cap, and that one save recuts the whole
+ * chat. Between those the target is fixed, and the greedy cut of the messages before the tail depends on
+ * nothing after it, so the boundaries of the closed chunks do not move and an append rewrites the tail.
  */
 export const MAX_CHUNKS = 256;
 
@@ -68,6 +74,12 @@ export type MetaRecord = {
   pages?: string[];
   /** Per chat, the ordered chunk keys its messages live in: a restore concatenates them in order. */
   chunks?: Record<string, string[]>;
+  /**
+   * Per chat, the chunk size its records were cut at. Recorded rather than recomputed: the weight of a
+   * chat only suggests a target, and a chat recut to stay under MAX_CHUNKS was written at a size the
+   * weight does not justify. A later save's recut threshold has to match what is really on the disk.
+   */
+  targets?: Record<string, number>;
 };
 
 /** The v2 layout's one record per chat: read for an upgrade, never written again. */
@@ -92,11 +104,11 @@ export type ChunkMark = { n: number; w: number; h: number; f: number; l: number 
 export type SavedChat = { array: Message[]; keys: string[]; marks: ChunkMark[]; deleted: string[]; target: number };
 
 /**
- * A restore's own chunk layout, exactly as the meta record names it: the keys in order and the message
- * count of each. Adopting it means the next save diffs against what the disk really holds, instead of
- * re-cutting the restored array and naming a different number of chunks.
+ * A restore's own chunk layout, exactly as the meta record names it: the keys in order, the message
+ * count of each, and the target they were cut at. Adopting it means the next save diffs against what the
+ * disk really holds, instead of re-cutting the restored array and naming a different number of chunks.
  */
-export type SavedLayout = Record<string, { keys: string[]; counts: number[] }>;
+export type SavedLayout = Record<string, { keys: string[]; counts: number[]; target?: number }>;
 
 /** The identities a successful save leaves on disk; the next save diffs against them. */
 export type SavedRefs = { chats: Record<string, SavedChat>; meta: MetaRecord };
@@ -195,6 +207,24 @@ function targetFor(total: number): number {
 }
 
 /**
+ * The target and the whole-chat cut that leave a chat within MAX_CHUNKS chunks. `targetFor` is a good
+ * first guess rather than a promise: a greedy cut closes a chunk as soon as the next message would exceed
+ * the target, so chunks can be as small as half of it and a chat can land just over the cap even when its
+ * weight says it fits. Doubling until the cut fits always terminates — once the target reaches the chat's
+ * whole weight every message fits in one chunk — and every size tried is still a power-of-two multiple of
+ * CHUNK_TARGET_BYTES, so the append path can keep it.
+ */
+function cutWithinCap(total: number, messages: Message[]) {
+  let target = targetFor(total);
+  let sizes = cutSizes(messages, target);
+  while (sizes.length > MAX_CHUNKS) {
+    target *= 2;
+    sizes = cutSizes(messages, target);
+  }
+  return { target, sizes };
+}
+
+/**
  * Cut a chat's messages into chunks of about `target`, never fewer than one message per chunk. The cut
  * depends only on the messages before it, so appending a message cannot move an earlier boundary and only
  * the tail chunk is rewritten. `from` continues a cut already closed before that index.
@@ -248,7 +278,8 @@ function samePrefix(before: Message[], after: Message[], length: number): boolea
 const countOf = (sizes: number[]) => sizes.reduce((n, size) => n + size, 0);
 
 function chunkLayout(keys: CheckpointKeys, chatId: string, messages: Message[], before?: SavedChat) {
-  const kept = before && countOf(before.marks.map((mark) => mark.n)) === messages.length
+  const kept = before && before.marks.length <= MAX_CHUNKS
+    && countOf(before.marks.map((mark) => mark.n)) === messages.length
     ? before.marks.map((mark) => mark.n) : undefined;
   const target = before?.target ?? CHUNK_TARGET_BYTES;
   const layout = (sizes: number[], marks: ChunkMark[], size: number) =>
@@ -270,20 +301,33 @@ function chunkLayout(keys: CheckpointKeys, chatId: string, messages: Message[], 
     const closed = before.marks.slice(0, -1).map((mark) => mark.n);
     const from = countOf(closed);
     const tail = cutSizes(messages, target, from);
+    const sizes = [...closed, ...tail];
     const marks = [...before.marks.slice(0, -1), ...marksOf(messages, tail, from)];
-    if (!marks.some((mark) => mark.w > target * 2)) return layout([...closed, ...tail], marks, target);
+    // The cap, on the path a real chat actually grows by: an append that would take the count past
+    // MAX_CHUNKS keeps its tail write only while the count fits. Past the cap it falls through to the
+    // whole-chat recut below — that is the one save that pays for it — and the target that recut picks is
+    // stored, so the next append keeps it and only the tail moves again.
+    if (sizes.length <= MAX_CHUNKS && !marks.some((mark) => mark.w > target * 2)) {
+      return layout(sizes, marks, target);
+    }
   }
 
-  // A new chat, a shrink, a reorder or a target change: cut the whole chat at the size its history needs.
-  const size = targetFor(totalWeight(messages));
-  const sizes = cutSizes(messages, size);
-  return layout(sizes, marksOf(messages, sizes), size);
+  // A new chat, a shrink, a reorder, a target change, or an append that reached the cap: cut the whole
+  // chat at the size its history needs, and never into more chunks than the cap allows.
+  const cut = cutWithinCap(totalWeight(messages), messages);
+  return layout(cut.sizes, marksOf(messages, cut.sizes), cut.target);
 }
 
 const sameMark = (a: ChunkMark, b: ChunkMark) => a.n === b.n && a.w === b.w && a.h === b.h && a.f === b.f && a.l === b.l;
 
 const sameList = (a: string[] | undefined, b: string[] | undefined) => !!a && !!b
   && a.length === b.length && a.every((value, i) => value === b[i]);
+
+const sameNumbers = (a: Record<string, number> | undefined, b: Record<string, number> | undefined) => {
+  if (!a || !b) return a === b;
+  const ids = Object.keys(a);
+  return ids.length === Object.keys(b).length && ids.every((id) => a[id] === b[id]);
+};
 
 const sameChunks = (a: Record<string, string[]> | undefined, b: Record<string, string[]> | undefined) => {
   if (!a || !b) return false;
@@ -296,7 +340,7 @@ const sameMeta = (a: MetaRecord, b: MetaRecord | undefined) => !!b
   && a.v === b.v
   && a.chats === b.chats && a.loaded === b.loaded && a.inbox === b.inbox && a.pending === b.pending
   && a.paused === b.paused && a.me === b.me && a.projects === b.projects && a.tasks === b.tasks
-  && sameList(a.pages, b.pages) && sameChunks(a.chunks, b.chunks);
+  && sameList(a.pages, b.pages) && sameChunks(a.chunks, b.chunks) && sameNumbers(a.targets, b.targets);
 
 /**
  * Describe what a save of these slices would leave on disk, without copying or serialising anything: the
@@ -309,6 +353,7 @@ function walk(serverId: string, slices: CheckpointSlices, last?: SavedRefs, layo
   const ids = [...new Set([...Object.keys(slices.messages), ...Object.keys(slices.deleted)])];
   const chats: Record<string, SavedChat> = {};
   const chunks: Record<string, string[]> = {};
+  const targets: Record<string, number> = {};
   for (const chatId of ids) {
     const array = slices.messages[chatId] ?? NO_MESSAGES;
     const deleted = slices.deleted[chatId] ?? NO_TOMBSTONES;
@@ -319,19 +364,23 @@ function walk(serverId: string, slices: CheckpointSlices, last?: SavedRefs, layo
     } else if (fixed && fixed.keys.length === fixed.counts.length && countOf(fixed.counts) === array.length) {
       // The layout the meta record names, marks and all: the next save compares against what is really
       // on the disk, so a kept (edit-era) cut is not silently re-cut into a different number of chunks.
+      // The target comes from the meta as well: recomputing it from the weight would disagree with a
+      // chat that was recut to stay under MAX_CHUNKS, and the next append would then keep a size the
+      // records on the disk were not cut at.
       chats[chatId] = { array, keys: fixed.keys, marks: marksOf(array, fixed.counts), deleted,
-        target: targetFor(totalWeight(array)) };
+        target: fixed.target ?? targetFor(totalWeight(array)) };
     } else {
       const cut = chunkLayout(keys, chatId, array, before);
       chats[chatId] = { array, keys: cut.keys, marks: cut.marks, deleted, target: cut.target };
     }
     chunks[chatId] = chats[chatId].keys;
+    targets[chatId] = chats[chatId].target;
   }
   const meta: MetaRecord = {
     v: 3,
     chats: slices.chats, loaded: slices.loaded, inbox: slices.inbox, pending: slices.pending,
     paused: slices.paused, me: slices.me, projects: slices.projects, tasks: slices.tasks,
-    pages: ids, chunks,
+    pages: ids, chunks, targets,
   };
   return { ids, chats, meta };
 }
@@ -360,8 +409,13 @@ export function planCheckpoint(serverId: string, slices: CheckpointSlices, curso
     // in place: upsertMessage (slice or map), setLocalStatus (map), markFailed (map), message.delete
     // (filter), mergeSnapshot (reuses a page only when nothing was removed), the outbox's localMessage
     // (a fresh object) and message.update (a new object from the server). An in-place edit would look
-    // unchanged here and never reach the disk. tests/replayCheckpoint.test.ts drives each of those paths
-    // and asserts that a message whose content changed is a new object, so the invariant is pinned.
+    // unchanged here and never reach the disk.
+    //
+    // What the test pins, exactly: for each path it drives, it snapshots the live row before the step and
+    // fails if a surviving object's JSON changed. So it catches an in-place edit on a path the test
+    // drives, at a step where the mutated object is still the one in the list — that is all it covers. A
+    // path the test does not drive, or a mutation of an object the step has already replaced, is not
+    // covered by it: the guard is path-by-path evidence, not a proof about every write.
     if (!before || before.array !== messages) {
       // A new array: rewrite exactly the chunks whose content is not what is already on the disk.
       let from = 0;
@@ -415,13 +469,18 @@ const validCursor = (cursor: ReplayCursor | undefined): cursor is ReplayCursor =
 /**
  * A bound on how many reads run at once. A 100,000-message chat is ~220 chunk records: issuing every one
  * of them together fans out that many decrypts on the JS thread, so a restore walks them in small batches.
+ *
+ * A caller takes its slot before it waits, and only a slot holder hands its slot on, so exactly
+ * READ_CONCURRENCY reads are ever in flight — even when a read resolves instantly and the next caller is
+ * already queued. Counting the slot after the wait, as this used to, lets every caller that is woken in
+ * the same tick run alongside the ones still inside `run`, which admits about 1.5x the bound.
  */
 function bounded() {
   let active = 0;
   const waiting: (() => void)[] = [];
   return async <T>(run: () => Promise<T>): Promise<T> => {
-    if (active >= READ_CONCURRENCY) await new Promise<void>((release) => waiting.push(release));
     active += 1;
+    if (active > READ_CONCURRENCY) await new Promise<void>((release) => waiting.push(release));
     try {
       return await run();
     } finally {
@@ -479,7 +538,9 @@ export async function loadCheckpoint(serverId: string,
         ? await readChunks(read, get, chunks, named, counts)
         : { messages: NO_MESSAGES, complete: true };
       if (!parts.complete) complete = false;
-      else if (chunks.length) layout[chatId] = { keys: chunks, counts };
+      else if (chunks.length) {
+        layout[chatId] = { keys: chunks, counts, target: meta.targets?.[chatId] };
+      }
       if (parts.messages.length) messages[chatId] = parts.messages;
       const record = await read(() => get<TombstoneRecord | undefined>(keys.tombstones(chatId), undefined));
       named.push(keys.tombstones(chatId));
@@ -489,7 +550,7 @@ export async function loadCheckpoint(serverId: string,
       if (!record || !Array.isArray(record.deleted)) complete = false;
       else if (record.deleted.length) deleted[chatId] = record.deleted;
     }));
-    const { v: _v, chunks: _chunks, ...rest } = meta;
+    const { v: _v, chunks: _chunks, targets: _targets, ...rest } = meta;
     return { cursor: v3.cursor, state: { ...rest, messages, deleted }, keys: named, complete, layout };
   }
   const v2 = await get<CursorRecord | undefined>(keys.v2.cursor, undefined);
@@ -514,7 +575,7 @@ export async function loadCheckpoint(serverId: string,
       if (record.messages.length) messages[chatId] = record.messages;
       if (record.deleted.length) deleted[chatId] = record.deleted;
     }
-    const { v: _v, chunks: _chunks, ...rest } = meta;
+    const { v: _v, chunks: _chunks, targets: _targets, ...rest } = meta;
     return { cursor: v2.cursor, state: { ...rest, messages, deleted }, keys: named, legacy: true, complete };
   }
   const legacy = await get<Checkpoint | undefined>(keys.base, undefined);
