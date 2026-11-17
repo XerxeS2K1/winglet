@@ -8,6 +8,7 @@ import { api, ApiError, signedApi, wsUrl } from './api';
 import { needsSignature } from './commands';
 import { cacheGet, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
+import { checkpointKeys, loadCheckpoint, planCheckpoint, type SavedRefs } from '../features/event-replay/checkpoint';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
@@ -169,8 +170,10 @@ const connections = new Map<string, Connection>();
 const coordinator = new RecoveryCoordinator();
 /** A cursor exists only alongside the durable state checkpoint which covers it. */
 const replayCursors = new Map<string, ReplayCursor>();
-type ReplayCheckpoint = { cursor: ReplayCursor; state: Pick<ServerState,
-  'chats' | 'messages' | 'deleted' | 'loaded' | 'inbox' | 'pending' | 'paused' | 'me' | 'projects' | 'tasks'> };
+/** What each bot's checkpoint already holds on disk, so a save writes only what changed. */
+const checkpointSaved = new Map<string, SavedRefs>();
+/** Bots whose pre-split whole-state record has been retired. */
+const retired = new Set<string>();
 /** Per-bot send queue: keeps messages in order, and stops at the first one the network loses. */
 const sendChains = new Map<string, Promise<void>>();
 /** Last structured-task fetch per server+chat, so opening a sheet repeatedly doesn't hammer the server. */
@@ -550,11 +553,19 @@ export const useApp = create<AppState>((set, get) => {
           streamed.flush(); // the saved state must not trail the cursor it is saved with
           const rt = get().runtime[server.id];
           if (!rt || connections.get(server.id) !== conn) throw Error('Connection replaced');
-          const { chats, messages, deleted, loaded, inbox, pending, paused, me, projects, tasks } = rt;
-          // One encrypted SQLite value / one IndexedDB transaction: data cannot trail its cursor.
-          await cacheSetStrict(`replay:${server.id}`, { cursor,
-            state: { chats, messages, deleted, loaded, inbox, pending, paused, me, projects, tasks } });
+          // Refs are captured before the first await, so what is remembered as saved is exactly what was
+          // written. Dirty chat records first, then the rest of the state, then the cursor: a crash between
+          // them can only leave the cursor behind its data, which replay repairs.
+          const plan = planCheckpoint(server.id, rt, cursor, checkpointSaved.get(server.id));
+          for (const { key, value } of plan.write) await cacheSetStrict(key, value);
+          checkpointSaved.set(server.id, plan.saved);
           if (connections.get(server.id) === conn) replayCursors.set(server.id, cursor);
+          // The pre-split record (whole state, up to megabytes) is retired once, after a save that covers
+          // it. This is cache hygiene, not data, so its failure must not fail a save that already committed.
+          if (!retired.has(server.id)) {
+            retired.add(server.id);
+            await cacheSetStrict(checkpointKeys(server.id).base, { v: 2, retired: true }).catch(() => undefined);
+          }
         },
         apply: async (event, replayed) => {
           if (connections.get(server.id) !== conn) return;
@@ -630,7 +641,7 @@ export const useApp = create<AppState>((set, get) => {
       cacheGet<OutboxEntry[]>(`outbox:${serverId}`, []),
       cacheGet<PetSheet | null>(`pet:${serverId}`, null),
       cacheGet<ProjectSnapshot | undefined>(`projects:${serverId}`, undefined),
-      cacheGet<ReplayCheckpoint | undefined>(`replay:${serverId}`, undefined),
+      loadCheckpoint(serverId, cacheGet),
     ]);
     if (checkpoint?.cursor?.scope && checkpoint.state && get().runtime[serverId]?.status !== 'online') {
       replayCursors.set(serverId, checkpoint.cursor);

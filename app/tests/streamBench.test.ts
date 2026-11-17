@@ -105,6 +105,7 @@ function build(options: { persist: boolean; coalesce?: boolean }) {
     '../features/projects/logic': compile('../src/features/projects/logic.ts', {}),
     '../features/event-replay/session': compile('../src/features/event-replay/session.ts', { './protocol': compile('../src/features/event-replay/protocol.ts', {}) }),
     '../features/event-replay/merge': compile('../src/features/event-replay/merge.ts', {}),
+    '../features/event-replay/checkpoint': compile('../src/features/event-replay/checkpoint.ts', {}),
     './api': { api: (...args: any[]) => request(...args), ApiError, wsUrl: (s: any) => s.url, signedApi: (...a: any[]) => request(...a) },
     './cache': cache,
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },

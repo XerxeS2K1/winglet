@@ -27,13 +27,15 @@ export class SyncSession {
   private queued = 0;
   private bytes = 0;
   private heldBytes = 0;
+  /** Highest live seq applied whose save has not resolved yet; 0 when nothing is pending. */
+  private pending = 0;
   private chain = Promise.resolve();
   private timeout?: ReturnType<typeof setTimeout>;
   constructor(private host: SyncHost, private send: (frame: any) => void) {}
   view() { return this.state; }
   closed() {
     this.generation++; this.stream = undefined; this.cursor = undefined;
-    this.held = []; this.pages = 0; this.bytes = 0; this.heldBytes = 0; this.queued = 0;
+    this.held = []; this.pages = 0; this.bytes = 0; this.heldBytes = 0; this.queued = 0; this.pending = 0;
     clearTimeout(this.timeout); this.chain = Promise.resolve();
     this.show('idle');
   }
@@ -47,7 +49,7 @@ export class SyncSession {
     }
     const work = this.chain.then(async () => {
       if (generation !== this.generation) return;
-      try { await this.process(event, generation); }
+      try { await this.process(event, generation); await this.settle(generation); }
       catch { if (generation === this.generation) this.show('blocked', 'network'); }
       finally { if (generation === this.generation) { this.queued--; this.bytes -= size; } }
     });
@@ -70,6 +72,17 @@ export class SyncSession {
     await this.host.write(cursor);
     if (generation === this.generation) this.cursor = cursor;
   }
+  /**
+   * Commit what a burst applied, once, when nothing else is waiting in the queue. The pending mark is
+   * claimed before the write: if the write fails, the cursor stays where it was (the data on disk is
+   * ahead of it, never behind) and the error reaches the caller as before.
+   */
+  private async settle(generation: number) {
+    if (!this.pending || !this.stream || this.queued > 1 || generation !== this.generation) return;
+    const cursor = { scope: this.stream.scope, epoch: this.stream.epoch, cursor: this.pending };
+    this.pending = 0;
+    await this.save(cursor, generation);
+  }
   private async apply(events: JournalEvent[]) {
     const floor = this.cursor?.cursor ?? 0;
     for (const event of orderJournalEvents(events)) {
@@ -81,7 +94,7 @@ export class SyncSession {
     if (event?.type === 'hello') {
       await this.host.apply(event);
       this.stream = event.features?.event_replay === true ? eventStreamInfo(event.event_stream) : undefined;
-      this.state.caught = 0; this.pages = 0; this.held = []; this.heldBytes = 0;
+      this.state.caught = 0; this.pages = 0; this.held = []; this.heldBytes = 0; this.pending = 0;
       if (!this.stream) { this.show('unsupported'); return; }
       const saved = this.host.read();
       if (!saved || saved.scope !== this.stream.scope || saved.epoch !== this.stream.epoch ||
@@ -122,12 +135,15 @@ export class SyncSession {
       if (this.held.length >= MAX_HELD || this.heldBytes > MAX_BYTES) { this.closed(); this.host.disconnect(); }
       return;
     }
-    if (journal.event_seq <= (this.cursor?.cursor ?? 0)) return;
+    if (journal.event_seq <= Math.max(this.cursor?.cursor ?? 0, this.pending)) return;
     await this.host.apply(event);
-    await this.save({ scope: this.stream.scope, epoch: this.stream.epoch, cursor: journal.event_seq }, generation);
+    // While more frames are already waiting, the last of them commits what this one applied: a burst
+    // costs one save, and the cursor still only moves once that save has resolved.
+    this.pending = Math.max(this.pending, journal.event_seq);
   }
   private async snapshot(generation: number) {
     clearTimeout(this.timeout); this.show('snapshot');
+    this.pending = 0; // a snapshot replaces the state, so nothing applied earlier is waiting to be saved
     try {
       const snapshot = syncSnapshot(await this.host.fetch());
       if (generation !== this.generation) return;
