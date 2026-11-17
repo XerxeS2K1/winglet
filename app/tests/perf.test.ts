@@ -178,6 +178,8 @@ test('the hooks are in place and cost nothing when off', () => {
   assert.match(store, /perfMessageUpdate\(/);
   assert.match(readFileSync(new URL('../src/components/ChatView.tsx', import.meta.url), 'utf8'), /perfFirstContent\('message list'\)/);
   assert.match(readFileSync(new URL('../src/app/(tabs)/chats.tsx', import.meta.url), 'utf8'), /perfFirstContent\('chat list'\)/);
+  // The launch screen marks itself: neither the chat list nor the message list is on screen at launch.
+  assert.match(readFileSync(new URL('../src/app/(tabs)/index.tsx', import.meta.url), 'utf8'), /perfFirstContent\('home'\)/);
   // Nothing here may send data anywhere.
   const perf = readFileSync(new URL('../src/lib/perf.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(perf, /fetch\(|XMLHttpRequest|WebSocket|from '\.\/api'|signedApi/);
