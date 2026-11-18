@@ -31,6 +31,9 @@ function load(env: Env = {}) {
 
 const plain = (v: unknown) => JSON.parse(JSON.stringify(v));
 
+/** The log lines without the prefix every line carries. */
+const lines = (logs: string[]) => logs.map((l) => l.replace('[winglet-perf] ', ''));
+
 test('the switch is on in development, off in release, and the flag overrides both', () => {
   const { perf } = load();
   assert.equal(perf.perfSwitch(true, undefined), true);
@@ -133,14 +136,40 @@ test('replayed updates are ignored and a stuck stream stops watching frames', ()
   assert.match(logs[logs.length - 1], /frames while streaming/);
 });
 
-test('the first content paint is logged once per launch', () => {
+test('the first content mark is logged once per launch, when the screen commits', () => {
   const { perf, logs, state, frame } = load({ dev: false, flag: '1' });
   state.now += 450;
+  perf.perfFirstContent('home');
   perf.perfFirstContent('chat list');
   perf.perfFirstContent('message list');
-  frame(0); frame(30);
-  assert.equal(logs.length, 1);
-  assert.match(logs[0], /cold start: chat list painted 480 ms after the JS bundle began/);
+  frame(30);
+  perf.perfFirstContent('chat list');
+  frame(30);
+  assert.deepEqual(lines(logs), [
+    'cold start: home committed 450 ms after the JS bundle began',
+    'cold start: home drawn 30 ms after that commit (480 ms after the JS bundle began)',
+  ], 'one mark plus the drawing of it; a later call changes nothing');
+  assert.equal(state.frames.size, 0, 'nothing is left waiting for a frame');
+});
+
+test('the figure is time to the commit, not to whenever the frame ran', () => {
+  const { perf, logs, state, frame } = load({ dev: false, flag: '1' });
+  state.now += 480;
+  perf.perfFirstContent('home');
+  // The screen was asleep: the frame that would draw the commit arrives seven minutes later.
+  state.now += 420_000;
+  frame(0);
+  const got = lines(logs);
+  assert.equal(got[0], 'cold start: home committed 480 ms after the JS bundle began', 'the launch figure does not count the wait for the frame');
+  assert.equal(got[1], 'cold start: home drawn 420000 ms after that commit (420480 ms after the JS bundle began)', 'the wait is reported on its own line');
+});
+
+test('a mark whose frame never runs is still logged', () => {
+  const { perf, logs, state } = load({ dev: false, flag: '1' });
+  state.now += 480;
+  perf.perfFirstContent('chat list');
+  assert.equal(state.frames.size, 1, 'the frame is still waiting');
+  assert.deepEqual(lines(logs), ['cold start: chat list committed 480 ms after the JS bundle began'], 'the mark does not wait for it');
 });
 
 test('the hooks are in place and cost nothing when off', () => {
@@ -149,6 +178,8 @@ test('the hooks are in place and cost nothing when off', () => {
   assert.match(store, /perfMessageUpdate\(/);
   assert.match(readFileSync(new URL('../src/components/ChatView.tsx', import.meta.url), 'utf8'), /perfFirstContent\('message list'\)/);
   assert.match(readFileSync(new URL('../src/app/(tabs)/chats.tsx', import.meta.url), 'utf8'), /perfFirstContent\('chat list'\)/);
+  // The launch screen marks itself: neither the chat list nor the message list is on screen at launch.
+  assert.match(readFileSync(new URL('../src/app/(tabs)/index.tsx', import.meta.url), 'utf8'), /perfFirstContent\('home'\)/);
   // Nothing here may send data anywhere.
   const perf = readFileSync(new URL('../src/lib/perf.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(perf, /fetch\(|XMLHttpRequest|WebSocket|from '\.\/api'|signedApi/);

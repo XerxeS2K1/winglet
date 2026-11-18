@@ -7,8 +7,9 @@
  * `EXPO_PUBLIC_WINGLET_PERF=1` in the environment. `EXPO_PUBLIC_WINGLET_PERF=0` turns it off in development.
  *
  * Reply times are taken when the message update reaches the store, which is just before it is drawn: a frame
- * or two shorter than what the eye sees. The first-content mark is taken after the first frame following the
- * render, so it includes drawing.
+ * or two shorter than what the eye sees. The first-content mark is taken at the moment React commits the
+ * render that puts the content on screen; how long that commit then took to reach a frame is a line of its
+ * own, and a frame that never comes cannot swallow the mark.
  */
 
 /** The one switch. Pure so it can be tested: dev builds default on, release builds default off. */
@@ -182,9 +183,12 @@ export class StallDetector {
 
 const ms = (n: number) => `${Math.round(n)} ms`;
 
-export const coldStartLine = (what: string, sinceModuleMs: number, sinceTimeOriginMs: number | null) =>
-  `cold start: ${what} painted ${ms(sinceModuleMs)} after the JS bundle began`
-  + (sinceTimeOriginMs === null ? '' : ` (${ms(sinceTimeOriginMs)} on the runtime clock)`);
+export const coldStartLine = (what: string, sinceModuleMs: number) =>
+  `cold start: ${what} committed ${ms(sinceModuleMs)} after the JS bundle began`;
+
+/** The frame-deferred part, reported on its own so it can never delay or replace the mark above. */
+export const coldStartDrawnLine = (what: string, drawMs: number, sinceModuleMs: number) =>
+  `cold start: ${what} drawn ${ms(drawMs)} after that commit (${ms(sinceModuleMs)} after the JS bundle began)`;
 
 export const replyFirstLine = (firstTextMs: number) => `reply: first text ${ms(firstTextMs)} after send`;
 
@@ -208,18 +212,29 @@ const gate = new StreamingGate();
 let meter: FrameMeter | null = null;
 let frameHandle: number | null = null;
 let giveUp: ReturnType<typeof setTimeout> | null = null;
-let painted = false;
+let launchMarked = false;
 
-/** The first real content (a chat list or a message list) is on screen. Logged once per launch. */
+/**
+ * The launch's first real content is on screen. Logged exactly once per launch, and written straight away.
+ *
+ * The figure is the time from the JS bundle starting to this call. React runs the effect that calls this after
+ * it has committed the render, so the number is the commit, not whenever a frame callback happened to run. That
+ * matters on a phone whose screen was asleep or whose JS thread was busy: the delay shows up as drawing lag
+ * below, instead of being counted as launch time.
+ *
+ * A frame that is slow to arrive is reported on a line of its own, and a frame that never arrives at all costs
+ * the mark nothing, because the mark has already been written.
+ */
 export function perfFirstContent(what: string): void {
-  if (!PERF_ON || painted) return;
-  painted = true;
-  const draw = () => {
-    const nowMs = clock();
-    log(coldStartLine(what, nowMs - moduleStart, typeof performance !== 'undefined' ? performance.now() : null));
-  };
-  // After the frame that follows this render, so the mark includes drawing it.
-  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => requestAnimationFrame(draw)); else draw();
+  if (!PERF_ON || launchMarked) return;
+  launchMarked = true;
+  const committedMs = clock() - moduleStart;
+  log(coldStartLine(what, committedMs));
+  if (typeof requestAnimationFrame !== 'function') return;
+  requestAnimationFrame(() => {
+    const nowMs = clock() - moduleStart;
+    log(coldStartDrawnLine(what, nowMs - committedMs, nowMs));
+  });
 }
 
 /** You pressed send in this chat. */

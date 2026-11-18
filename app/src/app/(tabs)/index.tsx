@@ -12,6 +12,7 @@ import { claimLaunch, launchPath } from '../../lib/launchLink';
 import { parseDeviceLink } from '../../lib/deviceLinks';
 import { NEW_CHAT_DRAFT, newChatTarget } from '../../lib/landingChat';
 import { useMainBot } from '../../lib/mainBot';
+import { perfFirstContent } from '../../lib/perf';
 import { mergeDraft } from '../../lib/share';
 import { draftKey, homeChat, useApp } from '../../lib/store';
 import { makeStyles, useTheme } from '../../lib/themeContext';
@@ -57,6 +58,9 @@ export default function Home() {
 }
 
 function HomeFor({ server }: { server: Server }) {
+  // The launch screen is this landing, so its first commit is the launch's first content: the cold-start figure is
+  // taken here and not, as it used to be, whenever a chat happened to be opened. Off unless timing is switched on.
+  useEffect(() => { perfFirstContent('home'); }, []);
   const s = useStyles();
   const t = useTheme();
   const [mode, setMode] = useState<LandingMode>('bot');
