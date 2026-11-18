@@ -158,6 +158,8 @@ test('the navigation hooks are in place, each behind the switch', () => {
   assert.match(nav, /perfNavStart\('chat', `\$\{bot\.id\}:\$\{chat\.id\}`\)/);
   assert.match(src('components/ChatView.tsx'), /perfChatCommitted\(navKey\)/);
   assert.match(src('components/ChatView.tsx'), /perfChatPopulated\(navKey\)/);
+  // The server's copy arriving must redraw the list even when it changes no message, so the flag is a subscription, not a read.
+  assert.match(src('components/ChatView.tsx'), /const serverCopy = useApp\(\(st\) => PERF_ON && !!st\.runtime\[server\.id\]\?\.loaded\[chatId\]\)/);
   assert.match(src('app/(tabs)/chats.tsx'), /perfNavStart\('chat', `\$\{server\.id\}:\$\{id\}`\)/);
   assert.match(src('app/chat/[serverId]/[chatId].tsx'), /perfNavStart\('chat', started\.current\)/);
   // Every call into the marks from a component sits under PERF_ON, so a release build runs none of it.

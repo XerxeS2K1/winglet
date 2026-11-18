@@ -386,10 +386,11 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
 
   useEffect(() => { if (loaded && messages.length) perfFirstContent('message list'); }, [loaded, messages.length]);
   // Chat switch marks, taken in the commit. `loaded` here is also true for what the phone remembered, so "fully populated"
-  // asks the store whether the server's copy has arrived (read when this renders; the copy lands with the messages).
+  // asks the store whether the server's copy has arrived. A selector, so this list redraws when that flips even if the
+  // copy changed no message. With the switch off the selector is a constant and costs nothing.
   const navKey = PERF_ON ? `${server.id}:${chatId}` : '';
   const listShown = loaded || messages.length > 0;
-  const serverCopy = PERF_ON && !!useApp.getState().runtime[server.id]?.loaded[chatId];
+  const serverCopy = useApp((st) => PERF_ON && !!st.runtime[server.id]?.loaded[chatId]);
   useLayoutEffect(() => { if (PERF_ON && listShown) perfChatCommitted(navKey); }, [listShown, navKey]);
   useLayoutEffect(() => { if (PERF_ON && listShown && serverCopy) perfChatPopulated(navKey); }, [listShown, serverCopy, navKey]);
 
