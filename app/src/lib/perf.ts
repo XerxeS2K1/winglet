@@ -179,6 +179,91 @@ export class StallDetector {
   }
 }
 
+// -- navigation: chat switch, sidebar, screen change ------------------------------------------------------
+// A mark has a start (the tap or navigation call) and a commit (React finishing the render that puts the
+// destination on screen). Both are plain clock values, so the pieces below are pure and take `now` as an argument.
+
+/** A start with no commit this long after it is forgotten (the tap went nowhere, or the screen was already open). */
+export const NAV_STALE_MS = 10_000;
+/** How long the frame watch runs after the sidebar is committed: the length of its opening spring, with some margin. */
+export const NAV_FRAME_WATCH_MS = 700;
+
+export type NavKind = 'chat' | 'drawer-open' | 'drawer-close' | 'screen';
+type NavStart = { at: number; key: string; stepped: boolean };
+
+/**
+ * One pending start per kind. `key` says which destination the start was for (a chat, a screen name): a commit for
+ * another one is not this start's commit. Keys are only compared, never printed.
+ */
+export class NavMarks {
+  private open = new Map<NavKind, NavStart>();
+
+  private fresh(kind: NavKind, key: string, now: number): NavStart | undefined {
+    const p = this.open.get(kind);
+    if (!p) return undefined;
+    if (now - p.at > NAV_STALE_MS) { this.open.delete(kind); return undefined; }
+    return p.key === key ? p : undefined;
+  }
+
+  /**
+   * The tap or navigation call. For a chat or a screen, a repeat for the same destination keeps the earliest time, which is
+   * the real one. The sidebar has one destination, and `close` is also called when nothing is open, so its newest start wins.
+   */
+  start(kind: NavKind, key: string, now: number): void {
+    if ((kind === 'chat' || kind === 'screen') && this.fresh(kind, key, now)) return;
+    this.open.set(kind, { at: now, key, stepped: false });
+  }
+
+  /** A first commit that is not the last one: milliseconds since the start, once; the start stays for `finish`. */
+  step(kind: NavKind, key: string, now: number): number | null {
+    const p = this.fresh(kind, key, now);
+    if (!p || p.stepped) return null;
+    p.stepped = true;
+    return now - p.at;
+  }
+
+  /** The last commit: milliseconds since the start, and the start is used up. */
+  finish(kind: NavKind, key: string, now: number): number | null {
+    const p = this.fresh(kind, key, now);
+    if (!p) return null;
+    this.open.delete(kind);
+    return now - p.at;
+  }
+
+  /** Starts still waiting (for tests). */
+  get size(): number { return this.open.size; }
+}
+
+/**
+ * The name a screen goes by in the log: the first path segment only (`/chat/<bot>/<chat>` is `chat`, `/` is `home`),
+ * and only if it is a plain lowercase word. Ids further along the path are never printed.
+ */
+export function routeLabel(path: string): string {
+  const first = path.split('?')[0].split('#')[0].split('/').filter(Boolean)[0];
+  if (first === undefined) return 'home';
+  return /^[a-z][a-z-]{0,23}$/.test(first) ? first : '?';
+}
+
+/** Runs for a fixed time from the first frame it is given, and counts slow frames in that time (reusing `FrameMeter`). */
+export class TimedFrameWatch {
+  private meter: FrameMeter;
+  private began: number | null = null;
+
+  constructor(private readonly durationMs = NAV_FRAME_WATCH_MS, threshold = SLOW_FRAME_MS) {
+    this.meter = new FrameMeter(threshold);
+  }
+
+  /** Feed one frame time. Returns false once the time is up, and that last frame is not counted. */
+  tick(now: number): boolean {
+    if (this.began === null) this.began = now;
+    if (now - this.began > this.durationMs) return false;
+    this.meter.tick(now);
+    return true;
+  }
+
+  summary(): FrameSummary { return this.meter.summary(); }
+}
+
 // -- lines ------------------------------------------------------------------------------------------------
 
 const ms = (n: number) => `${Math.round(n)} ms`;
@@ -197,6 +282,17 @@ export const replyDoneLine = (t: ReplyTiming) =>
 
 export const frameLine = (f: FrameSummary) =>
   `frames while streaming: ${f.slow} slow (> ${SLOW_FRAME_MS} ms) of ${f.frames} over ${ms(f.spanMs)}, worst gap ${ms(f.worstMs)}`;
+
+/** Chat switch: the commit that first shows the message list (or the empty chat), then the one with the server's copy in. */
+export const chatSwitchCommittedLine = (sinceMs: number) => `chat switch: message list committed ${ms(sinceMs)} after navigation began`;
+export const chatSwitchPopulatedLine = (sinceMs: number) => `chat switch: message list fully populated ${ms(sinceMs)} after navigation began`;
+
+export const drawerLine = (what: 'open' | 'close', sinceMs: number) => `sidebar: ${what} committed ${ms(sinceMs)} after the tap`;
+
+export const drawerFrameLine = (f: FrameSummary) =>
+  `frames while sidebar opens: ${f.slow} slow (> ${SLOW_FRAME_MS} ms) of ${f.frames} over ${ms(f.spanMs)}, worst gap ${ms(f.worstMs)}`;
+
+export const screenChangeLine = (label: string, sinceMs: number) => `screen change: ${label} committed ${ms(sinceMs)} after navigation began`;
 
 // -- the running parts: nothing below does anything when the switch is off ---------------------------------
 
@@ -381,4 +477,56 @@ export function perfSaveDone(write: { key: string; value: unknown }[], startedAt
   try {
     log(saveLine(measureSave(write), elapsed));
   } catch { /* a diagnostic must never get in the way of a save */ }
+}
+
+// -- navigation: running parts -----------------------------------------------------------------------------
+// Each is called from a layout effect (the render is committed, the time is taken right there, synchronously) or from
+// the tap handler itself. The one frame callback below only counts frames; no mark waits for it.
+
+const navMarks = new NavMarks();
+
+/** A tap or navigation call that should end in a commit: `kind`, and which destination (compared, never printed). */
+export function perfNavStart(kind: NavKind, key = ''): void {
+  if (PERF_ON) navMarks.start(kind, key, clock());
+}
+
+/** The message list (or the empty-chat screen) of this chat has just committed; the first time after a start only. */
+export function perfChatCommitted(key: string): void {
+  if (!PERF_ON) return;
+  const at = navMarks.step('chat', key, clock());
+  if (at !== null) log(chatSwitchCommittedLine(at));
+}
+
+/** This chat's list has just committed with the server's copy of it in: the last mark of a chat switch. */
+export function perfChatPopulated(key: string): void {
+  if (!PERF_ON) return;
+  const at = navMarks.finish('chat', key, clock());
+  if (at !== null) log(chatSwitchPopulatedLine(at));
+}
+
+/** The sidebar drawer has just committed as open or as gone. Opening also starts a short frame watch. */
+export function perfDrawerCommitted(visible: boolean): void {
+  if (!PERF_ON) return;
+  const at = navMarks.finish(visible ? 'drawer-open' : 'drawer-close', '', clock());
+  if (at === null) return;
+  log(drawerLine(visible ? 'open' : 'close', at));
+  if (visible) watchDrawerFrames();
+}
+
+/** A screen has just committed at this path. Only the first path segment is ever logged. */
+export function perfScreenCommitted(path: string): void {
+  if (!PERF_ON) return;
+  const label = routeLabel(path);
+  const at = navMarks.finish('screen', label, clock());
+  if (at !== null) log(screenChangeLine(label, at));
+}
+
+function watchDrawerFrames(): void {
+  if (typeof requestAnimationFrame !== 'function') return;
+  const watch = new TimedFrameWatch();
+  const step = () => {
+    if (watch.tick(clock())) requestAnimationFrame(step);
+    else log(drawerFrameLine(watch.summary()));
+  };
+  requestAnimationFrame(step);
 }

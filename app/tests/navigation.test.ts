@@ -57,7 +57,7 @@ test('locking immediately removes the drawer and pinned history, even through a 
   const jsx = (type: any, props: any) => ({ type, props });
   const modules: Record<string, any> = {
     react: { createContext: () => ({ Provider: 'Provider' }), memo: (component: any) => component, useCallback: (fn: any) => fn, useMemo: (fn: any) => fn(),
-      useEffect: () => {}, useState: () => [true, () => changes++] },
+      useEffect: () => {}, useLayoutEffect: () => {}, useState: () => [true, () => changes++] },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { View: 'View', Platform: { OS: 'android' }, useWindowDimensions: () => ({ width: 1200 }), Keyboard: { dismiss: () => {} } },
     'expo-router': { usePathname: () => '/' },
@@ -97,7 +97,7 @@ test('drawer dismissal never waits for an animation callback and Android Back is
   const animation = { enabled: () => animation, activeOffsetX: () => animation, failOffsetY: () => animation,
     onUpdate: () => animation, onEnd: () => animation, onFinalize: () => animation };
   const modules: Record<string, any> = {
-    react: { createContext: () => ({}), memo: (component: any) => component, useEffect: (fn: any) => { cleanups.push(fn()); } },
+    react: { createContext: () => ({}), memo: (component: any) => component, useEffect: (fn: any) => { cleanups.push(fn()); }, useLayoutEffect: () => {} },
     'react/jsx-runtime': { jsx, jsxs: jsx },
     'react-native': { View: 'View', Platform: { OS: 'android' }, StyleSheet: { absoluteFill: {} }, useWindowDimensions: () => ({ width: 390 }),
       BackHandler: { addEventListener: (_name: string, fn: any) => { back = fn; return { remove: () => { removed = true; } }; } } },

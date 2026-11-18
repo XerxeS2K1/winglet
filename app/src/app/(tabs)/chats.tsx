@@ -20,7 +20,7 @@ import { organizeChats } from '../../lib/chatOrganization';
 import { chatActivity, chatActivityLabel, draftPreview, matchesChatFilter, type ChatFilter } from '../../lib/chatActivity';
 import { useActivityClock } from '../../lib/useActivityClock';
 import { usePrefs } from '../../lib/prefs';
-import { perfFirstContent } from '../../lib/perf';
+import { PERF_ON, perfFirstContent, perfNavStart } from '../../lib/perf';
 import { homeChat, useApp, useServerState } from '../../lib/store';
 import { alpha, WIDE_BREAKPOINT } from '../../lib/theme';
 import { makeStyles, useTheme } from '../../lib/themeContext';
@@ -101,6 +101,7 @@ function ChatList({ server, activeChatId }: { server: Server; activeChatId?: str
   useEffect(() => { if (projectId && projects && !project) setProjectId(null); }, [projectId, projects, project]);
 
   const open = (id: string) => {
+    if (PERF_ON) { perfNavStart('chat', `${server.id}:${id}`); if (!wide) perfNavStart('screen', 'chat'); }
     if (wide) select(server.id, id);
     else router.push(`/chat/${server.id}/${id}`);
   };

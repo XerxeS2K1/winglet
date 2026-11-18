@@ -1,7 +1,7 @@
 import { BlurTargetView } from 'expo-blur';
 import * as Clipboard from 'expo-clipboard';
 import { router } from 'expo-router';
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ActivityIndicator, FlatList, Keyboard, Platform, Pressable, Share as SystemShare, StyleSheet, Text, View } from 'react-native';
 import { Gesture, GestureDetector, ScrollView } from 'react-native-gesture-handler';
 import Animated, {
@@ -27,7 +27,7 @@ import { chatMessages, isActivity, sentByScript } from '../lib/messages';
 import { useModelSheet } from '../lib/modelSheet';
 import { easeOut, spring, useReducedMotion } from '../lib/motion';
 import { usePrefs } from '../lib/prefs';
-import { perfFirstContent } from '../lib/perf';
+import { PERF_ON, perfChatCommitted, perfChatPopulated, perfFirstContent } from '../lib/perf';
 import { homeChat, isOwner, isTyping, useApp, useServerState } from '../lib/store';
 import { plainText } from '../lib/text';
 import { statusNoticeText } from '../lib/statusNotice';
@@ -385,6 +385,13 @@ const MessageList = memo(function MessageList({ server, chatId, messages, loaded
   const today = dayKey(Date.now() / 1000);
 
   useEffect(() => { if (loaded && messages.length) perfFirstContent('message list'); }, [loaded, messages.length]);
+  // Chat switch marks, taken in the commit. `loaded` here is also true for what the phone remembered, so "fully populated"
+  // asks the store whether the server's copy has arrived (read when this renders; the copy lands with the messages).
+  const navKey = PERF_ON ? `${server.id}:${chatId}` : '';
+  const listShown = loaded || messages.length > 0;
+  const serverCopy = PERF_ON && !!useApp.getState().runtime[server.id]?.loaded[chatId];
+  useLayoutEffect(() => { if (PERF_ON && listShown) perfChatCommitted(navKey); }, [listShown, navKey]);
+  useLayoutEffect(() => { if (PERF_ON && listShown && serverCopy) perfChatPopulated(navKey); }, [listShown, serverCopy, navKey]);
 
   // The rows are built in lib/chatRows.ts. A row equal to the one the last build had at that key is the same object, so a
   // streamed token changes one row and the list leaves the others alone.

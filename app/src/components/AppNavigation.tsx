@@ -1,5 +1,5 @@
 import { router, usePathname } from 'expo-router';
-import { createContext, memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
+import { createContext, memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import { BackHandler, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, useWindowDimensions, View } from 'react-native';
 import { Gesture, GestureDetector, GestureHandlerRootView } from 'react-native-gesture-handler';
 import Animated, { runOnJS, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
@@ -13,6 +13,7 @@ import { haptic } from '../lib/haptics';
 import { spring, useReducedMotion } from '../lib/motion';
 import { navigationWidth, sidebarChats, sidebarDrawerWidth } from '../lib/navigation';
 import { usePrefs } from '../lib/prefs';
+import { PERF_ON, perfDrawerCommitted, perfNavStart, perfScreenCommitted, routeLabel } from '../lib/perf';
 import { homeChat, isOwner, useApp } from '../lib/store';
 import { useActivityClock } from '../lib/useActivityClock';
 import { makeStyles, useTheme } from '../lib/themeContext';
@@ -49,17 +50,20 @@ export function AppNavigation({ children }: { children: ReactNode }) {
   const [opened, setOpened] = useState(false);
   const [homeRevision, setHomeRevision] = useState(0);
   const reserved = paired && !locked && pathname !== '/pair' ? navigationWidth(width, mode) : 0;
-  const close = useCallback(() => setOpened(false), []);
-  const open = useCallback(() => { if (useLock.getState().locked) return; Keyboard.dismiss(); setOpened(true); }, []);
+  const close = useCallback(() => { if (PERF_ON) perfNavStart('drawer-close'); setOpened(false); }, []);
+  const open = useCallback(() => { if (useLock.getState().locked) return; if (PERF_ON) perfNavStart('drawer-open'); Keyboard.dismiss(); setOpened(true); }, []);
   const home = useCallback(() => {
     if (useLock.getState().locked) return;
     Keyboard.dismiss();
+    if (PERF_ON) perfNavStart('screen', 'home');
     close();
     setHomeRevision((n) => n + 1);
     router.navigate('/');
   }, [close]);
   const value = useMemo(() => ({ open, close, home, homeRevision, reserved }), [open, close, home, homeRevision, reserved]);
   useEffect(close, [pathname, mode, close]);
+  // The route has committed with its screen: the end of a screen change. Taken here, in the commit, not in a frame callback.
+  useLayoutEffect(() => { if (PERF_ON) perfScreenCommitted(pathname); }, [pathname]);
   useEffect(() => { if (locked) close(); }, [locked, close]);
   useEffect(() => {
     if (Platform.OS !== 'web' || !opened) return;
@@ -88,7 +92,7 @@ export function NavigationToggle() {
 export function InboxButton() {
   const t = useTheme();
   const count = useApp((s) => Object.values(s.runtime).reduce((n, rt) => n + (rt?.pending ?? 0), 0));
-  return <IconButton label={count ? `Inbox, ${count} waiting` : 'Inbox'} onPress={() => router.navigate('/inbox')}>
+  return <IconButton label={count ? `Inbox, ${count} waiting` : 'Inbox'} onPress={() => { if (PERF_ON) perfNavStart('screen', 'inbox'); router.navigate('/inbox'); }}>
     <View><Inbox size={22} color={t.colors.text} /><Badge count={count} style={{ position: 'absolute', top: -9, right: -10 }} /></View>
   </IconButton>;
 }
@@ -119,6 +123,8 @@ function SidebarDrawer({ visible, onClose }: { visible: boolean; onClose: () => 
     const back = BackHandler.addEventListener('hardwareBackPress', () => { onClose(); return true; });
     return () => back.remove();
   }, [visible, onClose]);
+  // The drawer has committed as open or as gone. The frame watch after an open only counts frames; the mark is already written.
+  useLayoutEffect(() => { if (PERF_ON) perfDrawerCommitted(visible); }, [visible]);
   const panel = useAnimatedStyle(() => ({ transform: [{ translateX: x.value }] }));
   // The scrim follows the panel, so dragging it shut lifts the dim with your finger.
   const dim = useAnimatedStyle(() => ({ opacity: Math.min(1, Math.max(0, 1 + x.value / drawerWidth)) }));
@@ -195,11 +201,12 @@ function Sidebar({ onClose, drawer = false }: { onClose: () => void; drawer?: bo
     return total;
   }, { running: 0, pending: 0 });
   const [creating, setCreating] = useState(false);
-  const go = (path: string) => { Keyboard.dismiss(); if (drawer) onClose(); if (path === '/') navigation.home(); else router.navigate(path); };
+  const go = (path: string) => { if (PERF_ON) perfNavStart('screen', routeLabel(path)); Keyboard.dismiss(); if (drawer) onClose(); if (path === '/') navigation.home(); else router.navigate(path); };
   // Rows are memoized; they reach the latest navigation through a ref rather than a fresh callback every render.
   const goRef = useRef(go);
   goRef.current = go;
   const openChat = useCallback((bot: Server, chat: Chat) => {
+    if (PERF_ON) perfNavStart('chat', `${bot.id}:${chat.id}`);
     haptic.selection();
     useApp.getState().select(bot.id, chat.id);
     goRef.current(`/chat/${bot.id}/${chat.id}`);
@@ -327,7 +334,7 @@ function NavigationRail() {
     const active = path === '/' ? pathname === '/' || pathname.startsWith('/chat/') : !!path && pathname === path;
     return <View key={label} style={s.railSlot}>
       <Tap accessibilityLabel={label} accessibilityState={{ selected: active }} feedback="selection"
-        onPress={action ?? (() => router.navigate(path!))} style={({ pressed, hovered }) => [s.railButton, active && s.rowOn,
+        onPress={action ?? (() => { if (PERF_ON) perfNavStart('screen', routeLabel(path!)); router.navigate(path!); })} style={({ pressed, hovered }) => [s.railButton, active && s.rowOn,
           (pressed || hovered) && !active && s.rowHover]}>
         <Icon size={20} color={active ? t.colors.text : t.colors.textSecondary} />
         {path === '/inbox' ? <Badge count={count} style={{ position: 'absolute', right: -2, top: -3 }} /> : null}
