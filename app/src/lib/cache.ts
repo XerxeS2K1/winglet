@@ -143,3 +143,25 @@ export async function cacheSetStrict(key: string, value: unknown): Promise<void>
   const raw = JSON.stringify(value);
   await ordered(async () => { await ready(); await db.setItemAsync(key, seal(key, raw)); });
 }
+
+/**
+ * Remove exactly one entry. Deliberately not prefix matching: chat ids can prefix each other, so
+ * removing `replay:s:m:a` must never take `replay:s:m:ab` with it. Rejects so the caller can retry.
+ */
+export async function cacheDeleteStrict(key: string): Promise<void> {
+  await ordered(async () => { await ready(); await db.removeItemAsync(key); });
+}
+
+/**
+ * List the keys under a prefix, for hygiene that has to find records nothing points at any more.
+ * Only ever used to discover exact keys: removal stays cacheDeleteStrict. A storage that cannot list
+ * answers with nothing, so a caller never deletes on a guess.
+ */
+export async function cacheKeys(prefix: string): Promise<string[]> {
+  try {
+    return await ordered(async () => {
+      const keys = await db.getAllKeysAsync();
+      return keys.filter((key) => key.startsWith(prefix));
+    });
+  } catch { return []; }
+}

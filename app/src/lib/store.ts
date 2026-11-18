@@ -6,13 +6,14 @@ import { RecoveryCoordinator } from './recovery';
 import { sound } from './sounds';
 import { api, ApiError, signedApi, wsUrl } from './api';
 import { needsSignature } from './commands';
-import { cacheGet, cacheRemove, cacheSet, cacheSetStrict } from './cache';
+import { cacheDeleteStrict, cacheGet, cacheKeys, cacheRemove, cacheSet, cacheSetStrict } from './cache';
 import { mergeSnapshot } from '../features/event-replay/merge';
+import { checkpointKeys, loadCheckpoint, planCheckpoint, savedRefsOf, type CheckpointPlan, type SavedRefs } from '../features/event-replay/checkpoint';
 import { SyncSession, type ReplayCursor, type SyncHost } from '../features/event-replay/session';
 import type { SyncSnapshot } from '../features/event-replay/protocol';
 import { isActivity, isNotifiable, markFailed, mergeMessages, restoredFromCache } from './messages';
 import { canCoalesce, createStreamBuffer } from './streamBuffer';
-import { PERF_ON, perfMessageSent, perfMessageUpdate } from './perf';
+import { PERF_ON, perfMessageSent, perfMessageUpdate, perfSaveDone, perfSaveStart, perfSendEcho, perfSendStage } from './perf';
 import { getJSON, setJSON } from './storage';
 import { NEEDS_VERIFY } from './verify';
 import { refreshNetworkNow } from './network';
@@ -166,11 +167,41 @@ export const homeChat = (rt?: ServerState) => rt?.me?.home_chat ?? 'general';
 export const isOwner = (rt?: ServerState) => rt?.me?.role === 'owner';
 
 const connections = new Map<string, Connection>();
+/** Connections a replacement has taken over from: allowed one last save, of the cursor they still hold. */
+const retiring = new Set<Connection>();
 const coordinator = new RecoveryCoordinator();
 /** A cursor exists only alongside the durable state checkpoint which covers it. */
 const replayCursors = new Map<string, ReplayCursor>();
-type ReplayCheckpoint = { cursor: ReplayCursor; state: Pick<ServerState,
-  'chats' | 'messages' | 'deleted' | 'loaded' | 'inbox' | 'pending' | 'paused' | 'me' | 'projects' | 'tasks'> };
+/** What each bot's checkpoint already holds on disk, so a save writes only what changed. */
+const checkpointSaved = new Map<string, SavedRefs>();
+/** Bots whose pre-split whole-state record has been retired, and those whose retirement still owes a write. */
+const retired = new Set<string>();
+const retirePending = new Set<string>();
+/** Page records of chats this phone no longer holds, by exact key: removed after the next save. */
+const prunePages = new Set<string>();
+/** Bots whose page records have been swept this launch: that is a launch-time job, not a per-save one. */
+const sweptPages = new Set<string>();
+/**
+ * The v2 whole-chat records this launch loaded, by bot. They are the only copy of that history until a
+ * v3 save commits; once one has, they are dead weight and removed by the same hygiene pass.
+ */
+const legacyRecords = new Map<string, string[]>();
+/**
+ * One checkpoint save at a time per bot. The storage queue orders each individual write, but a save is
+ * several of them, so a replacement socket and the connection it retired could otherwise interleave at
+ * a key boundary and undo each other. Keyed by bot, so different bots keep saving concurrently.
+ */
+const saveChains = new Map<string, Promise<unknown>>();
+/** A save that never settles must not hold every later save for its bot: after this the next one runs. */
+const SAVE_CHAIN_WAIT_MS = 10_000;
+/**
+ * The save each bot is currently running, by number. The chain above normally keeps two saves for one
+ * bot apart, but its bound lets a later save start while an earlier one is still on the disk. A save
+ * whose connection has been replaced is older than the state the later save is about to write, so it
+ * has to stop at the first key after that one started rather than race it.
+ */
+const latestSave = new Map<string, number>();
+let saveSeq = 0;
 /** Per-bot send queue: keeps messages in order, and stops at the first one the network loses. */
 const sendChains = new Map<string, Promise<void>>();
 /** Last structured-task fetch per server+chat, so opening a sheet repeatedly doesn't hammer the server. */
@@ -180,8 +211,116 @@ const sendPaused = new Set<string>();
 /** A network failure is worth retrying later; an HTTP error from the server is not. */
 const isNetworkError = (e: unknown) => !(e instanceof ApiError) || e.status === 0;
 
-const isLocal = (m: Message) => m.status === 'pending' || m.status === 'queued' || m.status === 'failed';
+/**
+ * Every record key this save left owning state: the keys it wrote, and for each chat the chunk keys the
+ * meta names plus its tombstone record. Hygiene must never delete one of these, whatever an earlier save
+ * queued for removal.
+ */
+function checkpointOwned(serverId: string, plan: CheckpointPlan): Set<string> {
+  const keys = checkpointKeys(serverId);
+  const owned = new Set<string>();
+  for (const { key } of plan.write) owned.add(key);
+  for (const [chatId, chat] of Object.entries(plan.saved.chats)) {
+    for (const key of chat.keys) owned.add(key);
+    owned.add(keys.tombstones(chatId));
+  }
+  owned.add(keys.meta);
+  owned.add(keys.cursor);
+  return owned;
+}
 
+/**
+ * Remove the records of chats this phone no longer holds (a deleted chat must not keep its text and its
+ * rows on disk), then retire the pre-split whole-state record once a save covers it. Removal is by exact
+ * key, so a chat id that prefixes another stays put. All of it is cache hygiene rather than data: a
+ * failure is kept for the next save and never fails this save, moves its cursor, or throws.
+ *
+ * `owned` is what the save that just committed wrote and named, and no key in it is ever deleted here.
+ * Chunk keys are index-based, so a key a chat stopped owning — queued for removal by an earlier save
+ * whose delete failed — is commonly owned again: the chat regrows past the same boundary, this save
+ * writes `…:c:<chat>:1` and names it in the meta, and deleting it would leave the meta naming a record
+ * that is not on the disk, with a restore coming back short of those messages. A key that is owned again
+ * is therefore not "still owed": it is live, and it leaves the queue.
+ */
+async function afterSaveHygiene(serverId: string, owned: Set<string>) {
+  for (const key of [...prunePages]) {
+    if (owned.has(key)) { prunePages.delete(key); continue; }
+    try { await cacheDeleteStrict(key); prunePages.delete(key); } catch { /* retried on the next save */ }
+  }
+  if (!retired.has(serverId)) retirePending.add(serverId);
+  for (const id of [...retirePending]) {
+    try { await cacheSetStrict(checkpointKeys(id).base, { v: 2, retired: true }); retirePending.delete(id); retired.add(id); }
+    catch { /* retried on the next save */ }
+  }
+  // The v2 records, once a v3 save has committed: the cursor it wrote is the last record of the save, so
+  // the state on disk is complete without them. Keep them on any failure and try again next save.
+  for (const [id, records] of [...legacyRecords]) {
+    try {
+      for (const key of records) await cacheDeleteStrict(key);
+      legacyRecords.delete(id);
+    } catch { /* retried on the next save */ }
+  }
+}
+
+/**
+ * Remove records no checkpoint names — one a previous build wrote, or one an interrupted prune left —
+ * once per launch, after a load that succeeded. Only exact keys are removed, a key the meta names is
+ * never touched, and a storage that cannot list its keys ends the sweep instead of guessing, so a failed
+ * load sweeps nothing.
+ */
+async function sweepPageRecords(serverId: string, named: string[]) {
+  if (sweptPages.has(serverId)) return;
+  sweptPages.add(serverId);
+  const keys = checkpointKeys(serverId);
+  const keep = new Set(named);
+  // Both layouts' page records are listed: a v3 checkpoint does not name any v2 record, so the whole of
+  // the old layout goes; a v2 checkpoint names its own, so they stay.
+  const prefixes = [keys.chunkPrefix, keys.tombPrefix, keys.v2.chat(''), keys.v2.meta, keys.v2.cursor];
+  try {
+    for (const prefix of prefixes) {
+      for (const key of await cacheKeys(prefix)) {
+        if (keep.has(key)) continue;
+        try { await cacheDeleteStrict(key); } catch { /* retried at the next launch */ }
+      }
+    }
+  } catch { /* nothing to sweep, or nothing that can be listed */ }
+}
+
+/**
+ * Whether a save may start: the live connection always may, a connection being retired may only while
+ * its cursor is still ahead of the one on disk and of the same scope. A save that starts here and loses
+ * the race later is stopped write by write, so this is only the cheap early rejection.
+ */
+const cursorAllowed = (serverId: string, conn: Connection, cursor: ReplayCursor) => {
+  if (connections.get(serverId) === conn) return true;
+  const known = replayCursors.get(serverId);
+  if (!retiring.has(conn) || !known || known.scope !== cursor.scope) return false;
+  return cursor.cursor >= known.cursor;
+};
+
+/** Resolves when this bot's previous save settled — either way — or when waiting stops being worth it. */
+const afterPreviousSave = (previous: Promise<unknown>) => new Promise<void>((resolve) => {
+  let done = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    if (timer !== undefined) clearTimeout(timer);
+    resolve();
+  };
+  timer = setTimeout(finish, SAVE_CHAIN_WAIT_MS);
+  (timer as any)?.unref?.();
+  previous.then(finish, finish);
+});
+
+/** Queue one save behind this bot's previous one; a failure is reported to its caller, not to the chain. */
+const chainedSave = (serverId: string, run: () => Promise<void>): Promise<void> => {
+  const next = afterPreviousSave(saveChains.get(serverId) ?? Promise.resolve()).then(run);
+  saveChains.set(serverId, next.then(() => undefined, () => undefined));
+  return next;
+};
+
+const isLocal = (m: Message) => m.status === 'pending' || m.status === 'queued' || m.status === 'failed';
 /** Takes down this phone's notifications that carry these server tags. Notifications are only ever removed, never made. */
 export function clearNotifications(serverId: string, tags: string[]) {
   const server = useApp.getState().servers.find((s) => s.id === serverId);
@@ -315,6 +454,7 @@ export const useApp = create<AppState>((set, get) => {
     if (!server || !queued || queued.failed) return;
     if (sendPaused.has(serverId) || get().runtime[serverId]?.status !== 'online') {
       sendPaused.add(serverId);
+      if (PERF_ON) perfSendStage(entry.client_id, 'deferred', { online: get().runtime[serverId]?.status === 'online' });
       setLocalStatus(serverId, entry.chat_id, entry.client_id, 'queued');
       return;
     }
@@ -323,6 +463,7 @@ export const useApp = create<AppState>((set, get) => {
       if (entry.reply_to?.quote && get().runtime[serverId]?.info?.features?.quoted_comments !== true) {
         throw new ApiError("This server does not support exact quotes. Update the plugin or remove the quote; it was not sent.", 409);
       }
+      if (PERF_ON) perfSendStage(entry.client_id, 'post-start', { len: entry.text.length });
       const data = await api<{ message: Message }>(server, `/api/chats/${encodeURIComponent(entry.chat_id)}/messages`, {
         method: 'POST', body: JSON.stringify({
           text: entry.text, client_id: entry.client_id,
@@ -330,9 +471,11 @@ export const useApp = create<AppState>((set, get) => {
           ...(entry.reply_to ? { reply_to: entry.reply_to.id, ...(entry.reply_to.quote ? { quote: entry.reply_to.quote } : {}) } : {}),
         }),
       });
+      if (PERF_ON) perfSendStage(entry.client_id, 'http-return');
       upsertMessage(serverId, entry.chat_id, data.message);
       updateOutbox(serverId, (o) => o.filter((x) => x.client_id !== entry.client_id));
     } catch (e) {
+      if (PERF_ON) perfSendStage(entry.client_id, 'http-error', { network: isNetworkError(e) });
       // A socket acknowledgement may have removed this send while HTTP was still in flight.
       // Its later failure must not pause unrelated messages or put the accepted send back in the outbox.
       if (!get().runtime[serverId]?.outbox.some((o) => o.client_id === entry.client_id)) return;
@@ -448,6 +591,7 @@ export const useApp = create<AppState>((set, get) => {
         // Checked here so a release build does not even build the observation (isActivity, trim) on every update.
         if (PERF_ON && m.role === 'bot') perfMessageUpdate(`${serverId}:${ev.chat_id}`, { id: m.id, streaming: m.status === 'streaming', hasText: !isActivity(m) && m.text.trim() !== '' }, replayed);
         const clientId = m.meta?.client_id;
+        if (PERF_ON && !replayed && m.role === 'user' && clientId) perfSendEcho(clientId);
         if (m.role === 'user' && clientId && get().runtime[serverId]?.outbox.some((o) => o.client_id === clientId)) {
           // The server has it (the HTTP reply may have been lost): it's no longer ours to resend.
           updateOutbox(serverId, (o) => o.filter((x) => x.client_id !== clientId));
@@ -515,7 +659,11 @@ export const useApp = create<AppState>((set, get) => {
       case 'inbox.new':
       case 'inbox.update': {
         const item = ev.item as InboxItem;
-        patch(serverId, (s) => ({ inbox: { ...s.inbox, [item.id]: item }, pending: ev.pending ?? s.pending }));
+        // A replayed event carries the count from when it was journaled, which can be older than what the
+        // app already shows. A replay may not walk the badge backwards; live events still set it outright.
+        patch(serverId, (s) => ({ inbox: { ...s.inbox, [item.id]: item },
+          pending: ev.pending === undefined || typeof ev.pending !== 'number' ? s.pending
+            : replayed ? Math.max(s.pending, ev.pending) : ev.pending }));
         // Answered or expired somewhere else, or while this phone was away (a replay): its alert has nothing left to say.
         if (item.kind !== 'result' && item.status !== 'pending') clearNotifications(serverId, [inboxNoteTag(item.id)]);
         // A member can't answer approvals; the card in their chat already says it's waiting for an owner.
@@ -535,22 +683,69 @@ export const useApp = create<AppState>((set, get) => {
     }
   };
 
+  /**
+   * Bring one bot's socket up. A replaced connection first writes the burst it still holds, so its last
+   * save is not refused as "Connection replaced"; the new socket opens at once either way, so a
+   * reconnect after `init` stays synchronous.
+   */
   const connect = (server: Server) => {
-    connections.get(server.id)?.close();
+    const previous = connections.get(server.id);
+    if (previous) {
+      retiring.add(previous);
+      // A close that throws — a wedged socket, a coordinator that refuses to let go — must neither stop
+      // the replacement opening nor leave the old connection in the retiring set, where it would keep
+      // the right to save for ever.
+      void Promise.resolve().then(() => previous.close())
+        .then(() => retiring.delete(previous), () => retiring.delete(previous));
+    }
+    startConnection(server);
+  };
+
+  const startConnection = (server: Server) => {
     const conn = new Connection(server, coordinator, {
       onEvent: (ev, replayed) => handleEvent(server.id, ev, replayed),
       sync: {
         read: () => replayCursors.get(server.id),
-        write: async (cursor) => {
+        write: (cursor) => chainedSave(server.id, async () => {
+          const seq = ++saveSeq;
+          latestSave.set(server.id, seq);
           streamed.flush(); // the saved state must not trail the cursor it is saved with
           const rt = get().runtime[server.id];
-          if (!rt || connections.get(server.id) !== conn) throw Error('Connection replaced');
-          const { chats, messages, deleted, loaded, inbox, pending, paused, me, projects, tasks } = rt;
-          // One encrypted SQLite value / one IndexedDB transaction: data cannot trail its cursor.
-          await cacheSetStrict(`replay:${server.id}`, { cursor,
-            state: { chats, messages, deleted, loaded, inbox, pending, paused, me, projects, tasks } });
+          if (!rt) throw Error('Connection replaced');
+          // A replaced connection may still write the burst it owed, but never a cursor the checkpoint
+          // has already moved past: the live session owns it. A removed bot has no runtime at all.
+          if (!cursorAllowed(server.id, conn, cursor)) throw Error('Connection replaced');
+          // Refs are captured before the first await, so what is remembered as saved is exactly what was
+          // written. Dirty chat records first, then the rest of the state, then the cursor: a crash between
+          // them can only leave the cursor behind its data, which replay repairs.
+          const before = checkpointSaved.get(server.id);
+          const plan = planCheckpoint(server.id, rt, cursor, before);
+          const saveAt = PERF_ON ? perfSaveStart() : 0;
+          for (const { key, value } of plan.write) {
+            // A save whose connection has been replaced writes only while it is still the newest save of
+            // its bot. The moment a later save starts — the chain's bound lets one start over a save the
+            // device never answered, and a removed bot's saves stop being newest at once — its data is
+            // older than what that save is writing, so it writes nothing at all, page records and cursor
+            // alike: a page record landed after the later save's would leave the cursor ahead of its data,
+            // and the refs that save recorded mean no later save rewrites that chat. A live save is
+            // unchanged and always writes every key.
+            const live = connections.get(server.id) === conn;
+            if (!live && latestSave.get(server.id) !== seq) throw Error('Connection replaced');
+            await cacheSetStrict(key, value);
+          }
+          if (PERF_ON) perfSaveDone(plan.write, saveAt); // counts and lengths only; after the last write
+          checkpointSaved.set(server.id, plan.saved);
           if (connections.get(server.id) === conn) replayCursors.set(server.id, cursor);
-        },
+          // A chat that was here for the last save and is gone from this one keeps records nobody reads:
+          // deleted text left on disk, and rows that only ever grow. Queue their exact keys, then let the
+          // hygiene below try them; the next save retries whatever fails. A key this save has just written
+          // or the meta now names is live again — an index-based chunk key a chat regrew into — so it is
+          // dropped from the queue rather than deleted after the save that owns it.
+          const owned = checkpointOwned(server.id, plan);
+          for (const key of plan.prune) prunePages.add(key);
+          for (const key of owned) prunePages.delete(key);
+          await afterSaveHygiene(server.id, owned);
+        }),
         apply: async (event, replayed) => {
           if (connections.get(server.id) !== conn) return;
           if (event.type === 'sync.hint') {
@@ -625,11 +820,24 @@ export const useApp = create<AppState>((set, get) => {
       cacheGet<OutboxEntry[]>(`outbox:${serverId}`, []),
       cacheGet<PetSheet | null>(`pet:${serverId}`, null),
       cacheGet<ProjectSnapshot | undefined>(`projects:${serverId}`, undefined),
-      cacheGet<ReplayCheckpoint | undefined>(`replay:${serverId}`, undefined),
+      loadCheckpoint(serverId, cacheGet),
     ]);
     if (checkpoint?.cursor?.scope && checkpoint.state && get().runtime[serverId]?.status !== 'online') {
       replayCursors.set(serverId, checkpoint.cursor);
       patch(serverId, () => checkpoint.state);
+    }
+    if (checkpoint?.cursor?.scope && checkpoint.state) {
+      // The load succeeded, so the records it names are the only ones this checkpoint can restore: clear
+      // out what a previous build or an interrupted prune left behind, once, now. A v3 checkpoint names
+      // none of the v2 records, so the whole old layout is swept with them.
+      void sweepPageRecords(serverId, checkpoint.keys ?? []);
+      if (checkpoint.legacy) legacyRecords.set(serverId, checkpoint.keys ?? []);
+      // A complete v3 restore is, by definition, what is already on the disk: adopting it as the last
+      // saved state means the next save writes only what changed, instead of the whole history once per
+      // launch. A truncated restore is not adopted, so its chats are written again.
+      if (checkpoint.complete && !checkpoint.legacy && get().runtime[serverId]?.status !== 'online') {
+        checkpointSaved.set(serverId, savedRefsOf(serverId, checkpoint.state, checkpoint.layout));
+      }
     }
     const acknowledged = new Set(Object.values(checkpoint?.state?.messages ?? {}).flat()
       .filter((m) => !isLocal(m)).map((m) => m.meta?.client_id).filter(Boolean));
@@ -761,10 +969,26 @@ export const useApp = create<AppState>((set, get) => {
       for (const child of get().servers.filter((s) => s.parent === serverId)) await get().removeServer(child.id, false);
       if (server?.parent) unpair = false;
       streamed.flush();
-      connections.get(serverId)?.close();
+      // Nothing here should survive: the checkpoint is deleted a few lines down, so a last save would
+      // only write records this removal is about to erase.
+      connections.get(serverId)?.close(false);
       connections.delete(serverId);
       replayCursors.delete(serverId);
+      // Hygiene work owed for a bot that is being erased: a later save for another bot must not write a
+      // retirement marker for it, nor delete a page record a re-pairing writes under the same id.
+      retirePending.delete(serverId);
+      for (const key of [...prunePages]) if (key.startsWith(`replay:${serverId}:`)) prunePages.delete(key);
       await cacheRemove(`replay:${serverId}`);
+      // This bot starts over if it is paired again in this launch: the checkpoint those refs describe is
+      // gone, so the next save must write everything rather than diff against it; the launch-time sweep
+      // is a launch job per bot and has to run for the new pairing, not stay marked as done; and a save
+      // still in flight belongs to the old life, so nothing new waits on it.
+      checkpointSaved.delete(serverId);
+      sweptPages.delete(serverId);
+      legacyRecords.delete(serverId);
+      saveChains.delete(serverId);
+      latestSave.delete(serverId);
+      retired.delete(serverId);
       sendChains.delete(serverId);
       sendPaused.delete(serverId);
       if (server && unpair) {
@@ -974,6 +1198,7 @@ export const useApp = create<AppState>((set, get) => {
       updateOutbox(serverId, (o) => [...o.filter((x) => x.client_id !== clientId), entry]);
       upsertMessage(serverId, chatId, { ...localMessage(entry), status: get().runtime[serverId]?.status === 'online' ? 'pending' : 'queued' });
       if (PERF_ON && !retryClientId) perfMessageSent(`${serverId}:${chatId}`);
+      if (PERF_ON) perfSendStage(clientId, 'outbox', { retry: !!retryClientId, online: get().runtime[serverId]?.status === 'online' });
       if (retryClientId) sendPaused.delete(serverId);
       o.onAdmitted?.();
       await enqueue(serverId, entry);
@@ -1317,7 +1542,11 @@ class Connection {
       clearTimeout(this.pongTimer);
       if (this.ws !== ws) return;
       this.ws = undefined;
-      this.sync.closed();
+      // A burst this session applied but has not saved is written before the session is given up, since
+      // closed() drops the pending mark. The flush starts here and the rest of this handler stays
+      // synchronous, so nothing that waits on a drop is delayed; only a socket that reopens at once
+      // (a role change) waits for it, and cannot start over the top of a save still in flight.
+      const flushed = this.sync.end();
       if (this.closed) return;
       // The server rejects the upgrade with 401 when this device was unpaired.
       // One rejection after sleep is not proof: check again a few times before saying "Signed out".
@@ -1331,7 +1560,7 @@ class Connection {
       if (e.code === 4000) {
         // An owner changed this phone's role: reconnect at once to load what it can see now.
         this.cb.onStatus('connecting', 'role changed');
-        this.open();
+        void flushed.then(() => this.open());
         return;
       }
       this.cb.onStatus('offline');
@@ -1493,19 +1722,29 @@ class Connection {
 
   presence(visible: boolean) {
     this.visible = visible;
+    if (!visible) void this.sync.flush().catch(() => undefined);
+    // On the way out the OS may kill the app before the queue drains, so a burst this session applied
+    // but has not saved is written now. A failure blocks the session (and the next live save repairs it).
     this.send({ type: 'presence', visible });
   }
 
-  close() {
+  /**
+   * Give this connection up. `persist` false is for a bot being removed: its checkpoint is deleted
+   * straight after, so a last save would only write records the removal erases. The returned promise
+   * resolves once the burst this session still held is on disk, which is what lets a replacement wait.
+   */
+  close(persist = true): Promise<void> {
     phoneDisconnect(this.server.id);
     this.closed = true;
-    this.sync.closed();
     this.coordinator.leave(this.server.id);
     clearTimeout(this.timer);
     clearTimeout(this.pongTimer);
     clearInterval(this.pingTimer);
-    this.ws?.close();
+    const ws = this.ws;
     this.ws = undefined;
+    ws?.close();
+    if (!persist) { this.sync.closed(); return Promise.resolve(); }
+    return this.sync.end();
   }
 }
 

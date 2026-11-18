@@ -6,7 +6,13 @@ import ts from 'typescript';
 
 // The real Composer, with device services replaced: sending from a landing
 // must ask prepareChat for the destination and hand that chat to sendDraft.
-function harness(submit?: (...args: any[]) => Promise<boolean>) {
+function harness(submit?: (...args: any[]) => Promise<boolean>, timing = false) {
+  const logs: string[] = [];
+  const perf: any = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(new URL('../src/lib/perf.ts', import.meta.url), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, { exports: perf, process: { env: { EXPO_PUBLIC_WINGLET_PERF: timing ? '1' : '0' } },
+    console: { log: (line: string) => logs.push(line) }, performance: { now: () => 1000 }, setInterval: () => 1, clearInterval() {} });
   let sounds = 0;
   let callbacks = 0;
   const prepared: string[] = [];
@@ -37,6 +43,7 @@ function harness(submit?: (...args: any[]) => Promise<boolean>) {
     'react-native-gesture-handler': { Gesture: fallback, GestureDetector: 'GestureDetector' },
     'expo-image': { Image: 'Image' },
     '../lib/store': store,
+    '../lib/perf': perf,
     '../lib/attach': { attachFiles() {}, canSend: () => true, removeFile() {}, retryFile() {},
       sendDraft: (server: string, chat: string, text: string) => { sent.push({ server, chat, text }); return submit ? submit(server, chat, text) : Promise.resolve(true); } },
     '../lib/actions': { stopTask: async () => false },
@@ -69,7 +76,7 @@ function harness(submit?: (...args: any[]) => Promise<boolean>) {
       bottomInset: 0, target: null, onHeight() {}, placeholder: 'Message', onSent() { callbacks++; },
       prepareChat: async () => { prepared.push('prepare'); return 'fixture-chat'; } });
   };
-  return { render, prepared, sent, state, sounds: () => sounds, callbacks: () => callbacks };
+  return { render, prepared, sent, state, logs, sounds: () => sounds, callbacks: () => callbacks };
 }
 
 function find(tree: any, match: (node: any) => boolean): any {
@@ -93,11 +100,11 @@ test('the landing composer sends through prepareChat and posts to the new chat',
   assert.equal(h.sent.some((m: any) => m.chat === 'general'), false);
 });
 
-for (const accepted of [false, true]) {
-  test(`mounted Composer reports sent only on admission: ${accepted}`, async () => {
+for (const timing of [false, true]) for (const accepted of [false, true]) {
+  test(`mounted Composer reports sent only on admission: ${accepted}, timing=${timing}`, async () => {
     let release!: (value: boolean) => void;
     const wait = new Promise<boolean>(resolve => { release = resolve; });
-    const h = harness(() => wait);
+    const h = harness(() => wait, timing);
     const button = find(h.render(), node => node.props?.accessibilityLabel === 'Send');
     const first = button.props.onPress();
     let duplicate: Promise<any> | undefined;
@@ -113,6 +120,12 @@ for (const accepted of [false, true]) {
     } finally { release(accepted); await Promise.allSettled([first, duplicate]); }
     assert.equal(h.sounds(), accepted ? 1 : 0);
     assert.equal(h.callbacks(), accepted ? 1 : 0);
+    if (timing) {
+      assert.match(h.logs.join('\n'), /send-passed passed=11 draftAfter=0/);
+      assert.match(h.logs.join('\n'), new RegExp(`send-settled accepted=${accepted} draftAfter=0`));
+      assert.match(h.logs.join('\n'), /inFlight=true/);
+      assert.doesNotMatch(h.logs.join('\n'), /Hello there|fixture-chat|bot:/);
+    } else assert.deepEqual(h.logs, []);
     assert.equal(find(h.render(), node => node.props?.accessibilityLabel === 'Send').props.disabled, false);
   });
 }

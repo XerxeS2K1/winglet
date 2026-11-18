@@ -118,6 +118,66 @@ export class StreamingGate {
   }
 }
 
+// -- input and send event order ---------------------------------------------------------------------------
+// Lengths, counts and booleans only: nothing a person typed, and nothing that identifies a message, a server or a login.
+
+/** A JS-thread gap between two ticks longer than this is logged. */
+export const STALL_GAP_MS = 100;
+/** How often the stall watch ticks. A tick that arrives much later than this means the JS thread was busy. */
+export const STALL_TICK_MS = 50;
+/** Stop polling after a minute without input/send activity; the next event restarts it. */
+export const STALL_IDLE_MS = 60_000;
+/** How many sends are remembered by number at once; the oldest is forgotten first. */
+export const SEND_LABELS_MAX = 64;
+
+export type EventValue = number | boolean | string;
+
+/** A field value that is safe to print: a finite number, a boolean, or a fixed busy-mode enum. */
+export function safeValue(v: unknown): string {
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'number') return Number.isFinite(v) ? String(Math.round(v * 10) / 10) : '?';
+  if (typeof v === 'string' && ['interrupt', 'steer', 'queue'].includes(v)) return v;
+  return '?';
+}
+
+/** `#12 +1234.5ms send-entry rendered=5 ready=true`. The name and keys come from this file, never from the user. */
+export function eventLine(seq: number, tMs: number, name: string, fields: Record<string, EventValue> = {}): string {
+  const rest = Object.keys(fields).map((k) => ` ${k}=${safeValue(fields[k])}`).join('');
+  return `#${seq} +${safeValue(tMs)}ms ${name}${rest}`;
+}
+
+/** Gives each send a small number (1, 2, 3...) so the log can follow one send without printing its client id. */
+export class SendLabels {
+  private ids = new Map<string, number>();
+  private next = 1;
+
+  /** The number for this send, made on first sight. */
+  label(clientId: string): number {
+    const known = this.ids.get(clientId);
+    if (known !== undefined) return known;
+    const n = this.next++;
+    this.ids.set(clientId, n);
+    if (this.ids.size > SEND_LABELS_MAX) this.ids.delete(this.ids.keys().next().value as string);
+    return n;
+  }
+
+  /** The number for a send already seen; undefined for one this phone did not start (so its echo is not logged). */
+  peek(clientId: string): number | undefined { return this.ids.get(clientId); }
+}
+
+/** Notices when the time between two ticks is longer than the limit. Returns the gap, or null. */
+export class StallDetector {
+  private last: number | null = null;
+
+  constructor(private readonly limit = STALL_GAP_MS) {}
+
+  tick(now: number): number | null {
+    const gap = this.last === null ? 0 : now - this.last;
+    this.last = now;
+    return gap > this.limit ? Math.round(gap) : null;
+  }
+}
+
 // -- lines ------------------------------------------------------------------------------------------------
 
 const ms = (n: number) => `${Math.round(n)} ms`;
@@ -200,4 +260,110 @@ function stopFrames(): void {
   giveUp = null;
   if (meter) log(frameLine(meter.summary()));
   meter = null;
+}
+
+// -- input and send order: running parts (the callers also check PERF_ON, so nothing is built when it is off) --
+
+let eventSeq = 0;
+let lastEventAt = 0;
+const sendLabels = new SendLabels();
+let stallTimer: ReturnType<typeof setInterval> | null = null;
+
+function mark(name: string, fields?: Record<string, EventValue>): void {
+  try {
+    lastEventAt = clock();
+    startStallWatch();
+    log(eventLine(++eventSeq, clock(), name, fields));
+  } catch { /* a diagnostic must never get in the way of the app */ }
+}
+
+/** One interval, started by the first event and only while PERF_ON; logs only the gaps above `STALL_GAP_MS`. */
+function startStallWatch(): void {
+  if (!PERF_ON || stallTimer !== null || typeof setInterval !== 'function') return;
+  const detector = new StallDetector();
+  detector.tick(clock());
+  stallTimer = setInterval(() => {
+    try {
+      const now = clock();
+      if (now - lastEventAt >= STALL_IDLE_MS) { perfStopStallWatch(); return; }
+      const gap = detector.tick(now);
+      if (gap !== null) log(eventLine(++eventSeq, now, 'js-stall', { gapMs: gap, tickMs: STALL_TICK_MS }));
+    } catch { /* logging must not throw from a timer either */ }
+  }, STALL_TICK_MS);
+}
+
+/** Test and tidy-up: stop the stall watch. */
+export function perfStopStallWatch(): void {
+  if (stallTimer !== null && typeof clearInterval === 'function') clearInterval(stallTimer);
+  stallTimer = null;
+}
+
+/** The text box reported a change: the new length only. */
+export function perfInput(len: number): void {
+  if (PERF_ON) mark('input', { len });
+}
+
+/** The Send handler started. `rendered` is what it captured at render; `draft` is what the store holds right now. */
+export function perfSendEntry(f: { rendered: number; draft: number; ready: boolean; busy: boolean; busyMode: string; withValue: boolean; inFlight: boolean }): void {
+  if (PERF_ON) mark('send-entry', f);
+}
+
+/** The length handed to `sendDraft` and the store's draft length immediately after invocation, BEFORE awaiting admission. This does not mean posted or cleared. */
+export function perfSendPassed(passed: number, draftAfter: number): void {
+  if (PERF_ON) mark('send-passed', { passed, draftAfter });
+}
+
+/** sendDraft settled: accepted is its result, not HTTP delivery (offline admission is enough). */
+export function perfSendSettled(accepted: boolean, draftAfter: number): void {
+  if (PERF_ON) mark('send-settled', { accepted, draftAfter });
+}
+
+/** A step of one send in the store: 'outbox', 'deferred', 'post-start', 'http-return', 'http-error'. */
+export function perfSendStage(clientId: string, stage: 'outbox' | 'deferred' | 'post-start' | 'http-return' | 'http-error', f: Record<string, EventValue> = {}): void {
+  if (PERF_ON) mark(stage, { send: sendLabels.label(clientId), ...f });
+}
+
+/** The server's copy of a message arrived on the socket. Logged only for sends this phone started. */
+export function perfSendEcho(clientId: string): void {
+  if (!PERF_ON) return;
+  const n = sendLabels.peek(clientId);
+  if (n !== undefined) mark('socket-echo', { send: n });
+}
+
+// -- checkpoint save cost: what one save actually writes --------------------------------------------------
+// Counts and lengths again, never content. A save has to be proportional to what changed, and only the phone
+// can say what a real chat page costs: `chars` is the JSON handed to the sealer, so the sealed value stored
+// on disk is that text encrypted and base64-encoded — about a third longer, plus the nonce and tag.
+
+export type SaveMeasure = { records: number; chars: number; largest: number };
+
+/** How much text one save seals: one JSON string per record, plus the largest of them. */
+export function measureSave(write: { key: string; value: unknown }[]): SaveMeasure {
+  let chars = 0;
+  let largest = 0;
+  for (const { value } of write) {
+    let n = 0;
+    try { n = JSON.stringify(value)?.length ?? 0; } catch { n = 0; }
+    chars += n;
+    if (n > largest) largest = n;
+  }
+  return { records: write.length, chars, largest };
+}
+
+/** `checkpoint save: records=3 chars=412345 largest=409912 ms=24` */
+export const saveLine = (m: SaveMeasure, elapsedMs: number) =>
+  `checkpoint save: records=${m.records} chars=${m.chars} largest=${m.largest} ms=${Math.round(elapsedMs)}`;
+
+/** The clock value to hand back to `perfSaveDone`; 0 when the switch is off. */
+export function perfSaveStart(): number {
+  return PERF_ON ? clock() : 0;
+}
+
+/** A checkpoint save finished writing: log its cost. No awaits, no writes, and it never throws. */
+export function perfSaveDone(write: { key: string; value: unknown }[], startedAt: number): void {
+  if (!PERF_ON) return;
+  const elapsed = clock() - startedAt; // read before the measuring, so the probe is not counted as save time
+  try {
+    log(saveLine(measureSave(write), elapsed));
+  } catch { /* a diagnostic must never get in the way of a save */ }
 }

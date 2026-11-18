@@ -81,6 +81,7 @@ function harness(os = 'web') {
   const replayProtocol = compile('../src/features/event-replay/protocol.ts', {});
   const replaySession = compile('../src/features/event-replay/session.ts', { './protocol': replayProtocol });
   const replayMerge = compile('../src/features/event-replay/merge.ts', {});
+  const replayCheckpoint = compile('../src/features/event-replay/checkpoint.ts', {});
   const projectHelpers = compile('../src/features/projects/logic.ts', {});
   const authCheck = compile('../src/lib/authCheck.ts', {});
   const { useApp: store } = compile('../src/lib/store.ts', {
@@ -95,6 +96,7 @@ function harness(os = 'web') {
     '../features/projects/logic': projectHelpers,
     '../features/event-replay/session': replaySession,
     '../features/event-replay/merge': replayMerge,
+    '../features/event-replay/checkpoint': replayCheckpoint,
     './api': { api: (...args: any[]) => request(...args), ApiError, wsUrl: (s: any) => s.url,
       signedApi: (server: any, method: string, path: string, data?: unknown) =>
         request(server, path, { method, body: data === undefined ? undefined : JSON.stringify(data) }) },
@@ -103,13 +105,16 @@ function harness(os = 'web') {
       cacheSetStrict: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
       cacheSet: async (key: string, value: any) => { cache.set(key, structuredClone(value)); },
       cacheRemove: async (prefix: string) => { for (const k of [...cache.keys()]) if (k.startsWith(prefix)) cache.delete(k); },
+      cacheKeys: async (prefix: string) => [...cache.keys()].filter((k) => k.startsWith(prefix)),
     },
     './verify': { NEEDS_VERIFY: 'Verify this phone to do that.' },
     './network': { refreshNetworkNow: async () => {} },
     // Same logic, but no real waiting between the re-checks.
     './authCheck': { ...authCheck, AUTH_RECHECK_DELAYS_MS: [1, 1], pause: async () => {} },
     './handledNotifications': handled,
-    './perf': { get PERF_ON() { return perfState.on; }, perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]) },
+    './perf': { get PERF_ON() { return perfState.on; }, perfMessageSent: (chat: string) => perfCalls.push(['sent', chat]), perfMessageUpdate: (chat: string, m: any, replayed?: boolean) => perfCalls.push(['update', chat, m, !!replayed]),
+      perfSaveStart: () => 0, perfSaveDone: () => {},
+      perfSendStage: (clientId: string, stage: string, f?: any) => perfCalls.push(['stage', stage, f ?? {}, clientId]), perfSendEcho: (clientId: string) => perfCalls.push(['echo', clientId]) },
     '../features/encrypted-push/native': { pushNative: { clear: (server: string, device: string, tags: string[]) => cleared.push([server, device, ...tags]) } },
     '../features/execution/model': taskModel,
     './sounds': { sound: { reply: () => played.push('reply'), needsYou: () => played.push('needsYou'), tap: () => {}, sent: () => {} } },
@@ -1022,7 +1027,9 @@ test('real socket replay persists applied messages with its cursor and suppresse
     events: [{ type: 'message.new', event_seq: 1, chat_id: 'general', message: msg(9) }] });
   await h.tick();
   const checkpoint = h.cache.get('replay:s');
-  assert.equal(checkpoint.cursor.cursor, 1); assert.equal(checkpoint.state.messages.general[0].id, 'm9');
+  assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 1);
+  assert.equal(h.cache.get('replay:s:c:general:0').messages[0].id, 'm9');
+  assert.equal(checkpoint.retired, true, 'the pre-split record is retired once its split copy is durable');
   assert.equal(h.store.getState().runtime.s.sync.phase, 'idle'); assert.equal(h.played.length, 0);
 });
 
@@ -1270,6 +1277,134 @@ test('with the timing switch off the store does no timing work at all on a send 
   h.event({ type: 'message.update', chat_id: 'general', message: { ...bot('r', 'Hi', 'final'), updated_at: 2 } });
   assert.deepEqual(h.perfCalls, [], 'perf must not be called, so its observation is never built');
   assert.equal(h.store.getState().runtime.s.messages.general.find((m: any) => m.id === 'r').text, 'Hi', 'the reply is still stored');
+});
+
+test('the send-order hooks see outbox, POST start, HTTP return and the socket echo of one send, by client id only', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.setRequest(async (_server: any, path: string, init: any) => {
+    const body = JSON.parse(init.body);
+    return { message: { ...msg(1), id: 'srv-1', role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+  });
+  await h.store.getState().sendMessage('s', 'general', 'secret words');
+  const stages = h.perfCalls.filter((c) => c[0] === 'stage');
+  assert.deepEqual(stages.map((c) => c[1]), ['outbox', 'post-start', 'http-return']);
+  assert.deepEqual(JSON.parse(JSON.stringify(stages[0][2])), { retry: false, online: true });
+  assert.deepEqual(JSON.parse(JSON.stringify(stages[1][2])), { len: 'secret words'.length });
+  const ids = new Set(stages.map((c) => c[3]));
+  assert.equal(ids.size, 1, 'every step names the same client id');
+  const id = [...ids][0] as string;
+  h.event({ type: 'message.new', chat_id: 'general', message: { ...msg(2), id: 'srv-1', role: 'user', text: 'secret words', meta: { client_id: id } } });
+  assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), [['echo', id]]);
+  // Nothing handed to the hooks contains the message text.
+  assert.doesNotMatch(JSON.stringify(h.perfCalls), /secret words/);
+});
+
+test('a replayed echo of a send admitted on this phone is not logged as a socket echo, a live one is', async () => {
+  for (const on of [true, false]) {
+    const h = harness(); h.perfState.on = on;
+    await h.connect();
+    h.cache.set('replay:s', { cursor: { scope: 'scope', epoch: 'epoch', cursor: 0 }, state: {
+      chats: { general: { id: 'general', kind: 'chat', title: 'General' } }, messages: {}, deleted: {}, loaded: {},
+      inbox: {}, pending: 0, tasks: {},
+    } });
+    await h.store.getState().init();
+    const posted: string[] = [];
+    h.setRequest(async (_server: any, route: string, init?: any) => {
+      if (route.endsWith('/messages') && init?.method === 'POST') {
+        const body = JSON.parse(init.body); posted.push(body.client_id);
+        return { message: { ...msg(1), id: `srv-${posted.length}`, role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+      }
+      return route === '/api/inbox' ? { items: [], pending: 0 } : { messages: [], deleted_ids: [] };
+    });
+    // The real replay path: hello announces the journal, the phone asks to resume, the reply is applied as replayed.
+    h.event({ type: 'hello', chats: [{ id: 'general', kind: 'chat', title: 'General' }], pending: 0,
+      features: { event_replay: true }, event_stream: { scope: 'scope', epoch: 'epoch', watermark: 2 } });
+    await h.tick();
+    assert.equal(h.socket().sent.at(-1).type, 'resume', 'the phone asked the server to replay');
+    // Admitted on this phone while the replay is still pending: held in the outbox, so its client id is known locally.
+    await h.store.getState().sendMessage('s', 'general', 'first private words');
+    assert.equal(posted.length, 0, 'nothing is posted until the replay has caught up');
+    assert.equal(h.outbox().length, 1);
+    const replayedId = h.outbox()[0].client_id as string;
+    assert.equal(h.perfCalls.filter((c) => c[0] === 'stage' && c[1] === 'outbox').map((c) => c[3]).join(), on ? replayedId : '');
+    h.perfCalls.length = 0;
+
+    const user = (n: number, clientId: string) => ({ ...msg(n), id: `srv-${n}`, role: 'user', text: 'private words', meta: { client_id: clientId } });
+    const botReply = { ...msg(7), id: 'r', status: 'final', updated_at: 5 };
+    h.event({ type: 'resume', ok: true, scope: 'scope', epoch: 'epoch', watermark: 2, cursor: 2, has_more: false, events: [
+      { type: 'message.new', event_seq: 1, chat_id: 'general', message: user(1, replayedId) },
+      { type: 'message.update', event_seq: 2, chat_id: 'general', message: botReply },
+    ] });
+    await h.tick();
+    // Replay plumbing was really reached: applied from the resume reply, stored with its cursor, flagged replayed.
+    assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 2);
+    assert.ok(h.messages().some((m: any) => m.id === 'r'), 'the replayed bot reply was applied');
+    assert.equal(h.store.getState().runtime.s.sync.phase, 'idle');
+    const updates = h.perfCalls.filter((c) => c[0] === 'update');
+    assert.deepEqual(updates.map((c) => c[3]), on ? [true] : [], 'the replayed update reached the store flagged as replayed');
+    assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), [], 'a replayed echo of a known local id is not a fresh echo');
+
+    assert.equal(h.outbox().length, 0, 'the replayed echo settled the held send, so it is not posted again');
+    assert.equal(posted.length, 0);
+
+    // A send admitted after catch-up is posted, and its live echo is logged.
+    await h.store.getState().sendMessage('s', 'general', 'second private words');
+    assert.equal(posted.length, 1);
+    h.perfCalls.length = 0;
+    h.event({ type: 'message.new', event_seq: 3, chat_id: 'general', message: user(3, posted[0]) });
+    await h.tick();
+    assert.deepEqual(h.perfCalls.filter((c) => c[0] === 'echo'), on ? [['echo', posted[0]]] : []);
+    assert.equal(h.cache.get('replay:s:v3').cursor.cursor, 3, 'the live event went through the same session');
+    assert.doesNotMatch(JSON.stringify(h.perfCalls), /private words/);
+  }
+});
+
+test('a failed POST is reported as an http-error with only a boolean', async () => {
+  const h = harness();
+  await h.connect();
+  await h.hello();
+  h.setRequest(async () => { throw new Error('socket hang up'); });
+  await h.store.getState().sendMessage('s', 'general', 'hello');
+  const failed = h.perfCalls.filter((c) => c[0] === 'stage' && c[1] === 'http-error');
+  assert.equal(failed.length, 1);
+  assert.deepEqual(JSON.parse(JSON.stringify(failed[0][2])), { network: true });
+});
+
+test('with the timing switch off the send-order hooks are never called, and the send behaves the same', async () => {
+  const run = async (on: boolean) => {
+    const h = harness();
+    h.perfState.on = on;
+    await h.connect();
+    await h.hello();
+    h.setRequest(async (_server: any, _path: string, init: any) => {
+      const body = JSON.parse(init.body);
+      return { message: { ...msg(1), id: 'srv-1', role: 'user', text: body.text, meta: { client_id: body.client_id } } };
+    });
+    await h.store.getState().sendMessage('s', 'general', 'hello');
+    const sent = h.messages().filter((m: any) => m.role === 'user');
+    h.event({ type: 'message.update', chat_id: 'general', message: { ...msg(3), id: 'srv-1', role: 'user', text: 'hello', meta: { client_id: sent[0]?.meta?.client_id } } });
+    return { h, view: JSON.parse(JSON.stringify({ messages: h.messages().map((m: any) => [m.role, m.text, m.status]), outbox: h.outbox().length })) };
+  };
+  const off = await run(false);
+  assert.deepEqual(off.h.perfCalls, [], 'no send-order hook is called when the switch is off');
+  const on = await run(true);
+  assert.ok(on.h.perfCalls.some((c) => c[0] === 'stage'));
+  assert.deepEqual(off.view, on.view, 'the stored messages and the outbox are identical with the switch on or off');
+});
+
+test('offline admission stays queued with timing on or off, without claiming POST', async () => {
+  for (const on of [false, true]) {
+    const h = harness(); h.perfState.on = on;
+    await h.connect(); await h.hello(); h.disconnect();
+    let calls = 0; let admitted = 0;
+    h.setRequest(async () => { calls++; throw new Error('must stay offline'); });
+    await h.store.getState().sendMessage('s', 'general', 'private fixture', { onAdmitted: () => { admitted++; } });
+    assert.equal(admitted, 1); assert.equal(calls, 0); assert.equal(h.outbox().length, 1);
+    assert.equal(h.messages()[0].status, 'queued');
+    assert.deepEqual(h.perfCalls.filter(c => c[0] === 'stage').map(c => c[1]), on ? ['outbox', 'deferred'] : []);
+  }
 });
 
 // ---- streamed updates are applied at most once a frame (src/lib/streamBuffer.ts) ----

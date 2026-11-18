@@ -37,6 +37,7 @@ function harness() {
     './commands': load('lib/commands', { './api': {} }),
     './cache': { cacheSet: async (key: string, value: any) => cache.set(key, structuredClone(value)) },
     '../features/event-replay/merge': load('features/event-replay/merge'),
+    '../features/event-replay/checkpoint': load('features/event-replay/checkpoint'),
     '../features/event-replay/session': load('features/event-replay/session', { './protocol': protocol }),
     './messages': load('lib/messages'),
     './streamBuffer': load('lib/streamBuffer'),

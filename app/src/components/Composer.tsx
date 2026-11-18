@@ -7,6 +7,7 @@ import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   cancelAnimation, FadeIn, FadeOut, useAnimatedStyle, useSharedValue, withRepeat, withSequence, withTiming, ZoomIn,
 } from 'react-native-reanimated';
+import { PERF_ON, perfInput, perfSendEntry, perfSendPassed, perfSendSettled } from '../lib/perf';
 import { attachFiles, canSend, removeFile, retryFile, sendDraft } from '../lib/attach';
 import { stopTask } from '../lib/actions';
 import { loadCommands, matchCommands, type Command } from '../lib/commands';
@@ -158,6 +159,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
   const showBusyModes = busy && !!text.trim() && !text.startsWith('/');
 
   const send = async (value?: string) => {
+    if (PERF_ON) perfSendEntry({ rendered: text.length, draft: (useApp.getState().drafts[key] ?? '').length, ready, busy: !!busy, busyMode, withValue: value !== undefined, inFlight: sending.current });
     if (sending.current || (value === undefined && !ready)) return;
     sending.current = true;
     setSubmitting(true);
@@ -181,7 +183,11 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
       haptic.light();
       const prefix = showBusyModes && busyMode !== 'interrupt' ? `/${busyMode}` : '';
       const body = prepareChat ? useApp.getState().drafts[draftKey(server.id, destination)] ?? text : text;
-      if (!await sendDraft(server.id, destination, body, prefix)) return;
+      const submission = sendDraft(server.id, destination, body, prefix);
+      if (PERF_ON) perfSendPassed(body.length, (useApp.getState().drafts[draftKey(server.id, destination)] ?? '').length);
+      const accepted = await submission;
+      if (PERF_ON) perfSendSettled(accepted, (useApp.getState().drafts[draftKey(server.id, destination)] ?? '').length);
+      if (!accepted) return;
       setHeight(MIN_INPUT);
       sound.sent();
       onSent?.();
@@ -263,7 +269,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
             value={text}
             onFocus={() => onFocusChange?.(true)}
             onBlur={() => onFocusChange?.(false)}
-            onChangeText={setText}
+            onChangeText={(v) => { if (PERF_ON) perfInput(v.length); setText(v); }}
             // The server refuses anything longer rather than cutting it, so stop it here first.
             maxLength={MAX_MESSAGE}
             placeholder={placeholder}
