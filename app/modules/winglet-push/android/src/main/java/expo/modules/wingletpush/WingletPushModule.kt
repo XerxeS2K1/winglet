@@ -70,6 +70,11 @@ class WingletPushModule : Module() {
     // Not behind the unlock guard: they carry no user content and only open a system dialog.
     Function("batteryUnrestricted"){ batteryUnrestricted() }
     Function("requestBatteryUnrestricted"){ requestBatteryUnrestricted() }
+    // The phone's one switch for Approve, Decline and Reply on notifications. Same policy file as "private"; it holds no user content.
+    Function("setActions"){enabled:Boolean ->
+      context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).edit().putBoolean("actions",enabled).apply()
+    }
+    Function("actionsEnabled"){ context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).getBoolean("actions",true) }
     Function("security"){isLocked:Boolean,privatePreviews:Boolean,foreground:Boolean,online:List<String>,pairs:List<Map<String,String>> ->
       lastLocked=isLocked;lastForeground=foreground
       locked=isLocked;visible=foreground;PushVisibility.locked=isLocked

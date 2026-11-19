@@ -106,8 +106,11 @@ class WingletPushService : PushService() {
     val live=expires<=0.0 || expires>System.currentTimeMillis()/1000.0
     // Only offer an action when the notification can show what it is for. A locked screen, the app
     // lock or private notifications leave the generic body, so none of Approve, Decline or Reply is
-    // offered: someone holding the phone must not act as the owner without unlocking it.
-    val canAct=!deviceLocked && !PushVisibility.locked && !privatePolicy
+    // offered: someone holding the phone must not act as the owner without unlocking it. The master
+    // switch off also offers none, and the notification just opens the app.
+    // The phone's one master switch (Settings > Notifications). Default on, so replies keep working after an upgrade.
+    val actionsOn=getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("actions",true)
+    val canAct=!deviceLocked && !PushVisibility.locked && !privatePolicy && actionsOn
     val approve=approval && canAct && live && item.isNotBlank() && choiceNames.contains("once") && sigs.optString("once").isNotBlank()
     val decline=approval && canAct && item.isNotBlank() && choiceNames.contains("deny") && sigs.optString("deny").isNotBlank()
     val reply=!approval && canAct && note.optString("chat_id").isNotBlank() && entry.optString("token").isNotBlank()

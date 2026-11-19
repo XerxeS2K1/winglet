@@ -11,7 +11,7 @@ import { Sheet } from '../components/Sheet';
 import { Button, Card, Chip, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
 import { describeTestPush, enableNtfy, enableWebPush, openNtfySubscribe, sendTestPush, webPushServer, webPushState, type PushState } from '../lib/push';
 import { pushPrefsKey, quietHours, usePushPrefs } from '../lib/pushPrefs';
-import { loadShadeApprovals, saveShadeApprovals, SHADE_PREVIEW_NOTE, shadeSavedNote, shadeToggleView, type ShadeApprovals } from '../lib/shadeApprovals';
+import { actionsSwitchView, enableApprovals, loadShadeApprovals, saveShadeApprovals, setActionsSwitch, SHADE_PREVIEW_NOTE, shadeSavedNote, type ShadeApprovals } from '../lib/shadeApprovals';
 import { homeChat, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Server } from '../lib/types';
@@ -24,9 +24,7 @@ export default function NotificationsScreen() {
   return (
     <Screen title="Notifications">
       {Platform.OS === 'web' ? <WebPushSettings servers={servers} /> : servers.map((srv) => pushNative ? <EncryptedPushSettings key={srv.id} server={srv} /> : <NtfySettings key={srv.id} server={srv} />)}
-      {Platform.OS === 'android' ? servers.map((srv) => (
-        <ShadeApprovalsSetting key={`shade-${srv.id}`} server={srv} named={servers.length > 1} />
-      )) : null}
+      {Platform.OS === 'android' && pushNative?.setActions ? <NotificationActionsSetting servers={servers} /> : null}
       {(Platform.OS === 'web' ? [webPushServer(servers)].filter((x): x is Server => !!x) : servers).map((srv) => (
         <QuietSettings key={srv.id} server={srv} named={servers.length > 1} />
       ))}
@@ -114,42 +112,67 @@ function QuietSettings({ server, named }: { server: Server; named: boolean }) {
 }
 
 
-/** Per-device opt-in for answering approvals from the shade. Everyone can read it; only a verified
- * owner can change it, and the server says so through can_enable. */
-function ShadeApprovalsSetting({ server, named }: { server: Server; named: boolean }) {
+/** One per-phone switch for the buttons on notifications: Reply, Decline and (for a verified owner)
+ * Approve. Turning it on or off also saves the server's approval flag on every server this phone
+ * may change; if a server refuses, the phone's switch goes back. */
+function NotificationActionsSetting({ servers }: { servers: Server[] }) {
   const t = useTheme();
   const s = useStyles();
-  const me = useApp((st) => st.runtime[server.id]?.me);
-  const [state, setState] = useState<ShadeApprovals | null>(null);
+  const runtime = useApp((st) => st.runtime);
+  const [master, setMaster] = useState<boolean | null>(null);
+  const [states, setStates] = useState<Record<string, ShadeApprovals | null>>({});
+  const [failed, setFailed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState('');
+  const key = servers.map((srv) => `${srv.id}:${srv.token}`).join('|');
   useEffect(() => {
     let live = true;
     setError('');
-    loadShadeApprovals(server).then((next) => { if (live) setState(next); })
-      .catch((e) => { if (live) setError((e as Error).message); });
+    try { setMaster(pushNative?.actionsEnabled?.() ?? true); } catch { setMaster(true); }
+    servers.forEach((srv) => {
+      loadShadeApprovals(srv)
+        .then((next) => { if (live) setStates((cur) => ({ ...cur, [srv.id]: next })); })
+        .catch((e) => { if (live) { setFailed((cur) => ({ ...cur, [srv.id]: true })); setError((e as Error).message); } });
+    });
     return () => { live = false; };
-  }, [server.id, server.token]);
-  const view = shadeToggleView(state, me);
+  }, [key]);
+  const rows = servers.map((srv) => ({ server: srv, state: states[srv.id] ?? null }));
+  const view = actionsSwitchView(master, servers.map((srv) => ({ state: states[srv.id] ?? null, me: runtime[srv.id]?.me, failed: failed[srv.id] })));
+  const apply = (result: Awaited<ReturnType<typeof enableApprovals>>) => {
+    setStates((cur) => Object.fromEntries(servers.map((srv, i) => [srv.id, result.states[i] ?? cur[srv.id] ?? null])));
+    if (!result.ok) { setError(result.message); return; }
+    // Same plain-words note as before: it says when older notifications stop being able to approve.
+    const changed = rows.findIndex((row, i) => row.state && result.states[i] && row.state.shade_approvals !== result.states[i]!.shade_approvals);
+    setSaved(changed >= 0 ? shadeSavedNote(rows[changed].state!, result.states[changed]!) : 'Saved.');
+  };
   const change = async (enabled: boolean) => {
-    if (!state?.can_enable || busy) return;
+    if (view.disabled || busy || master === null) return;
     setBusy(true); setError(''); setSaved('');
-    try {
-      const next = await saveShadeApprovals(server, enabled);
-      setState(next);
-      setSaved(shadeSavedNote(state, next));
-    } catch (e) { setError((e as Error).message); }
+    const result = await setActionsSwitch(enabled, master, rows, { setNative: (v) => pushNative?.setActions?.(v), save: saveShadeApprovals });
+    if (result.ok) setMaster(enabled);
+    apply(result);
+    setBusy(false);
+  };
+  const turnOnApprovals = async () => {
+    if (busy) return;
+    setBusy(true); setError(''); setSaved('');
+    apply(await enableApprovals(rows, saveShadeApprovals));
     setBusy(false);
   };
   return (
     <>
-      <SectionHeader title={named ? `${server.bot.title}: approval actions` : 'Approval actions'} />
+      <SectionHeader title="Notification actions" />
       <ListGroup>
-        <ListRow title="Approve from notifications" subtitle={view.note}
-          right={<Toggle label="Approve from notifications" value={view.value}
+        <ListRow title="Reply and approve from notifications for this phone" subtitle={view.note}
+          right={<Toggle label="Reply and approve from notifications for this phone" value={view.value}
             disabled={view.disabled || busy} onValueChange={change} />} />
       </ListGroup>
+      {view.enableApprovals ? (
+        <View style={[s.buttons, { marginTop: 8 }]}>
+          <Button title="Turn on approvals" size="sm" variant="tonal" loading={busy} onPress={turnOnApprovals} />
+        </View>
+      ) : null}
       {error ? <Text style={[s.note, { color: t.colors.danger, marginTop: 8 }]} accessibilityLiveRegion="polite">{error}</Text> : null}
       {saved ? <Text style={[s.note, { marginTop: 8 }]} accessibilityLiveRegion="polite">{saved}</Text> : null}
       <Text style={[s.note, { marginTop: 8 }]}>{SHADE_PREVIEW_NOTE}</Text>

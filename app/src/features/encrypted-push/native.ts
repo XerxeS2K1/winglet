@@ -19,5 +19,8 @@ export type PushNative={
   batteryUnrestricted?:()=>boolean;
   /** Opens Android's own "allow Winglet to run in the background?" dialog. Missing on an older build. */
   requestBatteryUnrestricted?:()=>void;
+  /** The phone's one switch for Approve, Decline and Reply on notifications (native default: on). Missing on an older build. */
+  setActions?:(enabled:boolean)=>void;
+  actionsEnabled?:()=>boolean;
 };
 export const pushNative=Platform.OS==='android' && Number(Platform.Version)>=26?requireOptionalNativeModule<PushNative>('WingletPush'):null;

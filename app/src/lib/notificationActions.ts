@@ -32,15 +32,17 @@ export type NotificationModel = {
 const CLEAR = 'Winglet';
 
 /** Build the notification people see. The server decides what is offered; this only hides an
- * approval when the phone's switch is off or its short-lived signature has already expired. */
-export function notificationModel(note: NotificationNote, options: { shadeApprovals: boolean; now?: number; canAct?: boolean }): NotificationModel {
+ * approval when the phone's switch is off or its short-lived signature has already expired.
+ * `actions` is the phone's one master switch (default on): off means no buttons at all and the
+ * notification just opens the app. */
+export function notificationModel(note: NotificationNote, options: { shadeApprovals: boolean; now?: number; canAct?: boolean; actions?: boolean }): NotificationModel {
   const now = options.now ?? Date.now() / 1000;
   const sigs = note.sig ?? {};
   const choices = new Set(note.choices ?? []);
   const actions: NotificationAction[] = [];
   // Mirrors the phone: when previews are off or the phone/app is locked nothing can be acted on,
   // not Approve, not Decline and not Reply, so someone holding the phone cannot answer as the owner.
-  const canAct = options.canAct ?? true;
+  const canAct = (options.canAct ?? true) && (options.actions ?? true);
   if (!canAct) {
     // no actions
   } else if (note.kind === 'approval') {

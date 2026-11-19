@@ -116,19 +116,6 @@ test('the settings toggle reads the one field and sends it back', async () => {
   assert.equal(saved.epoch, 4);
 });
 
-test('can_enable false disables the toggle and explains why', () => {
-  const h = settingsHarness();
-  const member = h.lib.shadeToggleView({ shade_approvals: false, epoch: 1, can_enable: false }, { role: 'member', verified: true });
-  assert.equal(member.disabled, true);
-  assert.match(member.note, /Only an owner/);
-  const unverified = h.lib.shadeToggleView({ shade_approvals: false, epoch: 1, can_enable: false }, { role: 'owner', verified: false });
-  assert.equal(unverified.disabled, true);
-  assert.match(unverified.note, /Verify this phone/);
-  const owner = h.lib.shadeToggleView({ shade_approvals: true, epoch: 1, can_enable: true }, { role: 'owner', verified: true });
-  assert.equal(owner.disabled, false);
-  assert.equal(owner.value, true);
-});
-
 test('the saved message is plain words, not the epoch', () => {
   const h = settingsHarness();
   const before = { shade_approvals: false, epoch: 1, can_enable: true };

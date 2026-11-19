@@ -65,8 +65,31 @@ class WingletActionReceiver : BroadcastReceiver() {
       }
     }
     // The answer reached the server (or was definitely refused): the old notification is stale.
-    cancel(context, scope, tag)
-    if (message != null) fail(context, message)
+    // A success is confirmed in place; a refusal takes it down and shows the error.
+    if (message == null) confirm(context, scope, tag, action) else {
+      cancel(context, scope, tag)
+      fail(context, message)
+    }
+  }
+
+  /** Replaces the answered notification (same tag and id) with a short, generic confirmation that
+   * removes itself. It never carries the command or the reply text. */
+  private fun confirm(context: Context, scope: String, tag: String, action: String) {
+    if (tag.isBlank()) return
+    val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if (!manager.areNotificationsEnabled()) return cancel(context, scope, tag)
+    PushChannels.ensure(manager)
+    val text = when (action) { ACTION_APPROVE -> "Approved"; ACTION_DECLINE -> "Declined"; else -> "Sent" }
+    val notification = Notification.Builder(context, PushChannels.REPLIES)
+      .setSmallIcon(R.drawable.ic_stat_winglet)
+      .setColor(0xFF5B4BD6.toInt())
+      .setContentTitle("Winglet")
+      .setContentText(text)
+      .setOnlyAlertOnce(true)
+      .setAutoCancel(true)
+      .setTimeoutAfter(4_000)
+      .build()
+    manager.notify(PushStore.noteTag(scope, tag), 1, notification)
   }
 
   private fun refusal(result: Response, approval: Boolean): String {
