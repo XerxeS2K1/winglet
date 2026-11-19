@@ -169,22 +169,71 @@ test('a phone that cannot change any server only flips the native flag', async (
   assert.deepEqual(Array.from(h.log), ['native:true']);
 });
 
-test('a failed server save puts the native flag back and returns the error text', async () => {
+test('a failed server save rolls back the servers already changed, then puts the native flag back', async () => {
   const h = io(['c']);
   const r = await shade.setActionsSwitch(true, false, [{ server: A, state: off }, { server: C, state: off }], h);
   assert.equal(r.ok, false);
   assert.equal(r.message, 'save failed on c');
-  assert.deepEqual(Array.from(h.log), ['native:true', 'save:a:true', 'save:c:true', 'native:false']);
-  // The server that did save keeps its new state, so the screen shows the truth.
-  assert.equal(r.states[0].shade_approvals, true);
+  assert.deepEqual(Array.from(h.log), ['native:true', 'save:a:true', 'save:c:true', 'save:a:false', 'native:false']);
+  // The screen shows the truth: a is back off (the rollback's answer), c never changed.
+  assert.equal(r.states[0].shade_approvals, false);
   assert.deepEqual(JSON.parse(JSON.stringify(r.states[1])), off);
 });
 
-test('a failed save when switching off restores the native flag to on', async () => {
-  const h = io(['a']);
-  const r = await shade.setActionsSwitch(false, true, [{ server: A, state: on }], h);
+test('a failed save when switching off rolls back to on and restores the native flag to on', async () => {
+  const h = io(['b']);
+  const r = await shade.setActionsSwitch(false, true, [{ server: A, state: on }, { server: B, state: on }], h);
   assert.equal(r.ok, false);
-  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false', 'native:true']);
+  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false', 'save:b:false', 'save:a:true', 'native:true']);
+  assert.equal(r.states[0].shade_approvals, true);
+  assert.equal(r.states[1].shade_approvals, true);
+});
+
+test('rollback runs in reverse order, and only for servers this save changed', async () => {
+  const h = io(['c']);
+  const D = { id: 'd' };
+  const r = await shade.saveShadeEverywhere(true, [
+    { server: A, state: off }, { server: B, state: on }, { server: D, state: off }, { server: C, state: off },
+  ], h.save);
+  assert.equal(r.ok, false);
+  // b was already on and is left alone; d then a go back, newest first.
+  assert.deepEqual(Array.from(h.log), ['save:a:true', 'save:d:true', 'save:c:true', 'save:d:false', 'save:a:false']);
+  assert.equal(r.states[1].shade_approvals, true);
+});
+
+test('a failure on the first server has nothing to roll back', async () => {
+  const h = io(['a']);
+  const r = await shade.setActionsSwitch(true, false, [{ server: A, state: off }, { server: C, state: off }], h);
+  assert.equal(r.ok, false);
+  assert.deepEqual(Array.from(h.log), ['native:true', 'save:a:true', 'native:false']);
+});
+
+test('if a rollback also fails, the error text says which server still has the new value', async () => {
+  const log: string[] = [];
+  const save = async (server: any, v: boolean) => {
+    log.push(`save:${server.id}:${v}`);
+    if (server.id === 'c') throw new Error('save failed on c');
+    if (server.id === 'a' && v === false) throw new Error('offline');
+    return { shade_approvals: v, epoch: 2, can_enable: true };
+  };
+  const natives: boolean[] = [];
+  const r = await shade.setActionsSwitch(true, false, [{ server: A, state: off }, { server: C, state: off }],
+    { setNative: (v: boolean) => { natives.push(v); }, save });
+  assert.equal(r.ok, false);
+  assert.match(r.message, /save failed on c/);
+  assert.match(r.message, /could not put a back/i);
+  assert.match(r.message, /offline/);
+  // The phone's flag is still restored, and a keeps the value it really has.
+  assert.deepEqual(natives, [true, false]);
+  assert.equal(r.states[0].shade_approvals, true);
+  assert.deepEqual(log, ['save:a:true', 'save:c:true', 'save:a:false']);
+});
+
+test('the small button is all-or-nothing too: a later failure rolls the earlier server back', async () => {
+  const h = io(['c']);
+  const r = await shade.enableApprovals([{ server: A, state: off }, { server: C, state: off }], h.save);
+  assert.equal(r.ok, false);
+  assert.deepEqual(Array.from(h.log), ['save:a:true', 'save:c:true', 'save:a:false']);
 });
 
 test('a native write that throws stops before any server is touched', async () => {
@@ -208,13 +257,16 @@ test('the small button saves approvals on for every server that can, and leaves 
 test('the native service needs the master flag in canAct, so Approve, Decline and Reply all follow it', () => {
   const source = kotlin('WingletPushService.kt');
   const canAct = source.match(/val canAct=([^\n]+)/)?.[1] ?? '';
-  assert.ok(canAct.includes('actionsOn'), 'canAct must include the master flag');
+  // The exact expression: a clause that defeats the flag (for example `actionsOn || true`) must fail here.
+  assert.equal(canAct.trim(), '!deviceLocked && !PushVisibility.locked && !privatePolicy && actionsOn');
   assert.match(source, /val actionsOn=getSharedPreferences\("winglet-push-policy",MODE_PRIVATE\)\.getBoolean\("actions",true\)/);
+  // Approve, Decline and Reply each depend on canAct.
+  for (const name of ['approve', 'decline', 'reply']) assert.match(source, new RegExp(`val ${name}=[^\\n]*canAct`));
 });
 
 test('the module writes and reads the actions flag in the same policy file as private', () => {
   const source = kotlin('WingletPushModule.kt');
-  assert.match(source, /Function\("setActions"\)\{enabled:Boolean/);
+  assert.match(source, /Function\("setActions"\)\{enabled:Boolean ->\s*saveActions\(enabled\)\s*\}/);
   assert.match(source, /getSharedPreferences\("winglet-push-policy",Context\.MODE_PRIVATE\)\.edit\(\)\.putBoolean\("actions",enabled\)\.apply\(\)/);
   assert.match(source, /Function\("actionsEnabled"\)\{[^}]*getBoolean\("actions",true\)/);
   const native = readFileSync(new URL('../src/features/encrypted-push/native.ts', import.meta.url), 'utf8');
@@ -237,15 +289,171 @@ test('a successful answer re-posts a generic, action-less notification that remo
   assert.doesNotMatch(confirm, /EXTRA_REPLY|getResultsFromIntent|getStringExtra|bigText|command|optString/i);
 });
 
-// ---- source checks: the settings screen ----
+// ---- the receiver re-reads the switch before it contacts the server ----
+
+const receiverRun = () => kotlin('WingletActionReceiver.kt').match(/private fun run\([\s\S]*?\n  \}\n/)?.[0] ?? '';
+
+test('the receiver reads the actions flag first, before the key store or any network call', () => {
+  const run = receiverRun();
+  assert.ok(run, 'run() exists');
+  const flag = run.indexOf('getBoolean("actions", true)');
+  assert.ok(flag > 0, 'run() must read the actions flag');
+  for (const later of ['PushStore.read(', 'post(', 'HttpURLConnection']) {
+    const at = run.indexOf(later);
+    if (at >= 0) assert.ok(flag < at, `the flag must be read before ${later}`);
+  }
+  assert.ok(run.indexOf('post(') > flag, 'run() still posts after the check');
+});
+
+test('when the switch is off the receiver cancels that notification and shows no error', () => {
+  const run = receiverRun();
+  assert.match(run, /if \(!policy\.getBoolean\("actions", true\)\) return cancel\(context, scope, tag\)\n/);
+  assert.match(run, /val policy = context\.getSharedPreferences\("winglet-push-policy", Context\.MODE_PRIVATE\)/);
+  // The refusal is before every fail(): no error text for a switched-off phone.
+  assert.ok(run.indexOf('getBoolean("actions", true)') < run.indexOf('fail('));
+});
+
+test('private previews also stop an old notification from answering', () => {
+  const run = receiverRun();
+  assert.match(run, /if \(policy\.getBoolean\("private", true\)\) return cancel\(context, scope, tag\)\n/);
+  assert.ok(run.indexOf('getBoolean("private", true)') < run.indexOf('post('));
+});
+
+test('switching off in the module takes down notifications that carry buttons', () => {
+  const source = kotlin('WingletPushModule.kt');
+  const save = source.match(/private fun saveActions\([\s\S]*?\n  \}\n/)?.[0] ?? '';
+  assert.ok(save, 'saveActions exists');
+  assert.ok(save.indexOf('putBoolean("actions",enabled)') >= 0);
+  assert.match(save, /if\(!enabled\)/);
+  assert.match(save, /activeNotifications\.filter\{[^\n]*\^\[a-f0-9\]\{64\}:\[a-f0-9\]\{64\}\$[^\n]*notification\.actions\?\.isNotEmpty\(\)==true[^\n]*\}\s*\.forEach\{manager\.cancel\(it\.tag,it\.id\)\}/);
+  // The flag is written before the notifications go, so nothing posts a new button meanwhile.
+  assert.ok(save.indexOf('putBoolean("actions",enabled)') < save.indexOf('activeNotifications'));
+});
+
+// ---- an older native shell without setActions ----
+
+test('approvals-only row: the owner can still switch server approvals, with a note about this build', () => {
+  const view = shade.approvalsOnlyView([{ state: off, me: owner }]);
+  assert.equal(view.disabled, false);
+  assert.equal(view.value, false);
+  assert.match(view.note, /this build cannot switch replies and Decline/i);
+  assert.equal(view.enableApprovals, false);
+  assert.equal(shade.approvalsOnlyView([{ state: on, me: owner }]).value, true);
+  // Several servers: on only when every one this phone can change is on.
+  assert.equal(shade.approvalsOnlyView([{ state: on, me: owner }, { state: off, me: owner }]).value, false);
+});
+
+test('approvals-only row: loading waits, and a member or unverified phone gets a disabled row with the reason', () => {
+  const loading = shade.approvalsOnlyView([{ state: null, me: owner }]);
+  assert.equal(loading.disabled, true);
+  assert.match(loading.note, /Checking/);
+  assert.equal(shade.approvalsOnlyView([{ state: null, me: owner, failed: true }]).disabled, true);
+  const member = shade.approvalsOnlyView([{ state: noRight, me: { role: 'member', verified: true } }]);
+  assert.equal(member.disabled, true);
+  assert.match(member.note, /Only an owner/);
+  const unverified = shade.approvalsOnlyView([{ state: noRight, me: { role: 'owner', verified: false } }]);
+  assert.equal(unverified.disabled, true);
+  assert.match(unverified.note, /Verify this phone/);
+  assert.match(unverified.note, /this build cannot switch replies and Decline/i);
+});
+
+// ---- the row's handler: a small function the screen calls ----
+
+function ctx(over: any = {}) {
+  const log: string[] = [];
+  const h = io();
+  return {
+    log: h.log,
+    started: log,
+    c: {
+      view: { disabled: false }, busy: false, master: true,
+      rows: [{ server: A, state: on }],
+      native: { setActions: (v: boolean) => { h.log.push(`native:${v}`); } },
+      save: h.save,
+      begin: () => { log.push('begin'); },
+      ...over,
+    },
+  };
+}
+
+test('the handler gives setNative the chosen value, not the old one', async () => {
+  const off1 = ctx({ master: true });
+  await shade.changeActions(false, off1.c);
+  assert.deepEqual(Array.from(off1.log), ['native:false', 'save:a:false']);
+  const on1 = ctx({ master: false, rows: [{ server: A, state: off }] });
+  await shade.changeActions(true, on1.c);
+  assert.deepEqual(Array.from(on1.log), ['native:true', 'save:a:true']);
+});
+
+test('the handler uses only the chosen value: the phone value is just what a failure restores', async () => {
+  // Switch is on (master true) and the person picks true again: the native flag still gets the chosen value.
+  const same = ctx({ master: true, rows: [{ server: A, state: off }] });
+  await shade.changeActions(true, same.c);
+  assert.deepEqual(Array.from(same.log), ['native:true', 'save:a:true']);
+  // A failure restores `master`, not the chosen value.
+  const h = io(['a']);
+  const fail = ctx({ master: true, rows: [{ server: A, state: on }], save: h.save, native: { setActions: (v: boolean) => { h.log.push(`native:${v}`); } } });
+  const r = await shade.changeActions(false, fail.c);
+  assert.equal(r.ok, false);
+  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false', 'native:true']);
+});
+
+test('the handler ignores a disabled row, a busy screen and an unknown phone value', async () => {
+  for (const over of [{ view: { disabled: true } }, { busy: true }, { master: null }]) {
+    const x = ctx(over);
+    assert.equal(await shade.changeActions(false, x.c), null);
+    assert.deepEqual(Array.from(x.log), []);
+    assert.deepEqual(Array.from(x.started), []);
+  }
+});
+
+test('the handler tells the screen it started only once it has accepted the change', async () => {
+  const x = ctx();
+  await shade.changeActions(false, x.c);
+  assert.deepEqual(Array.from(x.started), ['begin']);
+});
+
+test('on a shell without setActions the handler saves the servers only and never touches native', async () => {
+  const x = ctx({ native: {}, master: null, rows: [{ server: A, state: off }, { server: B, state: noRight }] });
+  const r = await shade.changeActions(true, x.c);
+  assert.equal(r.ok, true);
+  assert.deepEqual(Array.from(x.log), ['save:a:true']);
+  const none = ctx({ native: null, master: null, rows: [{ server: A, state: on }] });
+  await shade.changeActions(false, none.c);
+  assert.deepEqual(Array.from(none.log), ['save:a:false']);
+  // A disabled approvals-only row is still ignored.
+  const blocked = ctx({ native: {}, master: null, view: { disabled: true } });
+  assert.equal(await shade.changeActions(true, blocked.c), null);
+});
+
+// ---- source checks: the settings screen wiring ----
+
+const screen = () => readFileSync(new URL('../src/app/notifications.tsx', import.meta.url), 'utf8');
 
 test('the settings screen has one phone-wide row with the agreed title, not one per server', () => {
-  const source = readFileSync(new URL('../src/app/notifications.tsx', import.meta.url), 'utf8');
+  const source = screen();
   assert.equal((source.match(/Reply and approve from notifications for this phone/g) ?? []).length >= 1, true);
-  assert.doesNotMatch(source, /Approve from notifications"/);
   assert.doesNotMatch(source, /ShadeApprovalsSetting/);
   assert.match(source, /<NotificationActionsSetting servers=\{servers\} \/>/);
   assert.match(source, /actionsSwitchView\(/);
-  assert.match(source, /setActionsSwitch\(/);
+  assert.match(source, /approvalsOnlyView\(/);
   assert.match(source, /SHADE_PREVIEW_NOTE/);
+});
+
+test('the screen shows the row on Android whether or not the native shell has setActions', () => {
+  const source = screen();
+  assert.match(source, /Platform\.OS === 'android' \? <NotificationActionsSetting servers=\{servers\} \/> : null/);
+  assert.doesNotMatch(source, /pushNative\?\.setActions \? <NotificationActionsSetting/);
+});
+
+test('the screen hands the person\'s chosen value and the real native module to the handler', () => {
+  const source = screen();
+  assert.match(source, /await changeActions\(enabled, \{/);
+  assert.match(source, /native: pushNative,/);
+  assert.match(source, /master,/);
+  assert.match(source, /save: saveShadeApprovals,/);
+  // The old inline wiring (a no-op setNative, or the old value) is gone.
+  assert.doesNotMatch(source, /setNative:/);
+  assert.doesNotMatch(source, /changeActions\(master/);
+  assert.match(source, /onValueChange=\{change\}/);
 });

@@ -11,7 +11,7 @@ import { Sheet } from '../components/Sheet';
 import { Button, Card, Chip, ListGroup, ListRow, SectionHeader, Toggle } from '../components/ui';
 import { describeTestPush, enableNtfy, enableWebPush, openNtfySubscribe, sendTestPush, webPushServer, webPushState, type PushState } from '../lib/push';
 import { pushPrefsKey, quietHours, usePushPrefs } from '../lib/pushPrefs';
-import { actionsSwitchView, enableApprovals, loadShadeApprovals, saveShadeApprovals, setActionsSwitch, SHADE_PREVIEW_NOTE, shadeSavedNote, type ShadeApprovals } from '../lib/shadeApprovals';
+import { actionsSwitchView, approvalsOnlyView, changeActions, enableApprovals, loadShadeApprovals, saveShadeApprovals, SHADE_PREVIEW_NOTE, shadeSavedNote, type ShadeApprovals } from '../lib/shadeApprovals';
 import { homeChat, useApp } from '../lib/store';
 import { makeStyles, useTheme } from '../lib/themeContext';
 import type { Server } from '../lib/types';
@@ -24,7 +24,7 @@ export default function NotificationsScreen() {
   return (
     <Screen title="Notifications">
       {Platform.OS === 'web' ? <WebPushSettings servers={servers} /> : servers.map((srv) => pushNative ? <EncryptedPushSettings key={srv.id} server={srv} /> : <NtfySettings key={srv.id} server={srv} />)}
-      {Platform.OS === 'android' && pushNative?.setActions ? <NotificationActionsSetting servers={servers} /> : null}
+      {Platform.OS === 'android' ? <NotificationActionsSetting servers={servers} /> : null}
       {(Platform.OS === 'web' ? [webPushServer(servers)].filter((x): x is Server => !!x) : servers).map((srv) => (
         <QuietSettings key={srv.id} server={srv} named={servers.length > 1} />
       ))}
@@ -138,7 +138,10 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
     return () => { live = false; };
   }, [key]);
   const rows = servers.map((srv) => ({ server: srv, state: states[srv.id] ?? null }));
-  const view = actionsSwitchView(master, servers.map((srv) => ({ state: states[srv.id] ?? null, me: runtime[srv.id]?.me, failed: failed[srv.id] })));
+  const shadeServers = servers.map((srv) => ({ state: states[srv.id] ?? null, me: runtime[srv.id]?.me, failed: failed[srv.id] }));
+  // An older native shell has no phone-wide switch: keep the server approvals control, with a note.
+  const phoneSwitch = !!pushNative?.setActions;
+  const view = phoneSwitch ? actionsSwitchView(master, shadeServers) : approvalsOnlyView(shadeServers);
   const apply = (result: Awaited<ReturnType<typeof enableApprovals>>) => {
     setStates((cur) => Object.fromEntries(servers.map((srv, i) => [srv.id, result.states[i] ?? cur[srv.id] ?? null])));
     if (!result.ok) { setError(result.message); return; }
@@ -147,10 +150,16 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
     setSaved(changed >= 0 ? shadeSavedNote(rows[changed].state!, result.states[changed]!) : 'Saved.');
   };
   const change = async (enabled: boolean) => {
-    if (view.disabled || busy || master === null) return;
-    setBusy(true); setError(''); setSaved('');
-    const result = await setActionsSwitch(enabled, master, rows, { setNative: (v) => pushNative?.setActions?.(v), save: saveShadeApprovals });
-    if (result.ok) setMaster(enabled);
+    const result = await changeActions(enabled, {
+      view, busy,
+      master,
+      rows,
+      native: pushNative,
+      save: saveShadeApprovals,
+      begin: () => { setBusy(true); setError(''); setSaved(''); },
+    });
+    if (!result) return;
+    if (result.ok && phoneSwitch) setMaster(enabled);
     apply(result);
     setBusy(false);
   };
@@ -160,12 +169,13 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
     apply(await enableApprovals(rows, saveShadeApprovals));
     setBusy(false);
   };
+  const title = phoneSwitch ? 'Reply and approve from notifications for this phone' : 'Approve from notifications';
   return (
     <>
       <SectionHeader title="Notification actions" />
       <ListGroup>
-        <ListRow title="Reply and approve from notifications for this phone" subtitle={view.note}
-          right={<Toggle label="Reply and approve from notifications for this phone" value={view.value}
+        <ListRow title={title} subtitle={view.note}
+          right={<Toggle label={title} value={view.value}
             disabled={view.disabled || busy} onValueChange={change} />} />
       </ListGroup>
       {view.enableApprovals ? (

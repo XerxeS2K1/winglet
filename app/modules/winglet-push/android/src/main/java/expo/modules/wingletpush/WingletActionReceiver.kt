@@ -34,6 +34,12 @@ class WingletActionReceiver : BroadcastReceiver() {
   private fun run(context: Context, intent: Intent, action: String) {
     val scope = intent.getStringExtra(EXTRA_SCOPE) ?: return
     val tag = intent.getStringExtra(EXTRA_TAG) ?: ""
+    // Re-read the phone's switch now, before the key store or the network: this notification may
+    // have been posted before the switch went off, or before previews went private. Nothing is
+    // sent and no error is shown; the stale notification just goes away.
+    val policy = context.getSharedPreferences("winglet-push-policy", Context.MODE_PRIVATE)
+    if (!policy.getBoolean("actions", true)) return cancel(context, scope, tag)
+    if (policy.getBoolean("private", true)) return cancel(context, scope, tag)
     val entry = runCatching { PushStore.read(context, scope) }.getOrNull()
       ?: return fail(context, "Winglet's notification key is missing. Open the app and reconnect.")
     val base = entry.optString("server_url").trimEnd('/')

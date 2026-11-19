@@ -65,6 +65,15 @@ class WingletPushModule : Module() {
     val manager=context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     manager.activeNotifications.filter{it.tag?.startsWith(scope+":")==true}.forEach{manager.cancel(it.tag,it.id)}
   }
+  // The flag is written first. Switching off then takes down this app's notifications that still carry buttons (the confirmation has none, so it stays).
+  private fun saveActions(enabled: Boolean){
+    context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).edit().putBoolean("actions",enabled).apply()
+    if(!enabled){
+      val manager=context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+      manager.activeNotifications.filter{it.tag?.matches(Regex("^[a-f0-9]{64}:[a-f0-9]{64}$"))==true && it.notification.actions?.isNotEmpty()==true}
+        .forEach{manager.cancel(it.tag,it.id)}
+    }
+  }
   override fun definition()=ModuleDefinition {
     Name("WingletPush")
     // Not behind the unlock guard: they carry no user content and only open a system dialog.
@@ -72,7 +81,7 @@ class WingletPushModule : Module() {
     Function("requestBatteryUnrestricted"){ requestBatteryUnrestricted() }
     // The phone's one switch for Approve, Decline and Reply on notifications. Same policy file as "private"; it holds no user content.
     Function("setActions"){enabled:Boolean ->
-      context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).edit().putBoolean("actions",enabled).apply()
+      saveActions(enabled)
     }
     Function("actionsEnabled"){ context.getSharedPreferences("winglet-push-policy",Context.MODE_PRIVATE).getBoolean("actions",true) }
     Function("security"){isLocked:Boolean,privatePreviews:Boolean,foreground:Boolean,online:List<String>,pairs:List<Map<String,String>> ->
