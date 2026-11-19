@@ -259,7 +259,9 @@ test('the native service needs the master flag in canAct, so Approve, Decline an
   const canAct = source.match(/val canAct=([^\n]+)/)?.[1] ?? '';
   // The exact expression: a clause that defeats the flag (for example `actionsOn || true`) must fail here.
   assert.equal(canAct.trim(), '!deviceLocked && !PushVisibility.locked && !privatePolicy && actionsOn');
-  assert.match(source, /val actionsOn=getSharedPreferences\("winglet-push-policy",MODE_PRIVATE\)\.getBoolean\("actions",true\)/);
+  // The whole trimmed line, as canAct above: appending `|| true` to it must fail here, not only a prefix match.
+  const actionsOn = source.match(/^[ \t]*(val actionsOn=[^\n]*)$/m)?.[1] ?? '';
+  assert.equal(actionsOn.trim(), 'val actionsOn=getSharedPreferences("winglet-push-policy",MODE_PRIVATE).getBoolean("actions",true)');
   // Approve, Decline and Reply each depend on canAct.
   for (const name of ['approve', 'decline', 'reply']) assert.match(source, new RegExp(`val ${name}=[^\\n]*canAct`));
 });
@@ -283,6 +285,12 @@ test('a successful answer re-posts a generic, action-less notification that remo
   assert.match(confirm, /setTimeoutAfter\(4_000\)/);
   assert.doesNotMatch(confirm, /addAction|RemoteInput|setStyle|BigText/);
   for (const word of ['"Approved"', '"Declined"', '"Sent"']) assert.ok(source.includes(word), word);
+  // The old notification comes down first (right after the blank-tag check), so a dropped confirmation
+  // can never leave its buttons behind; blank-tag and notifications-disabled handling stay as they were.
+  assert.match(confirm, /if \(tag\.isBlank\(\)\) return\n(\s*\/\/[^\n]*\n)*\s*cancel\(context, scope, tag\)\n/);
+  assert.ok(confirm.search(/\n\s*cancel\(context, scope, tag\)\n/) < confirm.indexOf('manager.notify('), 'cancel comes before the confirmation is posted');
+  assert.match(confirm, /if \(!manager\.areNotificationsEnabled\(\)\) return cancel\(context, scope, tag\)\n/);
+  assert.equal((confirm.match(/manager\.notify\(/g) ?? []).length, 1);
   // The success path confirms; only the failure path cancels and shows the error.
   assert.match(source, /if \(message == null\) confirm\(context, scope, tag, action\) else \{\s*cancel\(context, scope, tag\)\s*fail\(context, message\)\s*\}/);
   // The confirmation never reads the typed reply or the command.
@@ -456,4 +464,115 @@ test('the screen hands the person\'s chosen value and the real native module to 
   assert.doesNotMatch(source, /setNative:/);
   assert.doesNotMatch(source, /changeActions\(master/);
   assert.match(source, /onValueChange=\{change\}/);
+});
+
+// ---- the real row, rendered: the shown switch value and the in-flight guard ----
+// The row (NotificationActionsSetting) is compiled from the screen's own source and rendered with
+// fake useState / useRef / useEffect, the same way tests/routineHistoryScreen.test.ts does it.
+
+const fallback: any = new Proxy(function () {}, { get: (_t, key) => key === 'then' ? undefined : fallback, apply: () => fallback });
+const sameDeps = (a: any[], b: any[]) => !!a && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
+
+function rowHarness(opts: { gate?: boolean } = {}) {
+  let cursor = 0;
+  const hooks: any[] = [];
+  const effects: (() => void)[] = [];
+  const log: string[] = [];
+  const release: (() => void)[] = [];
+  let shown = true; // the phone's own flag, as the fake native module keeps it
+  const server = { id: 'a', token: 't', bot: { title: 'Home' } };
+  const native = {
+    setActions: (v: boolean) => { shown = v; log.push(`native:${v}`); },
+    actionsEnabled: () => shown,
+  };
+  const server_state = { shade_approvals: true, epoch: 1, can_enable: true };
+  const store = { runtime: { a: { me: { role: 'owner', verified: true } } } };
+  const modules: Record<string, any> = {
+    react: {
+      useState: (initial: any) => {
+        const i = cursor++; if (!(i in hooks)) hooks[i] = initial;
+        return [hooks[i], (v: any) => { hooks[i] = typeof v === 'function' ? v(hooks[i]) : v; }];
+      },
+      useRef: (initial: any) => { const i = cursor++; return hooks[i] ??= { current: initial }; },
+      useEffect: (callback: any, deps: any[]) => {
+        const i = cursor++; const old = hooks[i];
+        if (!old || !sameDeps(old.deps, deps)) { hooks[i] = { deps, cleanup: old?.cleanup }; effects.push(() => { old?.cleanup?.(); hooks[i].cleanup = callback(); }); }
+      },
+    },
+    'react/jsx-runtime': { jsx: (type: any, props: any) => ({ type, props }), jsxs: (type: any, props: any) => ({ type, props }), Fragment: 'Fragment' },
+    'react-native': { Platform: { OS: 'android' }, Text: 'Text', View: 'View' },
+    '../components/ui': { Toggle: 'Toggle', Button: 'Button', ListGroup: 'ListGroup', ListRow: 'ListRow', SectionHeader: 'SectionHeader' },
+    '../features/encrypted-push/native': { pushNative: native },
+    '../lib/store': { useApp: (select: any) => select(store), homeChat: () => null },
+    '../lib/themeContext': { makeStyles: () => () => fallback, useTheme: () => fallback },
+    '../lib/shadeApprovals': {
+      ...shade,
+      loadShadeApprovals: async () => server_state,
+      // A save that waits for the test to let it finish, so a second call can arrive meanwhile.
+      saveShadeApprovals: async (srv: any, v: boolean) => {
+        log.push(`save:${srv.id}:${v}`);
+        if (opts.gate) await new Promise<void>((resolve) => { release.push(resolve); });
+        return { shade_approvals: v, epoch: 2, can_enable: true };
+      },
+    },
+  };
+  const exports: any = {};
+  const source = readFileSync(new URL('../src/app/notifications.tsx', import.meta.url), 'utf8') + '\nexport { NotificationActionsSetting };';
+  vm.runInNewContext(ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText, { exports, require: (id: string) => modules[id] ?? fallback });
+  const render = () => { cursor = 0; const tree = exports.NotificationActionsSetting({ servers: [server] }); while (effects.length) effects.shift()!(); return tree; };
+  const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+  const find = (tree: any, type: string): any => {
+    if (Array.isArray(tree)) { for (const t of tree) { const f = find(t, type); if (f) return f; } return undefined; }
+    if (!tree || typeof tree !== 'object') return undefined;
+    return tree.type === type ? tree : find(tree.props?.children, type) ?? find(tree.props?.right, type);
+  };
+  const toggle = (tree: any) => find(tree, 'Toggle') ?? find(find(tree, 'ListRow')?.props?.right, 'Toggle');
+  return { render, settle, toggle, log, release };
+}
+
+async function loaded(h: ReturnType<typeof rowHarness>) {
+  h.render(); await h.settle();   // first render starts the reads, the effect fills the state
+  return h.render();
+}
+
+test('the row shows the switch the person chose once the change is saved', async () => {
+  const h = rowHarness();
+  const first = await loaded(h);
+  assert.equal(h.toggle(first).props.value, true);
+  assert.equal(h.toggle(first).props.disabled, false);
+  await h.toggle(first).props.onValueChange(false);
+  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false']);
+  const after = h.render();
+  assert.equal(h.toggle(after).props.value, false, 'the switch stays where the person put it');
+  await h.toggle(after).props.onValueChange(true);
+  assert.equal(h.toggle(h.render()).props.value, true);
+});
+
+test('a second activation before the screen redraws is ignored: one native write, one server walk', async () => {
+  const h = rowHarness({ gate: true });
+  const first = await loaded(h);
+  const change = h.toggle(first).props.onValueChange; // the same closure both taps would hit: no re-render between them
+  const calls: Promise<unknown>[] = [];
+  try {
+    calls.push(change(false));
+    calls.push(change(false));
+    await h.settle();
+    assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false'], 'the second call must not write or walk again');
+  } finally {
+    for (let i = 0; i < 5; i++) { h.release.splice(0).forEach((f) => f()); await h.settle(); }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false'], 'still one write and one walk');
+  // Once the first change is over the row accepts a new one.
+  const again: Promise<unknown>[] = [];
+  try {
+    again.push(h.toggle(h.render()).props.onValueChange(true));
+    await h.settle();
+  } finally {
+    for (let i = 0; i < 5; i++) { h.release.splice(0).forEach((f) => f()); await h.settle(); }
+  }
+  await Promise.all(again);
+  assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false', 'native:true', 'save:a:true']);
 });

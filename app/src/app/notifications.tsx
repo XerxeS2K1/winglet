@@ -1,7 +1,7 @@
 import { EncryptedPushSettings } from '../features/encrypted-push/Settings';
 import { pushNative } from '../features/encrypted-push/native';
 import * as Clipboard from 'expo-clipboard';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Platform, Text, View } from 'react-native';
 import { ScrollView } from 'react-native-gesture-handler';
 import { AgentFace } from '../components/AgentFace';
@@ -123,6 +123,9 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
   const [states, setStates] = useState<Record<string, ShadeApprovals | null>>({});
   const [failed, setFailed] = useState<Record<string, boolean>>({});
   const [busy, setBusy] = useState(false);
+  // The in-flight guard is a ref, set at once: state is only read at the next render, so a second tap
+  // in between would still see "not busy". `busy` (state) is only what the row shows.
+  const inFlight = useRef(false);
   const [error, setError] = useState('');
   const [saved, setSaved] = useState('');
   const key = servers.map((srv) => `${srv.id}:${srv.token}`).join('|');
@@ -150,18 +153,23 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
     setSaved(changed >= 0 ? shadeSavedNote(rows[changed].state!, result.states[changed]!) : 'Saved.');
   };
   const change = async (enabled: boolean) => {
-    const result = await changeActions(enabled, {
-      view, busy,
-      master,
-      rows,
-      native: pushNative,
-      save: saveShadeApprovals,
-      begin: () => { setBusy(true); setError(''); setSaved(''); },
-    });
-    if (!result) return;
-    if (result.ok && phoneSwitch) setMaster(enabled);
-    apply(result);
-    setBusy(false);
+    let started = false;
+    try {
+      const result = await changeActions(enabled, {
+        view, busy: inFlight.current,
+        master,
+        rows,
+        native: pushNative,
+        save: saveShadeApprovals,
+        begin: () => { started = true; inFlight.current = true; setBusy(true); setError(''); setSaved(''); },
+      });
+      if (!result) return;
+      if (result.ok && phoneSwitch) setMaster(enabled);
+      apply(result);
+    } finally {
+      // Only the call that started the change lets go; an ignored call must not free the guard.
+      if (started) { inFlight.current = false; setBusy(false); }
+    }
   };
   const turnOnApprovals = async () => {
     if (busy) return;

@@ -82,6 +82,9 @@ class WingletActionReceiver : BroadcastReceiver() {
    * removes itself. It never carries the command or the reply text. */
   private fun confirm(context: Context, scope: String, tag: String, action: String) {
     if (tag.isBlank()) return
+    // Take the old notification down first: if the confirmation below is dropped (for example the
+    // Replies channel is blocked), the old buttons must not stay behind.
+    cancel(context, scope, tag)
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (!manager.areNotificationsEnabled()) return cancel(context, scope, tag)
     PushChannels.ensure(manager)
