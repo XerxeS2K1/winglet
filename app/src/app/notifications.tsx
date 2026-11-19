@@ -172,10 +172,15 @@ function NotificationActionsSetting({ servers }: { servers: Server[] }) {
     }
   };
   const turnOnApprovals = async () => {
-    if (busy) return;
+    // Same ref guard as the switch: it is set at once, so a second press before the redraw is ignored.
+    if (inFlight.current) return;
+    inFlight.current = true;
     setBusy(true); setError(''); setSaved('');
-    apply(await enableApprovals(rows, saveShadeApprovals));
-    setBusy(false);
+    try {
+      apply(await enableApprovals(rows, saveShadeApprovals));
+    } finally {
+      inFlight.current = false; setBusy(false);
+    }
   };
   const title = phoneSwitch ? 'Reply and approve from notifications for this phone' : 'Approve from notifications';
   return (

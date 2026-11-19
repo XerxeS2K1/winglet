@@ -473,7 +473,7 @@ test('the screen hands the person\'s chosen value and the real native module to 
 const fallback: any = new Proxy(function () {}, { get: (_t, key) => key === 'then' ? undefined : fallback, apply: () => fallback });
 const sameDeps = (a: any[], b: any[]) => !!a && a.length === b.length && a.every((v, i) => Object.is(v, b[i]));
 
-function rowHarness(opts: { gate?: boolean } = {}) {
+function rowHarness(opts: { gate?: boolean; serverOn?: boolean; failSave?: boolean } = {}) {
   let cursor = 0;
   const hooks: any[] = [];
   const effects: (() => void)[] = [];
@@ -485,7 +485,7 @@ function rowHarness(opts: { gate?: boolean } = {}) {
     setActions: (v: boolean) => { shown = v; log.push(`native:${v}`); },
     actionsEnabled: () => shown,
   };
-  const server_state = { shade_approvals: true, epoch: 1, can_enable: true };
+  const server_state = { shade_approvals: opts.serverOn ?? true, epoch: 1, can_enable: true };
   const store = { runtime: { a: { me: { role: 'owner', verified: true } } } };
   const modules: Record<string, any> = {
     react: {
@@ -511,6 +511,7 @@ function rowHarness(opts: { gate?: boolean } = {}) {
       // A save that waits for the test to let it finish, so a second call can arrive meanwhile.
       saveShadeApprovals: async (srv: any, v: boolean) => {
         log.push(`save:${srv.id}:${v}`);
+        if (opts.failSave) throw new Error('server down');
         if (opts.gate) await new Promise<void>((resolve) => { release.push(resolve); });
         return { shade_approvals: v, epoch: 2, can_enable: true };
       },
@@ -529,7 +530,8 @@ function rowHarness(opts: { gate?: boolean } = {}) {
     return tree.type === type ? tree : find(tree.props?.children, type) ?? find(tree.props?.right, type);
   };
   const toggle = (tree: any) => find(tree, 'Toggle') ?? find(find(tree, 'ListRow')?.props?.right, 'Toggle');
-  return { render, settle, toggle, log, release };
+  const button = (tree: any) => find(tree, 'Button');
+  return { render, settle, toggle, button, log, release };
 }
 
 async function loaded(h: ReturnType<typeof rowHarness>) {
@@ -575,4 +577,32 @@ test('a second activation before the screen redraws is ignored: one native write
   }
   await Promise.all(again);
   assert.deepEqual(Array.from(h.log), ['native:false', 'save:a:false', 'native:true', 'save:a:true']);
+});
+
+test('Turn on approvals: a second press before the screen redraws is ignored, and the button frees itself after a failure', async () => {
+  const h = rowHarness({ gate: true, serverOn: false });
+  const first = await loaded(h);
+  const press = h.button(first).props.onPress; // one closure, no re-render between the two presses
+  assert.equal(typeof press, 'function', 'owner with the server flag off sees the button');
+  const calls: Promise<unknown>[] = [];
+  try {
+    calls.push(press());
+    calls.push(press());
+    await h.settle();
+    assert.deepEqual(Array.from(h.log), ['save:a:true'], 'the second press must not start another server walk');
+  } finally {
+    for (let i = 0; i < 5; i++) { h.release.splice(0).forEach((f) => f()); await h.settle(); }
+  }
+  await Promise.all(calls);
+  assert.deepEqual(Array.from(h.log), ['save:a:true']);
+});
+
+test('Turn on approvals: a throwing save does not leave the row stuck busy', async () => {
+  const h = rowHarness({ serverOn: false, failSave: true });
+  const first = await loaded(h);
+  await h.button(first).props.onPress().catch(() => undefined);
+  const after = h.render();
+  assert.equal(h.toggle(after).props.disabled, false, 'the switch is usable again');
+  await h.button(after).props.onPress().catch(() => undefined);
+  assert.equal(Array.from(h.log).filter((x) => x === 'save:a:true').length, 2, 'a later press works');
 });
