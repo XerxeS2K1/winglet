@@ -776,15 +776,18 @@ class WingletAdapter(BasePlatformAdapter):
         self._title_followers[chat_id] = task
         task.add_done_callback(lambda _t, c=chat_id: self._title_followers.pop(c, None))
 
-    async def _follow_hermes_title(self, chat_id: str, *, wait: float = 1.5, patience: float = 45.0) -> None:
+    async def _follow_hermes_title(self, chat_id: str, *, wait: float = 1.5, patience: float = 45.0,
+                                   slow_wait: float = 5.0, ceiling: float = 600.0) -> None:
         """Copy Hermes's title for this chat's session into the chat as it improves.
 
         Hermes writes a quick title from the first message as the turn starts, then swaps in a better
-        one from the model a few seconds later. Stop once it is the model's (or the user's) title.
+        one from the model a few seconds later, but a first turn full of tool calls can delay that. So look
+        quickly for ``patience`` seconds, then slowly until ``ceiling``. Stop once it is the model's (or the
+        user's) title.
         """
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + patience
-        while self._running and loop.time() < deadline:
+        started = loop.time()
+        while self._running and loop.time() < started + ceiling:
             hub = self._hub
             if hub is None or not hub.can_auto_title(chat_id):
                 return
@@ -797,7 +800,20 @@ class WingletAdapter(BasePlatformAdapter):
             except Exception:
                 logger.debug("[%s] could not read Hermes's title for a chat", self.name, exc_info=True)
                 return
-            await asyncio.sleep(wait)
+            await asyncio.sleep(wait if loop.time() < started + patience else slow_wait)
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: Any) -> None:
+        """One last look when a turn ends, so a title written after the follower stopped still lands."""
+        chat_id = getattr(getattr(event, "source", None), "chat_id", None)
+        hub = self._hub
+        if not chat_id or hub is None or not hub.can_auto_title(chat_id):
+            return
+        try:
+            title, _source = await asyncio.to_thread(self._hermes_title, chat_id)
+            if title:
+                await hub.auto_title_chat(chat_id, title)
+        except Exception:
+            logger.debug("[%s] could not read Hermes's title when a turn ended", self.name, exc_info=True)
 
     def _hermes_title(self, chat_id: str) -> tuple:
         """(title, source) Hermes holds for this chat's session, or (None, None) when it has none yet."""
