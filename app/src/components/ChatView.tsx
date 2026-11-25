@@ -110,6 +110,7 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
   const [, forceTick] = useState(0);
   const [headerH, setHeaderH] = useState(insets.top + 64);
   const [composerH, setComposerH] = useState(80);
+  const [boxStackH, setBoxStackH] = useState(80);
   const [menu, setMenu] = useState(false);
   const [selected, setSelected] = useState<Message | null>(null);
   const [quoteSource, setQuoteSource] = useState<string | null>(null);
@@ -266,9 +267,9 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
       </View>
       {landing?.action ? <View style={{ position: 'absolute', bottom: 0, left: 16, right: 16, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) }}
         onLayout={(e) => setComposerH(e.nativeEvent.layout.height)}>{landing.action}</View> : <Composer server={server} chatId={chatId} busy={typing} bottomInset={keyboardVisible ? 0 : embedded ? 12 : insets.bottom} target={target}
-        onHeight={setComposerH} placeholder={`Message ${server.bot.title}`}
+        onHeight={setComposerH} onBoxStackHeight={setBoxStackH} placeholder={`Message ${server.bot.title}`}
         prepareChat={landing?.prepareChat} onFocusChange={setInputFocused} onBeforeSend={beginTurn} />}
-      {!landing?.action && width > 0 ? <ChatPet key={server.id} server={server} active={committed} width={width} composerHeight={composerH}
+      {!landing?.action && width > 0 ? <ChatPet key={server.id} server={server} active={committed} width={width} composerHeight={boxStackH}
         dockHeight={dockHeight} dockOffset={dockOffset} frame={petFrame} sent={sendCount} perched={!landing} /> : null}
       {moreThanOneBot && !embedded ? botPicker.sheet : null}
       <ChatMenu server={server} chatId={chatId} title={title} visible={menu} onClose={() => setMenu(false)}
