@@ -161,3 +161,38 @@ def test_hermes_session_database_offers_the_title_calls_we_read(tmp_path):
     assert (db.get_session_title("s1"), db.get_session_title_source("s1")) == ("can you check the", "derived")
     assert db.set_auto_title("s1", "Check the server logs", source="llm")
     assert (db.get_session_title("s1"), db.get_session_title_source("s1")) == ("Check the server logs", "llm")
+
+
+async def test_a_model_title_that_arrives_late_still_reaches_the_chat(adapter):
+    """A first turn full of tool calls can outlast the quick follow window; the model's title still lands."""
+    hub = adapter._hub
+    chat = new_chat(hub)
+    loop = asyncio.get_running_loop()
+    late = loop.time() + 0.15
+
+    def hermes_title(chat_id):
+        return ("Cat flap curfew not setting", "llm") if loop.time() > late else ("the cat flap curfew", "derived")
+
+    adapter._hermes_title = hermes_title
+    adapter._running = True
+    await adapter._follow_hermes_title(chat, wait=0.01, patience=0.05, slow_wait=0.01, ceiling=5)
+    assert title_of(hub, chat) == "Cat flap curfew not setting"
+
+
+async def test_the_follower_gives_up_after_its_ceiling(adapter):
+    hub = adapter._hub
+    chat = new_chat(hub)
+    adapter._hermes_title = lambda chat_id: ("the cat flap curfew", "derived")
+    adapter._running = True
+    await asyncio.wait_for(adapter._follow_hermes_title(chat, wait=0.01, patience=0.02, slow_wait=0.01, ceiling=0.2), 3)
+    assert title_of(hub, chat) == "the cat flap curfew"
+
+
+async def test_finishing_a_turn_catches_up_a_title_the_follower_missed(adapter):
+    hub = adapter._hub
+    chat = new_chat(hub)
+    adapter._hermes_title = lambda chat_id: ("Cat flap curfew not setting", "llm")
+    adapter._running = True
+    adapter._loop = asyncio.get_running_loop()
+    await adapter.on_processing_complete(SimpleNamespace(source=SimpleNamespace(chat_id=chat)), None)
+    assert title_of(hub, chat) == "Cat flap curfew not setting"
