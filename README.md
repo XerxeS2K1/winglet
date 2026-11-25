@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.12.5](docs/releases/v0.12.5.md):** fixes chats staying on "New chat" when their automatic name arrived late. Plugin change only; not reproduced on a phone.
+> **New in [v0.12.6](docs/releases/v0.12.6.md):** the pet no longer jumps up and down when the task card or the Steer / Queue / Interrupt chips appear. Not yet tried on a phone.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 

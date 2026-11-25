@@ -29,6 +29,7 @@ import { ModelButton } from './ModelSheet';
 import { AudioLines, ArrowUp, Camera, FileText, ImagePlus, Mic, Plus, RotateCcw, X } from './icons';
 import { Sheet, SheetAction } from './Sheet';
 import { TaskProgress } from './TaskProgress';
+import { boxStackHeight } from '../lib/petPerch';
 import { Chip, Tap, Toggle } from './ui';
 
 const MIN_INPUT = 41;
@@ -44,6 +45,8 @@ type Props = {
   bottomInset: number;
   target: RefObject<View | null>;
   onHeight: (h: number) => void;
+  /** The height of just the message box and the padding under it, which a pet can sit on without moving when extras appear above. */
+  onBoxStackHeight?: (h: number) => void;
   placeholder: string;
   /** Drawn on the top edge of the box, at the left: the chat's pet perches here. */
   perch?: ReactNode;
@@ -61,7 +64,7 @@ export function focusComposer(serverId: string, chatId: string) {
 }
 
 /** Shared message box: text above attachment, model and voice/send controls. */
-export function Composer({ server, chatId, busy, bottomInset, target, onHeight, placeholder, perch, onSent, prepareChat, onBeforeSend, onFocusChange }: Props) {
+export function Composer({ server, chatId, busy, bottomInset, target, onHeight, onBoxStackHeight, placeholder, perch, onSent, prepareChat, onBeforeSend, onFocusChange }: Props) {
   const t = useTheme();
   const s = useStyles();
   const key = draftKey(server.id, chatId);
@@ -246,7 +249,7 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
         </Animated.View>
       ) : null}
       {!online ? <Text style={s.offlineNote}>Offline. Messages you send are queued and go out when {server.bot.title} is back.</Text> : null}
-      <View onLayout={(e) => setBoxY(e.nativeEvent.layout.y)}>
+      <View onLayout={(e) => { setBoxY(e.nativeEvent.layout.y); onBoxStackHeight?.(boxStackHeight(e.nativeEvent.layout.height, bottomInset)); }}>
       <Glass target={target} style={s.box} intensity={50}>
         <FallbackStrip server={server} chatId={chatId} />
         {replyTo ? (
