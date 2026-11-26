@@ -1,5 +1,7 @@
 """Real-Hermes regression: regeneration must never rewind a newly arrived exchange."""
 from types import SimpleNamespace
+import importlib.util
+
 import pytest
 
 pytest.importorskip("gateway.session", reason="needs the real Hermes checkout")
@@ -10,14 +12,46 @@ from hermes_state import SessionDB
 from plugin.branching import BranchRefused, HermesBranchBridge
 
 
+class _StorageSeed:
+    """The few session-database calls these tests make, over Hermes's storage interface."""
+
+    def __init__(self, persistence):
+        self.p = persistence
+
+    def create_session(self, session_id, source):
+        from persistence.conversation.sessions import NewSession
+        self.p.sessions.create(NewSession(session_id=session_id, source=source))
+
+    def append_message(self, session_id, role, content, platform_message_id=None):
+        from persistence.conversation.messages import NewMessage
+        self.p.messages.append(session_id, NewMessage(role=role, content=content,
+                                                      platform_message_id=platform_message_id))
+
+    @property
+    def rewind_user_turn(self):
+        return self.p.messages.rewind_user_turn
+
+    def __setattr__(self, name, value):
+        if name == "rewind_user_turn":
+            self.p.messages.rewind_user_turn = value
+        else:
+            object.__setattr__(self, name, value)
+
+    def close(self):
+        pass
+
+
 @pytest.fixture
 def real_bridge(tmp_path, monkeypatch):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
-    db = SessionDB(db_path=tmp_path / "state.db")
     store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
-    store._db = db
+    if importlib.util.find_spec("persistence_assembly") is not None:
+        db = _StorageSeed(store.persistence)  # Hermes with the storage interface: no session database
+    else:
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
     db.create_session("parent", source="telegram")
     db.append_message("parent", "user", "one", platform_message_id="u1")
     db.append_message("parent", "assistant", "first")
