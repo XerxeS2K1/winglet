@@ -196,3 +196,33 @@ async def test_finishing_a_turn_catches_up_a_title_the_follower_missed(adapter):
     adapter._loop = asyncio.get_running_loop()
     await adapter.on_processing_complete(SimpleNamespace(source=SimpleNamespace(chat_id=chat)), None)
     assert title_of(hub, chat) == "Cat flap curfew not setting"
+
+
+async def test_reading_hermes_title_works_with_the_newer_storage_interface(adapter):
+    from enum import Enum
+
+    class Source(Enum):
+        LLM = "llm"
+
+    class Sessions:
+        def get_title(self, sid):
+            return {"s1": "KW phone tool access"}.get(sid)
+
+        def get_title_source(self, sid):
+            return Source.LLM
+
+    class Store:
+        # Newer Hermes has no _db_for_session_id and leaves _db unset; titles live behind a persistence handle.
+        _db = None
+
+        def peek_session_id(self, key):
+            return {"the-key": "s1"}.get(key)
+
+        def _persistence_for_session_id(self, sid):
+            return SimpleNamespace(sessions=Sessions())
+
+    adapter.gateway_runner = SimpleNamespace(session_store=Store())
+    adapter._session_key = lambda chat_id: "the-key"
+    assert adapter._hermes_title("c-x") == ("KW phone tool access", "llm")
+    adapter._session_key = lambda chat_id: "other-key"
+    assert adapter._hermes_title("c-x") == (None, None)

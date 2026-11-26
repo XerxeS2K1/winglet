@@ -825,13 +825,23 @@ class WingletAdapter(BasePlatformAdapter):
         session_id = store.peek_session_id(key)
         if not session_id:
             return None, None
+        title, source = None, None
+        # Newer Hermes keeps titles behind a storage interface the session store hands out per session.
+        handle_for = getattr(store, "_persistence_for_session_id", None)
+        sessions = getattr(handle_for(session_id), "sessions", None) if callable(handle_for) else None
+        if sessions is not None and callable(getattr(sessions, "get_title", None)):
+            title = sessions.get_title(session_id)
+            source_of = getattr(sessions, "get_title_source", None)
+            source = source_of(session_id) if callable(source_of) else None
+            return title, getattr(source, "value", source)
+        # Older Hermes: a session database with the same two reads.
         getter = getattr(store, "_db_for_session_id", None)
         db = getter(session_id) if callable(getter) else getattr(store, "_db", None)
         if db is None or not callable(getattr(db, "get_session_title", None)):
             return None, None
         title = db.get_session_title(session_id)
         source_of = getattr(db, "get_session_title_source", None)
-        return title, (source_of(session_id) if callable(source_of) else None)
+        return title, getattr(source_of(session_id), "value", source_of(session_id)) if callable(source_of) else None
 
     def _session_key(self, chat_id: str) -> Optional[str]:
         """The key Hermes files this chat's session under, or None outside a gateway."""
