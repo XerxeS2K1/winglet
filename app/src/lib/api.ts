@@ -221,8 +221,20 @@ export function wsUrl(server: Server): string {
   return server.wsAuth ? base : `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(server.token)}`;
 }
 
+/** Whether `path` is a path on the paired server and nothing else. It has to start with one '/', so it can't carry
+ * its own authority: '@host/x', '%2f@host/x', '//host/x' and '/\\host/x' are all refused. Tab, newline and backslash
+ * are refused outright because a URL parser strips or rewrites them, which can turn '/\t/host' into '//host'. */
+function isServerPath(server: Server, path: string): boolean {
+  if (!path.startsWith('/') || path.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(path)) return false;
+  try { return new URL(path, server.url).origin === new URL(server.url).origin; } catch { return false; }
+}
+
+/** The address an image or file is loaded from. A path on this server gets the device token only when the link has no
+ * signature (older servers). Anything else that isn't a full http(s) address is refused with '' (loads nothing), so
+ * a crafted link can never move the token to another host. */
 export function mediaUrl(server: Server, path: string): string {
   if (/^https?:\/\//.test(path)) return path;
+  if (!isServerPath(server, path)) return '';
   // Current servers sign each media link; only older links need the device token.
   if (/[?&]sig=/.test(path)) return `${server.url}${path}`;
   const sep = path.includes('?') ? '&' : '?';
