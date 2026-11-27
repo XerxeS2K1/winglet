@@ -1,6 +1,6 @@
 {
   "name": "winglet",
-  "version": "0.12.10",
+  "version": "0.12.11",
   "main": "expo-router/entry",
   "dependencies": {
     "@expo-google-fonts/inter": "^0.4.2",
@@ -10,7 +10,7 @@
     "@noble/hashes": "^2.4.0",
     "@shopify/flash-list": "^2.0.2",
     "decode-uri-component": "file:vendor/decode-uri-component",
-    "expo": "~57.0.31",
+    "expo": "~57.0.34",
     "expo-audio": "~57.0.5",
     "expo-blur": "~57.0.3",
     "expo-build-properties": "~57.0.22",
