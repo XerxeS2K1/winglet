@@ -1,4 +1,4 @@
-import { api, fetchInfo, normalizeUrl, pair, parsePairLink, verifyDevice } from './api';
+import { api, assertSecureAddress, fetchInfo, normalizeUrl, pair, parsePairLink, verifyDevice } from './api';
 import type { Device, Role, Server } from './types';
 
 type PairingStore = {
@@ -14,6 +14,7 @@ export async function connectPairing(input: string, code: string, name: string, 
   if (input.includes('#') && !link) throw new Error('Paste the whole, unchanged Winglet pairing link.');
   const url = link?.url ?? normalizeUrl(input), pairingCode = link?.code ?? code;
   if (!url || !pairingCode) throw new Error('Enter a pairing link, or your server address and pairing code.');
+  assertSecureAddress(url);
   const info = await fetchInfo(url);
   const existing = store.servers.find((s) => !s.parent && (s.id === info.server_id || normalizeUrl(s.url) === url));
   let server: Server;

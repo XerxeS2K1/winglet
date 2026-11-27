@@ -8,7 +8,7 @@ function harness(existing: any[] = []) {
   const calls: any[] = [], saved: any[] = [], updated: any[] = [];
   const api = {
     parsePairLink: (text: string) => text.includes('#pair=') ? { url: server.url, code: 'ABCD2345', ...(text.includes('&fp=') ? { fp: 'f'.repeat(22) } : {}) } : null,
-    normalizeUrl: (s: string) => s, fetchInfo: async () => ({ server_id: 's' }),
+    normalizeUrl: (s: string) => s, assertSecureAddress: () => {}, fetchInfo: async () => ({ server_id: 's' }),
     pair: async (...args: any[]) => { calls.push(['pair', ...args]); return { ...server, fingerprint: args[3] }; },
     verifyDevice: async (...args: any[]) => { calls.push(['verify', ...args]); return { ...args[0], fingerprint: args[2] }; },
     api: async () => ({ device: { role: 'owner', verified: true } }),

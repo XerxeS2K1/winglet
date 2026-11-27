@@ -11,11 +11,43 @@ export class ApiError extends Error {
   }
 }
 
+/** Hosts where plain http is acceptable, because the path is local to the user or already encrypted: loopback,
+ * private LAN ranges, link-local, Tailscale (100.64.0.0/10 and *.ts.net) and .local names. `host` is a URL hostname. */
+export function isLocalHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const [a, b] = [Number(v4[1]), Number(v4[2])];
+    return a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168)
+      || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254);
+  }
+  if (h.startsWith('[')) {
+    const first = parseInt(h.slice(1).split(':')[0] || '0', 16);
+    return h === '[::1]' || (first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80;
+  }
+  return h === 'localhost' || h.endsWith('.localhost') || h.endsWith('.local') || h.endsWith('.ts.net');
+}
+
+function hostOf(url: string): string {
+  try { return new URL(url).hostname; } catch { return ''; }
+}
+
+/** What the user typed, as an address. Without a scheme it is https, unless the host is local or on Tailscale (see
+ * `isLocalHost`), where http is kept. A typed scheme is left alone: `assertSecureAddress` judges it. */
 export function normalizeUrl(input: string): string {
   let url = input.trim();
   if (!url) return url;
-  if (!/^https?:\/\//i.test(url)) url = `http://${url}`;
+  if (!/^https?:\/\//i.test(url)) url = `${isLocalHost(hostOf(`http://${url}`)) ? 'http' : 'https'}://${url}`;
   return url.replace(/\/+$/, '');
+}
+
+/** Refuse to send a pairing code or device token over plain http to a host that isn't local or on Tailscale: anyone
+ * on the path could read it. Called before the first request to an address the user has just chosen; servers already
+ * paired are not checked, so they keep working. */
+export function assertSecureAddress(url: string): void {
+  if (!/^http:\/\//i.test(url.trim()) || isLocalHost(hostOf(url.trim()))) return;
+  throw new ApiError("That address isn't encrypted (http), so your pairing code and sign-in could be read on the way. " +
+    'Use an https:// address, or one on your own network or Tailscale.', 0);
 }
 
 export function normalizeCode(code: string): string {
@@ -126,6 +158,7 @@ const keyOf = (server: Pick<Server, 'id' | 'parent'>) => signKeyName(server.pare
 
 export async function pair(url: string, code: string, deviceName: string, fp?: string): Promise<Server> {
   const base = normalizeUrl(url);
+  assertSecureAddress(base);
   await fetchInfo(base);
   const key = await serverKey(base, fp);
   const details = { code: normalizeCode(code), device_name: deviceName, platform: Platform.OS };
@@ -172,6 +205,7 @@ export async function moveServer(server: Server, url: string): Promise<Server> {
   if (!server.fingerprint) {
     throw new ApiError("Verify this phone first: scan a new pairing code from your server or another owner's phone.", 0);
   }
+  assertSecureAddress(url);
   const info = await fetchInfo(url);
   if (info.server_id !== server.id) throw new ApiError(`That address is a different Winglet server, not ${server.bot.title}.`, 0);
   const key = await serverKey(url, server.fingerprint);
@@ -221,8 +255,20 @@ export function wsUrl(server: Server): string {
   return server.wsAuth ? base : `${base}${base.includes('?') ? '&' : '?'}token=${encodeURIComponent(server.token)}`;
 }
 
+/** Whether `path` is a path on the paired server and nothing else. It has to start with one '/', so it can't carry
+ * its own authority: '@host/x', '%2f@host/x', '//host/x' and '/\\host/x' are all refused. Tab, newline and backslash
+ * are refused outright because a URL parser strips or rewrites them, which can turn '/\t/host' into '//host'. */
+function isServerPath(server: Server, path: string): boolean {
+  if (!path.startsWith('/') || path.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(path)) return false;
+  try { return new URL(path, server.url).origin === new URL(server.url).origin; } catch { return false; }
+}
+
+/** The address an image or file is loaded from. A path on this server gets the device token only when the link has no
+ * signature (older servers). Anything else that isn't a full http(s) address is refused with '' (loads nothing), so
+ * a crafted link can never move the token to another host. */
 export function mediaUrl(server: Server, path: string): string {
   if (/^https?:\/\//.test(path)) return path;
+  if (!isServerPath(server, path)) return '';
   // Current servers sign each media link; only older links need the device token.
   if (/[?&]sig=/.test(path)) return `${server.url}${path}`;
   const sep = path.includes('?') ? '&' : '?';

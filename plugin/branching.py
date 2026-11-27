@@ -916,6 +916,15 @@ class BranchService:
                                       in_place=True)
                 if not plan.prompt:
                     raise BranchRefused("unsupported", "There is no prompt to resend.")
+                # The prompt goes back to Hermes without passing Hub.user_message, so apply its command gates
+                # here, before anything is rewound. This route carries no signature, so a signed-only command
+                # (/yolo, /approvals) is never re-sent from it: send it again from the app, where it is checked.
+                if device.get("role") == "owner" and self.hub._signed_only_command(plan.send_text):
+                    raise BranchRefused("unsupported", "That command needs a signed request from the app, so it can't "
+                                        "be regenerated. Send it again from the app.")
+                refused = self.hub._refused_command(device, plan.send_text)
+                if refused:
+                    raise BranchRefused("unsupported", f"{refused} is for owners only, so it can't be regenerated.")
                 source = self.bridge.source_for(chat, device)
                 await self.bridge.rewind_latest(chat_id, plan.send_text, source,
                                                 expected_row_index=plan.user_row_index, expected_rows=snap.rows)
