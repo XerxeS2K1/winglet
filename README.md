@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.12.10](docs/releases/v0.12.10.md):** a security release: a crafted image link can no longer carry your sign-in token to another host, pairing refuses plain http addresses that aren't local or on Tailscale, and regenerate applies the same command checks as a normal message.
+> **New in [v0.12.11](docs/releases/v0.12.11.md):** Expo updated to 57.0.34, which clears the high-rated dependency advisories found by a code scan. No change you should notice.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
