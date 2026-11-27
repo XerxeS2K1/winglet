@@ -464,8 +464,10 @@ async def test_branch_routes_are_in_the_policy_table(client, hub):
 # -- real Hermes (CI's hermes job) --------------------------------------------------------------
 
 hermes = pytest.mark.skipif(importlib.util.find_spec("hermes_state") is None
-                            or importlib.util.find_spec("gateway") is None,
-                            reason="needs Hermes Agent installed")
+                            or importlib.util.find_spec("gateway") is None
+                            or importlib.util.find_spec("persistence_assembly") is not None,
+                            reason="needs an older Hermes Agent (before its storage interface); "
+                                   "newer Hermes is covered by test_branching_storage.py")
 
 
 @hermes

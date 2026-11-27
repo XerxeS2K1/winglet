@@ -310,6 +310,56 @@ def _branch_row(msg: Dict[str, Any]) -> Dict[str, Any]:
     return row
 
 
+class _StorageDb:
+    """The older session-database method names over Hermes's newer storage interface (``persistence``).
+
+    Hermes 0.23 dropped ``_db_for_key``/``_db_for_session_id`` and the session database they returned. The
+    bridge below is written against those names, so this keeps one code path and confines the new API here.
+    """
+
+    def __init__(self, persistence: Any):
+        self.p = persistence
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        record = self.p.sessions.get(session_id)
+        if record is None:
+            return None
+        return {"model": getattr(record, "model", None), "system_prompt": getattr(record, "system_prompt", None)}
+
+    def create_session(self, session_id: str, **kw: Any) -> None:
+        from persistence.conversation.sessions import NewSession, SessionLineageKind
+        origin = None
+        with contextlib.suppress(Exception):
+            origin = json.loads(kw["origin_json"]) if kw.get("origin_json") else None
+        self.p.sessions.create(NewSession(
+            session_id=session_id, source=kw.get("source") or "winglet", model=kw.get("model"),
+            parent_session_id=kw.get("parent_session_id"), lineage_kind=SessionLineageKind.BRANCH,
+            session_key=kw.get("session_key"), chat_id=kw.get("chat_id"), chat_type=kw.get("chat_type"),
+            thread_id=kw.get("thread_id"), user_id=kw.get("user_id"), origin=origin,
+            display_name=kw.get("display_name"), system_prompt=kw.get("system_prompt")))
+
+    def append_messages_batch(self, session_id: str, rows: List[Dict[str, Any]], chunk_rows: Optional[int] = None) -> None:
+        import dataclasses
+        from persistence.conversation.messages import NewMessage
+        known = {f.name for f in dataclasses.fields(NewMessage)}
+        messages = []
+        for row in rows:
+            fields = {k: v for k, v in row.items() if k in known and v is not None}
+            fields["role"] = row.get("role") or "user"
+            fields["tool_calls"] = tuple(row.get("tool_calls") or ())
+            messages.append(NewMessage(**fields))
+        self.p.messages.append_batch(session_id, messages, chunk_rows=chunk_rows)
+
+    def set_session_title(self, session_id: str, title: str) -> None:
+        self.p.sessions.set_title(session_id, title)
+
+    def end_session(self, session_id: str, reason: str) -> None:
+        self.p.sessions.end(session_id, reason)
+
+    def rewind_user_turn(self, session_id: str, user_ordinal: int, *, warm_history: Any = None) -> Any:
+        return self.p.messages.rewind_user_turn(session_id, user_ordinal, warm_history=warm_history)
+
+
 # -- Hermes bridge -------------------------------------------------------------------------
 
 
@@ -379,6 +429,11 @@ class HermesBranchBridge:
         store = self.store
         if store is None:
             return None
+        # Newer Hermes: a storage-interface handle per session key (the session database is gone).
+        handle = getattr(store, "_persistence_for_key", None)
+        if callable(handle):
+            persistence = handle(key) if key else getattr(store, "persistence", None)
+            return _StorageDb(persistence) if persistence is not None else None
         getter = getattr(store, "_db_for_key", None)
         if callable(getter):
             return getter(key) if key else getattr(store, "_db", None)
@@ -386,6 +441,10 @@ class HermesBranchBridge:
 
     def _db_for_session(self, session_id: str):
         store = self.store
+        handle = getattr(store, "_persistence_for_session_id", None)
+        if callable(handle):
+            persistence = handle(session_id)
+            return _StorageDb(persistence) if persistence is not None else None
         getter = getattr(store, "_db_for_session_id", None)
         if callable(getter):
             return getter(session_id)

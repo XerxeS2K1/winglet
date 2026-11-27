@@ -36,7 +36,7 @@ and tap you on the shoulder when they need you.
 > **Support:** this is a personal fork. It is shared as-is, with no promise of support or fixes. Issues and pull requests are welcome, but answers may be slow.
 
 > [!TIP]
-> **New in [v0.12.7](docs/releases/v0.12.7.md):** new chats get named again; Winglet now finds the name in Hermes's new storage. Not yet tried on a phone.
+> **New in [v0.12.8](docs/releases/v0.12.8.md):** branching, regenerate and edit-and-rewind work again on Hermes 0.23. Not yet tried on a phone.
 > **Status:** this release's local integration notes, evidence and remaining gates are in [docs/APP_PLAN.md](docs/APP_PLAN.md).
 > Earlier releases added the battery question on Android and Hermes 0.23 support. Since v0.10.1: bot hand-offs show who is busy, what is queued and which chat asked; a strip warns when the model has fallen back; a second pet gallery, Codex Pets.
 
