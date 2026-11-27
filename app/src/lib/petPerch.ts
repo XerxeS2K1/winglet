@@ -5,3 +5,11 @@
 export function boxStackHeight(boxHeight: number, bottomInset: number): number {
   return Math.round(boxHeight) + Math.max(bottomInset, 10);
 }
+
+/** How far in from the left the rows that sit directly above the box start while a pet is perched: the pet
+ * stands 42 px above the box at the left, so a row there ("While it works", the offline note) would be under it. */
+export const PERCH_CLEAR = 52;
+
+export function petClearance(petPerched: boolean): number {
+  return petPerched ? PERCH_CLEAR : 0;
+}

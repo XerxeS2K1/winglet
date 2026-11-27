@@ -29,7 +29,7 @@ import { ModelButton } from './ModelSheet';
 import { AudioLines, ArrowUp, Camera, FileText, ImagePlus, Mic, Plus, RotateCcw, X } from './icons';
 import { Sheet, SheetAction } from './Sheet';
 import { TaskProgress } from './TaskProgress';
-import { boxStackHeight } from '../lib/petPerch';
+import { boxStackHeight, petClearance } from '../lib/petPerch';
 import { Chip, Tap, Toggle } from './ui';
 
 const MIN_INPUT = 41;
@@ -48,6 +48,8 @@ type Props = {
   /** The height of just the message box and the padding under it, which a pet can sit on without moving when extras appear above. */
   onBoxStackHeight?: (h: number) => void;
   placeholder: string;
+  /** A pet is perched on the box: rows right above it start clear of the pet. */
+  petPerched?: boolean;
   /** Drawn on the top edge of the box, at the left: the chat's pet perches here. */
   perch?: ReactNode;
   /** After anything is sent from this box: a message, a command or a voice note. */
@@ -64,7 +66,7 @@ export function focusComposer(serverId: string, chatId: string) {
 }
 
 /** Shared message box: text above attachment, model and voice/send controls. */
-export function Composer({ server, chatId, busy, bottomInset, target, onHeight, onBoxStackHeight, placeholder, perch, onSent, prepareChat, onBeforeSend, onFocusChange }: Props) {
+export function Composer({ server, chatId, busy, bottomInset, target, onHeight, onBoxStackHeight, placeholder, petPerched, perch, onSent, prepareChat, onBeforeSend, onFocusChange }: Props) {
   const t = useTheme();
   const s = useStyles();
   const key = draftKey(server.id, chatId);
@@ -241,14 +243,14 @@ export function Composer({ server, chatId, busy, bottomInset, target, onHeight, 
       ) : null}
       {!prepareChat ? <TaskProgress key={`task:${key}`} server={server} chatId={chatId} busy={busy} /> : null}
       {showBusyModes ? (
-        <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={s.modes} accessibilityLabel="While it works">
+        <Animated.View entering={FadeIn.duration(160)} exiting={FadeOut.duration(120)} style={[s.modes, { paddingLeft: petClearance(!!petPerched) }]} accessibilityLabel="While it works">
           <Text style={s.modesLabel}>While it works:</Text>
           {(['steer', 'queue', 'interrupt'] as const).map((m) => (
             <Chip key={m} label={BUSY_LABELS[m]} selected={busyMode === m} onPress={() => updatePrefs({ busyMode: m })} />
           ))}
         </Animated.View>
       ) : null}
-      {!online ? <Text style={s.offlineNote}>Offline. Messages you send are queued and go out when {server.bot.title} is back.</Text> : null}
+      {!online ? <Text style={[s.offlineNote, { paddingLeft: petClearance(!!petPerched) }]}>Offline. Messages you send are queued and go out when {server.bot.title} is back.</Text> : null}
       <View onLayout={(e) => { setBoxY(e.nativeEvent.layout.y); onBoxStackHeight?.(boxStackHeight(e.nativeEvent.layout.height, bottomInset)); }}>
       <Glass target={target} style={s.box} intensity={50}>
         <FallbackStrip server={server} chatId={chatId} />
