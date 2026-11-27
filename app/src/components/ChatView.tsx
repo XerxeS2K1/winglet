@@ -267,7 +267,7 @@ export function ChatView({ server, chatId, showBack, embedded, landing }: { serv
       </View>
       {landing?.action ? <View style={{ position: 'absolute', bottom: 0, left: 16, right: 16, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12) }}
         onLayout={(e) => setComposerH(e.nativeEvent.layout.height)}>{landing.action}</View> : <Composer server={server} chatId={chatId} busy={typing} bottomInset={keyboardVisible ? 0 : embedded ? 12 : insets.bottom} target={target}
-        onHeight={setComposerH} onBoxStackHeight={setBoxStackH} placeholder={`Message ${server.bot.title}`}
+        onHeight={setComposerH} onBoxStackHeight={setBoxStackH} petPerched={committed} placeholder={`Message ${server.bot.title}`}
         prepareChat={landing?.prepareChat} onFocusChange={setInputFocused} onBeforeSend={beginTurn} />}
       {!landing?.action && width > 0 ? <ChatPet key={server.id} server={server} active={committed} width={width} composerHeight={boxStackH}
         dockHeight={dockHeight} dockOffset={dockOffset} frame={petFrame} sent={sendCount} perched={!landing} /> : null}
